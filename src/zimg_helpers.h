@@ -16,28 +16,41 @@
 
 #define UP_ALIGN_DOWN_2(x)  ((x) & ~1)
 
+/* Pitch alignment: each scratch row begins on a 64-byte boundary. Matches
+ * AVX-512 line size and zimg's preferred SIMD alignment. */
+#define UP_PITCH_ALIGN          64
+
+/* Line padding: extra rows allocated past the visible image so that
+ * zimg's resampling kernel boundary access has headroom. 8 rows is
+ * comfortably above any zimg filter's vertical kernel half-width
+ * (Spline36 = 6 taps -> 3 rows above + 3 below). */
+#define UP_SCRATCH_LINE_PAD     8
+
+/* Minimum destination rows per slice-threaded stripe. Below this, the
+ * resampling kernel's boundary handling dominates and adding more
+ * stripes hurts quality without adding throughput. */
+#define UP_STRIPE_MIN_DST_LINES 16
+
 /*
- * round_up_pitch(w): smallest multiple of 64 >= w. Used to size scratch
- * buffer rows so each row begins on a 64-byte boundary (helps SIMD loads
- * and matches zimg's preferred alignment). Caller must guarantee w >= 0;
- * for w == 0 the result is 0 (no row, harmless).
+ * round_up_pitch(w): smallest multiple of UP_PITCH_ALIGN >= w. Used to
+ * size scratch buffer rows so each row begins on an aligned boundary
+ * (helps SIMD loads and matches zimg's preferred alignment). Caller
+ * must guarantee w >= 0; for w == 0 the result is 0 (no row, harmless).
  */
 static inline int up_round_up_pitch(int w)
 {
     if (w <= 0) return 0;
-    return (w + 63) & ~63;
+    return (w + (UP_PITCH_ALIGN - 1)) & ~(UP_PITCH_ALIGN - 1);
 }
 
 /*
- * round_up_lines(h): h plus a small padding allowance for zimg's
- * resampling kernel boundary access. 8 extra lines is comfortably above
- * any zimg filter's vertical kernel half-width (Spline36 = 6 taps, so
- * 3 above + 3 below is the worst case). Negative input clamps to 0.
+ * round_up_lines(h): h plus UP_SCRATCH_LINE_PAD rows of padding for
+ * zimg's resampling kernel boundary access. Negative input clamps to 0.
  */
 static inline int up_round_up_lines(int h)
 {
     if (h <= 0) return 0;
-    return h + 8;
+    return h + UP_SCRATCH_LINE_PAD;
 }
 
 /*
@@ -98,6 +111,43 @@ static inline void up_copy_plane(uint8_t *dst, int dst_stride,
         memcpy(dst + (size_t)r * (size_t)dst_stride,
                src + (size_t)r * (size_t)src_stride,
                (size_t)row_bytes);
+}
+
+/*
+ * Compute the source and destination y-row ranges for stripe i out of n
+ * in a slice-threaded resize. All four bounds are aligned down to even
+ * values (chroma subsampling friendliness): the [start..end) intervals
+ * partition the destination into contiguous stripes covering exactly
+ * [0, dst_h), and similarly for the source covering [0, src_h).
+ *
+ * Returns 1 if the stripe is non-degenerate (both ranges have at least
+ * 1 row), 0 if i, n, src_h, or dst_h have produced an empty stripe (the
+ * caller should skip this stripe and reduce its worker count).
+ *
+ * The src range is computed proportionally to the dst range so that the
+ * resize ratio src_h_stripe / dst_h_stripe stays close to the global
+ * ratio src_h / dst_h, which is what the per-stripe zimg graph wants.
+ *
+ * CCN 5.
+ */
+static inline int up_compute_stripe_bounds(
+    int i, int n, int src_h, int dst_h,
+    int *src_y_start, int *src_y_end,
+    int *dst_y_start, int *dst_y_end)
+{
+    if (n <= 0 || src_h <= 0 || dst_h <= 0 || i < 0 || i >= n)
+        return 0;
+
+    *dst_y_start = (i == 0) ? 0
+        : UP_ALIGN_DOWN_2((int)((int64_t)i * dst_h / n));
+    *dst_y_end = (i == n - 1) ? dst_h
+        : UP_ALIGN_DOWN_2((int)((int64_t)(i + 1) * dst_h / n));
+    *src_y_start = (i == 0) ? 0
+        : UP_ALIGN_DOWN_2((int)((int64_t)src_h * (*dst_y_start) / dst_h));
+    *src_y_end = (i == n - 1) ? src_h
+        : UP_ALIGN_DOWN_2((int)((int64_t)src_h * (*dst_y_end) / dst_h));
+
+    return (*dst_y_end > *dst_y_start) && (*src_y_end > *src_y_start);
 }
 
 #endif /* AUTOUPSCALE_ZIMG_HELPERS_H */

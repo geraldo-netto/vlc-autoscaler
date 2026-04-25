@@ -259,6 +259,100 @@ static void test_copy_plane_realistic_480p_luma(void)
     END();
 }
 
+/* ---------- compute_stripe_bounds ---------- */
+
+static void test_stripe_bounds_n1_full_coverage(void)
+{
+    BEGIN("stripe_bounds: N=1 covers the entire image in one stripe");
+    int sys, sye, dys, dye;
+    int ok = up_compute_stripe_bounds(0, 1, 480, 1080, &sys, &sye, &dys, &dye);
+    CHECK(ok);
+    CHECK_EQ(sys, 0);   CHECK_EQ(sye, 480);
+    CHECK_EQ(dys, 0);   CHECK_EQ(dye, 1080);
+    END();
+}
+
+static void test_stripe_bounds_n2_clean_split(void)
+{
+    BEGIN("stripe_bounds: N=2 on 480x1080 splits exactly at midpoint");
+    int sys, sye, dys, dye;
+    int ok0 = up_compute_stripe_bounds(0, 2, 480, 1080,
+                                       &sys, &sye, &dys, &dye);
+    CHECK(ok0);
+    CHECK_EQ(sys, 0);   CHECK_EQ(sye, 240);
+    CHECK_EQ(dys, 0);   CHECK_EQ(dye, 540);
+    int ok1 = up_compute_stripe_bounds(1, 2, 480, 1080,
+                                       &sys, &sye, &dys, &dye);
+    CHECK(ok1);
+    CHECK_EQ(sys, 240); CHECK_EQ(sye, 480);
+    CHECK_EQ(dys, 540); CHECK_EQ(dye, 1080);
+    END();
+}
+
+static void test_stripe_bounds_full_coverage_n_arbitrary(void)
+{
+    BEGIN("stripe_bounds: union of stripes covers entire dst for N=1..16");
+    for (int n = 1; n <= 16; n++) {
+        int last_dst_end = 0;
+        int last_src_end = 0;
+        for (int i = 0; i < n; i++) {
+            int sys, sye, dys, dye;
+            int ok = up_compute_stripe_bounds(i, n, 480, 1080,
+                                              &sys, &sye, &dys, &dye);
+            if (!ok) {
+                printf("    N=%d i=%d: empty stripe\n", n, i);
+                g_cur_fail = 1;
+                break;
+            }
+            CHECK_EQ(dys, last_dst_end);  /* contiguous */
+            CHECK_EQ(sys, last_src_end);
+            CHECK_EQ((dys & 1), 0);       /* even */
+            CHECK_EQ((sys & 1), 0);
+            last_dst_end = dye;
+            last_src_end = sye;
+        }
+        CHECK_EQ(last_dst_end, 1080);   /* covers entire dst */
+        CHECK_EQ(last_src_end, 480);    /* covers entire src */
+    }
+    END();
+}
+
+static void test_stripe_bounds_invalid_inputs(void)
+{
+    BEGIN("stripe_bounds: invalid inputs return 0");
+    int sys, sye, dys, dye;
+    CHECK(!up_compute_stripe_bounds(0,  0, 480, 1080, &sys, &sye, &dys, &dye));
+    CHECK(!up_compute_stripe_bounds(0, -1, 480, 1080, &sys, &sye, &dys, &dye));
+    CHECK(!up_compute_stripe_bounds(-1, 4, 480, 1080, &sys, &sye, &dys, &dye));
+    CHECK(!up_compute_stripe_bounds(5,  4, 480, 1080, &sys, &sye, &dys, &dye));
+    CHECK(!up_compute_stripe_bounds(0,  4,   0, 1080, &sys, &sye, &dys, &dye));
+    CHECK(!up_compute_stripe_bounds(0,  4, 480,    0, &sys, &sye, &dys, &dye));
+    END();
+}
+
+static void test_stripe_bounds_ratio_preservation(void)
+{
+    BEGIN("stripe_bounds: per-stripe ratio close to global ratio");
+    /* Global ratio 480/1080 = 0.4444. Each stripe should be within
+     * 1/n of that ratio. */
+    int n = 4;
+    for (int i = 0; i < n; i++) {
+        int sys, sye, dys, dye;
+        int ok = up_compute_stripe_bounds(i, n, 480, 1080,
+                                          &sys, &sye, &dys, &dye);
+        CHECK(ok);
+        int dst_stripe_h = dye - dys;
+        int src_stripe_h = sye - sys;
+        /* Allow a small drift but no degeneration. */
+        CHECK(dst_stripe_h > 0);
+        CHECK(src_stripe_h > 0);
+        /* Ratio should be within 10% of global 480/1080 ~= 0.444. */
+        double ratio = (double)src_stripe_h / dst_stripe_h;
+        CHECK(ratio > 0.40 && ratio < 0.49);
+    }
+    END();
+}
+
 int main(void)
 {
     printf("Running zimg_helpers tests...\n");
@@ -285,6 +379,12 @@ int main(void)
     test_copy_plane_zero_row_bytes();
     test_copy_plane_negative_inputs();
     test_copy_plane_realistic_480p_luma();
+
+    test_stripe_bounds_n1_full_coverage();
+    test_stripe_bounds_n2_clean_split();
+    test_stripe_bounds_full_coverage_n_arbitrary();
+    test_stripe_bounds_invalid_inputs();
+    test_stripe_bounds_ratio_preservation();
 
     printf("\n%d tests run, %d failed\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;

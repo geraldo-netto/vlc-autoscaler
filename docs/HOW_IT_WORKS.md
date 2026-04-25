@@ -47,20 +47,57 @@ leave the filter enabled globally without paying any cost on HD content.
 
 1. Reads `i_visible_width` / `i_visible_height` from the input format
    (falls back to `i_width` / `i_height` if visible isn't set).
-2. Reads the three module options (`target`, `algo`, `skip-above`).
+2. Reads the module options (`target`, `algo`, `skip-above`, `usm`,
+   `backend`, `target-fps`, `threads`).
 3. Calls `DetectHardware()` to get core count and total RAM.
 4. Calls `up_plan_upscale()` from `upscale_logic.h` to decide whether to
    engage and, if so, what target dimensions to use. This is where all the
    heuristics live, isolated for testing.
 5. If `up_plan_upscale()` returns 0, `Open()` returns `VLC_EGENERIC` and
    the filter is bypassed for this stream.
-6. Otherwise it maps the input chroma to an `AVPixelFormat`. Anything
-   not in the allow-list (I420, YV12, NV12, NV21, I422, I444, RGB24,
-   RGBA, BGRA) also bypasses — better to do nothing than to emit garbage.
-7. Allocates `filter_sys_t`, builds an `SwsContext` with the selected
-   algorithm, and writes the new dimensions into `fmt_out`.
+6. **Calls `up_chroma_is_opaque()` (in `chroma_classify.h`) to detect
+   hardware/GPU surface formats and rejects them with `VLC_EGENERIC`** —
+   see "Hardware-accelerated decode" below.
+7. Calls `scaler_pick()` to choose a backend (zimg if available and
+   supports the chroma; swscale as fallback). Anything the picker
+   doesn't recognize bypasses — better to do nothing than emit garbage.
+8. Allocates `filter_sys_t`, opens the chosen backend (which spawns the
+   worker pool and allocates scratch buffers), and writes the new
+   dimensions into `fmt_out`.
 
 The chroma never changes. We only resize.
+
+## Hardware-accelerated decode
+
+When VLC uses hardware video decode (VA-API, VDPAU, D3D9/11, MMAL,
+CoreVideo on macOS) the decoder produces **opaque GPU surfaces**: a
+fourcc placeholder like `VAOP` or `DX11` that points to a hardware
+buffer, not a CPU pixel layout. Filters that need to read pixels (us,
+postproc, deinterlace, etc.) cannot consume these directly.
+
+`chroma_classify.h` exports `up_chroma_is_opaque()` which returns true
+for the 16 known opaque chroma fourccs. `Open()` calls this very early
+and returns `VLC_EGENERIC` if it matches — *before* allocating any
+scratch buffers or spawning worker threads. This matters because VLC's
+filter-chain solver probes filters multiple times during chain setup;
+without the early reject we'd allocate 30 worker threads × 3 probes =
+90 wasted thread spawns before VLC tears us down.
+
+After the reject, VLC inserts a hardware-to-software download converter
+upstream and probes us once more with the resolved software chroma
+(typically I420), at which point Open() succeeds normally. The user
+pays a GPU→CPU readback cost per frame but everything else works.
+
+If the user combines `--video-filter='postproc:autoupscale'` with
+hardware decode, VLC's chain solver may still hit `Too high level of
+recursion (3)` because both filters need software pixels and the solver
+has to thread converters around them. The clean workaround is to
+disable hardware decode for that session: `--avcodec-hw=none`.
+
+The list of opaque fourccs is unit-tested (`test_chroma_classify.c`)
+including a cross-predicate invariant that no opaque chroma is also
+flagged as having a luma plane (which would let USM run on a GPU
+surface — a guaranteed crash).
 
 ## The auto-target heuristic
 

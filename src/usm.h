@@ -110,6 +110,93 @@ static inline void up_usm__hblur_row(uint8_t *out, const uint8_t *in, int width)
  * destination pixel within an iteration, and never re-reads it across
  * iterations, so aliasing is safe.
  */
+/*
+ * Internal: identity-copy fast path used when amount_q8 == 0. Skips the
+ * memcpy entirely if dst aliases src with the same stride. Keeps the
+ * dispatch in apply_plane simple. CCN 3.
+ */
+static inline void up_usm__apply_identity(
+    uint8_t *dst, int dst_stride,
+    const uint8_t *src, int src_stride,
+    int width, int height)
+{
+    if (dst == src && dst_stride == src_stride) return;
+    for (int y = 0; y < height; y++) {
+        memcpy(dst + (size_t)y * (size_t)dst_stride,
+               src + (size_t)y * (size_t)src_stride,
+               (size_t)width);
+    }
+}
+
+/*
+ * Internal: pass 1 of the USM. Horizontal-blur every source row into the
+ * dense workspace buffer. CCN 2.
+ */
+static inline void up_usm__pass1_hblur(
+    uint8_t *workspace,
+    const uint8_t *src, int src_stride,
+    int width, int height)
+{
+    for (int y = 0; y < height; y++) {
+        up_usm__hblur_row(
+            workspace + (size_t)y * (size_t)width,
+            src + (size_t)y * (size_t)src_stride,
+            width);
+    }
+}
+
+/*
+ * Internal: combine one row's blur and source values into the sharpened
+ * destination row. The triangle blur kernel reads three workspace rows
+ * (up_row, mid, dn_row) and the per-pixel detail = src - blur is added
+ * back at amount_q8/256 strength, with [0,255] clamping. CCN 4.
+ */
+static inline void up_usm__combine_row(
+    uint8_t *dst_row,
+    const uint8_t *src_row,
+    const uint8_t *up_row,
+    const uint8_t *mid,
+    const uint8_t *dn_row,
+    int width,
+    int amount_q8)
+{
+    for (int x = 0; x < width; x++) {
+        int blur = ((int)up_row[x] + ((int)mid[x] << 1)
+                  + (int)dn_row[x] + 2) >> 2;
+        int s = (int)src_row[x];
+        int hi = s - blur;
+        int sharpened = s + ((amount_q8 * hi) >> 8);
+        if (sharpened < 0) sharpened = 0;
+        else if (sharpened > 255) sharpened = 255;
+        dst_row[x] = (uint8_t)sharpened;
+    }
+}
+
+/*
+ * Internal: pass 2 of the USM. For each row y, picks workspace rows
+ * y-1, y, y+1 (clamped at boundaries), then combines via the per-row
+ * helper. CCN 4.
+ */
+static inline void up_usm__pass2_combine(
+    uint8_t *dst, int dst_stride,
+    const uint8_t *src, int src_stride,
+    const uint8_t *workspace,
+    int width, int height,
+    int amount_q8)
+{
+    for (int y = 0; y < height; y++) {
+        int yu = (y > 0) ? (y - 1) : 0;
+        int yd = (y < height - 1) ? (y + 1) : (height - 1);
+        up_usm__combine_row(
+            dst + (size_t)y * (size_t)dst_stride,
+            src + (size_t)y * (size_t)src_stride,
+            workspace + (size_t)yu * (size_t)width,
+            workspace + (size_t)y  * (size_t)width,
+            workspace + (size_t)yd * (size_t)width,
+            width, amount_q8);
+    }
+}
+
 static inline int up_usm_apply_plane(
     uint8_t *dst, int dst_stride,
     const uint8_t *src, int src_stride,
@@ -117,6 +204,7 @@ static inline int up_usm_apply_plane(
     int amount_q8,
     uint8_t *workspace)
 {
+    /* Validate. */
     if (dst == NULL || src == NULL) return 0;
     if (width <= 0 || height <= 0) return 0;
     if (dst_stride < width || src_stride < width) return 0;
@@ -127,53 +215,17 @@ static inline int up_usm_apply_plane(
 
     /* Identity fast path. */
     if (amount_q8 == 0) {
-        if (dst != src || dst_stride != src_stride) {
-            for (int y = 0; y < height; y++) {
-                memcpy(dst + (size_t)y * (size_t)dst_stride,
-                       src + (size_t)y * (size_t)src_stride,
-                       (size_t)width);
-            }
-        }
+        up_usm__apply_identity(dst, dst_stride, src, src_stride,
+                               width, height);
         return 1;
     }
 
-    /* Anything other than identity needs workspace. */
+    /* Anything else needs workspace. */
     if (workspace == NULL) return 0;
 
-    /* Pass 1: horizontal blur of every row into workspace.
-     * Workspace is laid out densely with stride == width. */
-    for (int y = 0; y < height; y++) {
-        up_usm__hblur_row(
-            workspace + (size_t)y * (size_t)width,
-            src + (size_t)y * (size_t)src_stride,
-            width);
-    }
-
-    /* Pass 2: vertical blur of workspace + USM combine with src.
-     * For each row y we read workspace[y-1, y, y+1] (clamping at edges)
-     * and combine with src[y]. Output goes to dst[y]. */
-    for (int y = 0; y < height; y++) {
-        int yu = (y > 0) ? (y - 1) : 0;
-        int yd = (y < height - 1) ? (y + 1) : (height - 1);
-
-        const uint8_t *up_row = workspace + (size_t)yu * (size_t)width;
-        const uint8_t *mid    = workspace + (size_t)y  * (size_t)width;
-        const uint8_t *dn_row = workspace + (size_t)yd * (size_t)width;
-        const uint8_t *src_row = src + (size_t)y * (size_t)src_stride;
-        uint8_t       *dst_row = dst + (size_t)y * (size_t)dst_stride;
-
-        for (int x = 0; x < width; x++) {
-            int blur = ((int)up_row[x] + ((int)mid[x] << 1)
-                      + (int)dn_row[x] + 2) >> 2;
-            int s = (int)src_row[x];
-            int hi = s - blur;                  /* high-frequency component */
-            int sharpened = s + ((amount_q8 * hi) >> 8);
-            if (sharpened < 0) sharpened = 0;
-            else if (sharpened > 255) sharpened = 255;
-            dst_row[x] = (uint8_t)sharpened;
-        }
-    }
-
+    up_usm__pass1_hblur(workspace, src, src_stride, width, height);
+    up_usm__pass2_combine(dst, dst_stride, src, src_stride,
+                          workspace, width, height, amount_q8);
     return 1;
 }
 

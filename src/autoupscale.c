@@ -29,6 +29,7 @@
 #include "scaler.h"
 #include "perfmon.h"
 #include "threading.h"
+#include "chroma_classify.h"
 
 /* VLC's <libintl.h>-based N_() isn't always pulled in transitively.
  * Provide a no-op fallback if it's missing — we don't translate strings. */
@@ -39,20 +40,18 @@
 /* True for chromas whose plane 0 is an 8-bit luma plane (Y).
  * USM is applied only to these — sharpening packed RGB or chroma planes
  * causes visible colour fringing on high-contrast edges. */
+/* Chroma classification predicates live in chroma_classify.h so they
+ * can be unit-tested without pulling in VLC. We keep these tiny VLC-typed
+ * wrappers because the rest of the file uses vlc_fourcc_t. */
+
+static bool ChromaIsOpaque( vlc_fourcc_t c )
+{
+    return up_chroma_is_opaque( (uint32_t)c );
+}
+
 static bool ChromaHasYPlane( vlc_fourcc_t c )
 {
-    switch( c )
-    {
-        case VLC_CODEC_I420:
-        case VLC_CODEC_YV12:
-        case VLC_CODEC_NV12:
-        case VLC_CODEC_NV21:
-        case VLC_CODEC_I422:
-        case VLC_CODEC_I444:
-            return true;
-        default:
-            return false;
-    }
+    return up_chroma_has_y_plane( (uint32_t)c );
 }
 
 /*****************************************************************************
@@ -222,6 +221,22 @@ static int Open( vlc_object_t *p_this )
 
     /* Pick a scaler backend. */
     const vlc_fourcc_t chroma = p_filter->fmt_in.video.i_chroma;
+
+    /* Reject hardware/opaque formats up front. We cannot read pixel data
+     * from a VAAPI/VDPAU/D3D/MMAL/CVPX surface; VLC must insert a hw->sw
+     * download converter before us. Failing here cleanly (instead of
+     * accepting and then producing garbage) prompts VLC to do exactly
+     * that, and it avoids the wasted scratch+thread allocation that
+     * happens if we Open() and then get torn down on the next probe. */
+    if( ChromaIsOpaque( chroma ) )
+    {
+        msg_Dbg( p_filter,
+                 "AutoUpscale: declining opaque chroma 0x%08x; "
+                 "VLC will insert a hw->sw converter and re-probe",
+                 (unsigned)chroma );
+        return VLC_EGENERIC;
+    }
+
     const scaler_backend_t *be = scaler_pick( backend_pref, chroma, algo );
     if( !be )
     {

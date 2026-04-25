@@ -170,6 +170,31 @@ look, 200% is aggressive. Only applied to YUV chromas — sharpening
 packed RGB or chroma planes causes visible colour fringing on edges.
 Set to `0` to disable.
 
+### Hardware-accelerated decode
+
+If your VLC is using hardware video decode (VA-API, VDPAU, D3D9/11,
+MMAL, CoreVideo) the decoder produces **opaque GPU surfaces** that the
+autoupscale filter cannot read directly. autoupscale detects this and
+fails Open() with a debug-level message:
+
+```
+autoupscale filter debug: AutoUpscale: declining opaque chroma 0x504f4156;
+                          VLC will insert a hw->sw converter and re-probe
+```
+
+VLC then inserts a hardware-to-software download converter and re-probes
+us with the resolved software chroma (typically I420). Filtering
+proceeds normally from there, but you pay the GPU→CPU readback cost on
+every frame.
+
+If you see VLC's filter chain fail with `Too high level of recursion`
+when combining `--video-filter='postproc:autoupscale'` with hardware
+decode, the cleanest workaround is to disable hardware decode for that
+session: `--avcodec-hw=none`. The recursion is VLC's chain solver
+exhausting its depth budget while trying to thread converters between
+two filters that both need software pixels and a decoder that produces
+GPU surfaces — not really anyone's fault, just an awkward combination.
+
 ## Better quality: chain with VLC's postproc filter
 
 For low-bitrate sources (DVD rips, old web video, anything with visible
@@ -215,14 +240,27 @@ Full design notes in [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md).
 ## Repository layout
 
 ```
-src/upscale_logic.h         pure logic (header-only, no VLC/FFmpeg deps)
-src/autoupscale.c           VLC plugin: module descriptor, Open/Filter/Close
-tests/test_upscale_logic.c  unit tests (no framework, just CHECK macros)
-tests/fuzz_upscale_logic.c  libFuzzer target + smoke runner (one source)
-tests/corpus/               seed inputs for libFuzzer
-docs/HOW_IT_WORKS.md        design notes
-.github/workflows/ci.yml    build, test, smoke fuzz, libFuzzer, cppcheck
-Makefile                    everything (`make help` lists targets)
+src/
+  upscale_logic.h         pure resolution-decision math (no VLC/FFmpeg deps)
+  usm.h                   pure unsharp-mask post-pass (header-only)
+  perfmon.h               pure EWMA perf monitor (header-only)
+  threading.h             pure thread-count decision (header-only)
+  zimg_helpers.h          pure pitch/lines/plane/stripe-bounds helpers
+  chroma_classify.h       pure hwaccel/Y-plane chroma predicates
+  scaler.h                backend interface
+  scaler.c                backend picker (auto / zimg / swscale)
+  scaler_swscale.c        libswscale backend (universal fallback)
+  scaler_zimg.c           libzimg backend with slice-threaded copy-in/out
+  autoupscale.c           VLC plugin glue (module descriptor, Open/Filter/Close)
+
+tests/
+  test_*.c                unit tests for each pure header (no framework)
+  fuzz_*.c                libFuzzer + deterministic smoke targets (one source each)
+  corpus/                 curated seed inputs including regression cases
+
+docs/HOW_IT_WORKS.md      design notes
+.github/workflows/ci.yml  build, test, smoke fuzz, libFuzzer, cppcheck
+Makefile                  everything (`make help` lists targets)
 ```
 
 The decision/math logic lives in `upscale_logic.h` as `static inline`
@@ -282,7 +320,3 @@ surface.
 **Picture jitters or audio drifts** — your CPU can't keep up with Lanczos
 at the chosen target. Drop to `--autoupscale-algo=1` (bicubic) or force
 720p with `--autoupscale-target=1`.
-
-## License
-
-GPL-2.0-or-later, matching VLC core. See [`LICENSE`](LICENSE).

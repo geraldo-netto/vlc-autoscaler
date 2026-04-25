@@ -136,6 +136,30 @@ static zimg_resample_filter_e AlgoToZimg(int algo)
 
 /* ---------- worker thread ---------- */
 
+/*
+ * Internal: fill one plane of a const (read) zimg image buffer.
+ * data + offset_rows*stride is the row-0 pointer for this stripe; the
+ * mask covers the full graph height (BUFFER_MAX = no wraparound). CCN 1.
+ */
+static inline void set_src_plane(zimg_image_buffer_const *b, int idx,
+                                 const uint8_t *data, int stride,
+                                 int offset_rows)
+{
+    b->plane[idx].data   = data + (size_t)offset_rows * (size_t)stride;
+    b->plane[idx].stride = stride;
+    b->plane[idx].mask   = ZIMG_BUFFER_MAX;
+}
+
+/* Same, for the writable destination buffer. CCN 1. */
+static inline void set_dst_plane(zimg_image_buffer *b, int idx,
+                                 uint8_t *data, int stride,
+                                 int offset_rows)
+{
+    b->plane[idx].data   = data + (size_t)offset_rows * (size_t)stride;
+    b->plane[idx].stride = stride;
+    b->plane[idx].mask   = ZIMG_BUFFER_MAX;
+}
+
 static void *worker_main(void *arg)
 {
     stripe_worker_t *w = (stripe_worker_t *)arg;
@@ -156,25 +180,12 @@ static void *worker_main(void *arg)
         const int src_off_c = w->src_y_start >> w->sub_h;
         const int dst_off_c = w->dst_y_start >> w->sub_h;
 
-        sb.plane[0].data   = w->sy + (size_t)src_off_y * w->src_pitch_y;
-        sb.plane[0].stride = w->src_pitch_y;
-        sb.plane[0].mask   = ZIMG_BUFFER_MAX;
-        sb.plane[1].data   = w->su + (size_t)src_off_c * w->src_pitch_c;
-        sb.plane[1].stride = w->src_pitch_c;
-        sb.plane[1].mask   = ZIMG_BUFFER_MAX;
-        sb.plane[2].data   = w->sv + (size_t)src_off_c * w->src_pitch_c;
-        sb.plane[2].stride = w->src_pitch_c;
-        sb.plane[2].mask   = ZIMG_BUFFER_MAX;
-
-        db.plane[0].data   = w->dy + (size_t)dst_off_y * w->dst_pitch_y;
-        db.plane[0].stride = w->dst_pitch_y;
-        db.plane[0].mask   = ZIMG_BUFFER_MAX;
-        db.plane[1].data   = w->du + (size_t)dst_off_c * w->dst_pitch_c;
-        db.plane[1].stride = w->dst_pitch_c;
-        db.plane[1].mask   = ZIMG_BUFFER_MAX;
-        db.plane[2].data   = w->dv + (size_t)dst_off_c * w->dst_pitch_c;
-        db.plane[2].stride = w->dst_pitch_c;
-        db.plane[2].mask   = ZIMG_BUFFER_MAX;
+        set_src_plane(&sb, 0, w->sy, w->src_pitch_y, src_off_y);
+        set_src_plane(&sb, 1, w->su, w->src_pitch_c, src_off_c);
+        set_src_plane(&sb, 2, w->sv, w->src_pitch_c, src_off_c);
+        set_dst_plane(&db, 0, w->dy, w->dst_pitch_y, dst_off_y);
+        set_dst_plane(&db, 1, w->du, w->dst_pitch_c, dst_off_c);
+        set_dst_plane(&db, 2, w->dv, w->dst_pitch_c, dst_off_c);
 
         zimg_error_code_e rc = zimg_filter_graph_process(
             w->graph, &sb, &db, w->tmp, NULL, NULL, NULL, NULL);
@@ -235,23 +246,34 @@ static long detect_cores(void)
 
 static void zimg_close(scaler_ctx_t *ctx);
 
-static int zimg_open(scaler_ctx_t *ctx)
+/* Compute stripe bounds: see up_compute_stripe_bounds in zimg_helpers.h. */
+
+/*
+ * Allocate the persistent scratch buffers (one per plane, src + dst).
+ * Returns 0 on success, -1 on any allocation failure (in which case the
+ * partially-allocated state is freed by zimg_close via priv->sy etc).
+ * CCN 4.
+ */
+static int alloc_scratch_buffers(zimg_priv_t *p)
 {
-    unsigned sub_w, sub_h;
-    int swap;
-    if (!ChromaToZimg(ctx->chroma, &sub_w, &sub_h, &swap))
+    p->sy = aligned_alloc(UP_PITCH_ALIGN, (size_t)p->src_lines_y * p->src_pitch_y);
+    p->su = aligned_alloc(UP_PITCH_ALIGN, (size_t)p->src_lines_c * p->src_pitch_c);
+    p->sv = aligned_alloc(UP_PITCH_ALIGN, (size_t)p->src_lines_c * p->src_pitch_c);
+    p->dy = aligned_alloc(UP_PITCH_ALIGN, (size_t)p->dst_lines_y * p->dst_pitch_y);
+    p->du = aligned_alloc(UP_PITCH_ALIGN, (size_t)p->dst_lines_c * p->dst_pitch_c);
+    p->dv = aligned_alloc(UP_PITCH_ALIGN, (size_t)p->dst_lines_c * p->dst_pitch_c);
+    if (!p->sy || !p->su || !p->sv || !p->dy || !p->du || !p->dv)
         return -1;
+    return 0;
+}
 
-    int n_threads = up_threads_decide(ctx->threads_pref, detect_cores());
-
-    /* Each stripe at least 16 dst rows tall so kernel context is meaningful. */
-    int max_threads_by_size = ctx->dst_h / 16;
-    if (max_threads_by_size < 1) max_threads_by_size = 1;
-    if (n_threads > max_threads_by_size) n_threads = max_threads_by_size;
-
-    zimg_priv_t *p = calloc(1, sizeof(*p));
-    if (!p) return -1;
-    p->n_threads    = n_threads;
+/*
+ * Fill the priv struct's geometry/pitch fields from the scaler context
+ * and chroma subsampling. Pure assignment; no allocation. CCN 1.
+ */
+static void init_priv_geometry(zimg_priv_t *p, const scaler_ctx_t *ctx,
+                               unsigned sub_w, unsigned sub_h, int swap)
+{
     p->yv12_swap_uv = swap;
     p->sub_w        = sub_w;
     p->sub_h        = sub_h;
@@ -266,102 +288,144 @@ static int zimg_open(scaler_ctx_t *ctx)
     p->src_lines_c = up_plane_lines(ctx->src_h, sub_h);
     p->dst_lines_y = up_plane_lines(ctx->dst_h, 0);
     p->dst_lines_c = up_plane_lines(ctx->dst_h, sub_h);
+}
 
-    /* Persistent scratch buffers, page-aligned for SIMD. */
-    p->sy = aligned_alloc(64, (size_t)p->src_lines_y * p->src_pitch_y);
-    p->su = aligned_alloc(64, (size_t)p->src_lines_c * p->src_pitch_c);
-    p->sv = aligned_alloc(64, (size_t)p->src_lines_c * p->src_pitch_c);
-    p->dy = aligned_alloc(64, (size_t)p->dst_lines_y * p->dst_pitch_y);
-    p->du = aligned_alloc(64, (size_t)p->dst_lines_c * p->dst_pitch_c);
-    p->dv = aligned_alloc(64, (size_t)p->dst_lines_c * p->dst_pitch_c);
-    if (!p->sy || !p->su || !p->sv || !p->dy || !p->du || !p->dv) {
-        ctx->priv = p; zimg_close(ctx); return -1;
+/*
+ * Set up one stripe worker: stash geometry, build the per-stripe filter
+ * graph, allocate its tmp buffer, init its semaphore, and spawn the
+ * thread. Returns 0 on success, -1 on any failure (caller handles
+ * cleanup of partial state via the worker's graph/tmp fields). CCN 5.
+ */
+static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
+                              const scaler_ctx_t *ctx, int worker_id,
+                              int src_y_start, int src_y_end,
+                              int dst_y_start, int dst_y_end,
+                              unsigned sub_w, unsigned sub_h,
+                              zimg_resample_filter_e filt)
+{
+    w->src_y_start  = src_y_start;
+    w->dst_y_start  = dst_y_start;
+    w->sub_h        = sub_h;
+    w->done         = &p->done;
+    w->worker_id    = worker_id;
+    w->sy = p->sy; w->su = p->su; w->sv = p->sv;
+    w->dy = p->dy; w->du = p->du; w->dv = p->dv;
+    w->src_pitch_y = p->src_pitch_y; w->src_pitch_c = p->src_pitch_c;
+    w->dst_pitch_y = p->dst_pitch_y; w->dst_pitch_c = p->dst_pitch_c;
+
+    w->graph = build_stripe_graph(
+        ctx->src_w, src_y_end - src_y_start,
+        ctx->dst_w, dst_y_end - dst_y_start,
+        sub_w, sub_h, filt);
+    if (!w->graph) return -1;
+
+    if (zimg_filter_graph_get_tmp_size(w->graph, &w->tmp_size) != 0)
+        return -1;
+    if (w->tmp_size > 0) {
+        w->tmp = aligned_alloc(UP_PITCH_ALIGN, (w->tmp_size + UP_PITCH_ALIGN - 1) & ~(size_t)(UP_PITCH_ALIGN - 1));
+        if (!w->tmp) return -1;
     }
-
-    p->workers = calloc((size_t)n_threads, sizeof(*p->workers));
-    if (!p->workers) { ctx->priv = p; zimg_close(ctx); return -1; }
-
-    if (sem_init(&p->done, 0, 0) != 0) {
-        ctx->priv = p; zimg_close(ctx); return -1;
+    if (sem_init(&w->go, 0, 0) != 0) return -1;
+    if (pthread_create(&w->thread, NULL, worker_main, w) != 0) {
+        sem_destroy(&w->go);
+        return -1;
     }
+    return 0;
+}
 
-    zimg_resample_filter_e filt = AlgoToZimg(ctx->algo);
-
+/*
+ * Construct N stripe workers. May return fewer than n_threads if a
+ * stripe degenerates or any worker fails to construct - those partial
+ * graphs/tmp buffers are released here before returning. The number of
+ * fully-constructed workers is written to *out_constructed. CCN 5.
+ */
+static void construct_workers(zimg_priv_t *p, const scaler_ctx_t *ctx,
+                              int n_threads, unsigned sub_w, unsigned sub_h,
+                              zimg_resample_filter_e filt,
+                              int *out_constructed)
+{
     int constructed = 0;
     for (int i = 0; i < n_threads; i++) {
         stripe_worker_t *w = &p->workers[i];
 
-        int dst_y_start = (i == 0) ? 0
-            : ALIGN_DOWN_2((int)((int64_t)i * ctx->dst_h / n_threads));
-        int dst_y_end = (i == n_threads - 1) ? ctx->dst_h
-            : ALIGN_DOWN_2((int)((int64_t)(i + 1) * ctx->dst_h / n_threads));
-        int src_y_start = (i == 0) ? 0
-            : ALIGN_DOWN_2((int)((int64_t)ctx->src_h * dst_y_start / ctx->dst_h));
-        int src_y_end = (i == n_threads - 1) ? ctx->src_h
-            : ALIGN_DOWN_2((int)((int64_t)ctx->src_h * dst_y_end / ctx->dst_h));
+        int sys, sye, dys, dye;
+        if (!up_compute_stripe_bounds(i, n_threads, ctx->src_h, ctx->dst_h,
+                                   &sys, &sye, &dys, &dye))
+            break;
 
-        if (dst_y_end <= dst_y_start || src_y_end <= src_y_start) {
-            n_threads = i;
-            p->n_threads = n_threads;
+        if (init_stripe_worker(w, p, ctx, i, sys, sye, dys, dye,
+                               sub_w, sub_h, filt) != 0) {
+            if (w->graph) { zimg_filter_graph_free(w->graph); w->graph = NULL; }
+            free(w->tmp); w->tmp = NULL;
             break;
         }
-
-        w->src_y_start  = src_y_start;
-        w->dst_y_start  = dst_y_start;
-        w->sub_h        = sub_h;
-        w->done         = &p->done;
-        w->worker_id    = i;
-        w->sy = p->sy; w->su = p->su; w->sv = p->sv;
-        w->dy = p->dy; w->du = p->du; w->dv = p->dv;
-        w->src_pitch_y = p->src_pitch_y; w->src_pitch_c = p->src_pitch_c;
-        w->dst_pitch_y = p->dst_pitch_y; w->dst_pitch_c = p->dst_pitch_c;
-
-        w->graph = build_stripe_graph(
-            ctx->src_w, src_y_end - src_y_start,
-            ctx->dst_w, dst_y_end - dst_y_start,
-            sub_w, sub_h, filt);
-        if (!w->graph) goto fail_one;
-
-        if (zimg_filter_graph_get_tmp_size(w->graph, &w->tmp_size) != 0)
-            goto fail_one;
-        if (w->tmp_size > 0) {
-            w->tmp = aligned_alloc(64, (w->tmp_size + 63) & ~(size_t)63);
-            if (!w->tmp) goto fail_one;
-        }
-        if (sem_init(&w->go, 0, 0) != 0) goto fail_one;
-        if (pthread_create(&w->thread, NULL, worker_main, w) != 0) {
-            sem_destroy(&w->go);
-            goto fail_one;
-        }
         constructed++;
-        continue;
-
-    fail_one:
-        if (w->graph) { zimg_filter_graph_free(w->graph); w->graph = NULL; }
-        free(w->tmp); w->tmp = NULL;
-        n_threads = constructed;
-        p->n_threads = n_threads;
-        break;
     }
-
-    if (constructed == 0) {
-        ctx->priv = p; zimg_close(ctx); return -1;
-    }
+    *out_constructed = constructed;
     p->n_threads = constructed;
+}
 
-    if (ctx->log_obj) {
-        size_t scratch_mb = (
-              (size_t)p->src_lines_y * p->src_pitch_y
-            + 2 * (size_t)p->src_lines_c * p->src_pitch_c
-            + (size_t)p->dst_lines_y * p->dst_pitch_y
-            + 2 * (size_t)p->dst_lines_c * p->dst_pitch_c) >> 20;
-        msg_Info(ctx->log_obj,
-                 "zimg: %d worker thread%s, %dx%d -> %dx%d, "
-                 "scratch %zu MB (copy-in/copy-out)",
-                 p->n_threads, p->n_threads == 1 ? "" : "s",
-                 p->src_w, p->src_h, p->dst_w, p->dst_h, scratch_mb);
-    }
+/* Diagnostic log emitted once at Open(). CCN 2. */
+static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
+{
+    if (!log_obj) return;
+    size_t scratch_mb = (
+          (size_t)p->src_lines_y * p->src_pitch_y
+        + 2 * (size_t)p->src_lines_c * p->src_pitch_c
+        + (size_t)p->dst_lines_y * p->dst_pitch_y
+        + 2 * (size_t)p->dst_lines_c * p->dst_pitch_c) >> 20;
+    msg_Info(log_obj,
+             "zimg: %d worker thread%s, %dx%d -> %dx%d, "
+             "scratch %zu MB (copy-in/copy-out)",
+             p->n_threads, p->n_threads == 1 ? "" : "s",
+             p->src_w, p->src_h, p->dst_w, p->dst_h, scratch_mb);
+}
 
+/*
+ * Internal: bail out of zimg_open after the priv struct exists. Stashes
+ * the partial priv on the context so zimg_close() can free what was
+ * already allocated (scratch buffers, workers array, semaphore). CCN 1.
+ */
+static int zimg_open_fail(scaler_ctx_t *ctx, zimg_priv_t *p)
+{
+    ctx->priv = p;
+    zimg_close(ctx);
+    return -1;
+}
+
+static int zimg_open(scaler_ctx_t *ctx)
+{
+    unsigned sub_w, sub_h;
+    int swap;
+    if (!ChromaToZimg(ctx->chroma, &sub_w, &sub_h, &swap))
+        return -1;
+
+    int n_threads = up_threads_decide(ctx->threads_pref, detect_cores());
+
+    /* Each stripe at least UP_STRIPE_MIN_DST_LINES dst rows tall so kernel
+     * context is meaningful. */
+    int max_threads_by_size = ctx->dst_h / UP_STRIPE_MIN_DST_LINES;
+    if (max_threads_by_size < 1) max_threads_by_size = 1;
+    if (n_threads > max_threads_by_size) n_threads = max_threads_by_size;
+
+    zimg_priv_t *p = calloc(1, sizeof(*p));
+    if (!p) return -1;
+    p->n_threads = n_threads;
+    init_priv_geometry(p, ctx, sub_w, sub_h, swap);
+
+    if (alloc_scratch_buffers(p) != 0) return zimg_open_fail(ctx, p);
+
+    p->workers = calloc((size_t)n_threads, sizeof(*p->workers));
+    if (!p->workers) return zimg_open_fail(ctx, p);
+
+    if (sem_init(&p->done, 0, 0) != 0) return zimg_open_fail(ctx, p);
+
+    int constructed = 0;
+    construct_workers(p, ctx, n_threads, sub_w, sub_h,
+                      AlgoToZimg(ctx->algo), &constructed);
+    if (constructed == 0) return zimg_open_fail(ctx, p);
+
+    log_zimg_open(ctx->log_obj, p);
     ctx->priv = p;
     return 0;
 }
