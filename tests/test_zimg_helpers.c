@@ -1,0 +1,291 @@
+/*****************************************************************************
+ * test_zimg_helpers.c - unit tests for the pure helpers in zimg_helpers.h
+ *****************************************************************************/
+
+#include "../src/zimg_helpers.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int g_run = 0, g_fail = 0, g_cur_fail = 0;
+static const char *g_cur = NULL;
+
+#define BEGIN(name) do { g_cur = name; g_cur_fail = 0; g_run++; } while (0)
+#define END() do { \
+        if (g_cur_fail) { g_fail++; printf("  [FAIL] %s\n", g_cur); } \
+        else            { printf("  [ ok ] %s\n", g_cur); } \
+    } while (0)
+#define CHECK(cond) do { \
+        if (!(cond)) { \
+            printf("    %s:%d: %s\n", __FILE__, __LINE__, #cond); \
+            g_cur_fail = 1; \
+        } \
+    } while (0)
+#define CHECK_EQ(a, b) do { \
+        long _a = (long)(a), _b = (long)(b); \
+        if (_a != _b) { \
+            printf("    %s:%d: %s (=%ld) != %s (=%ld)\n", \
+                   __FILE__, __LINE__, #a, _a, #b, _b); \
+            g_cur_fail = 1; \
+        } \
+    } while (0)
+
+/* ---------- round_up_pitch ---------- */
+
+static void test_round_up_pitch_basic(void)
+{
+    BEGIN("round_up_pitch: rounds up to multiple of 64");
+    CHECK_EQ(up_round_up_pitch(0),    0);
+    CHECK_EQ(up_round_up_pitch(1),    64);
+    CHECK_EQ(up_round_up_pitch(63),   64);
+    CHECK_EQ(up_round_up_pitch(64),   64);
+    CHECK_EQ(up_round_up_pitch(65),   128);
+    CHECK_EQ(up_round_up_pitch(127),  128);
+    CHECK_EQ(up_round_up_pitch(128),  128);
+    CHECK_EQ(up_round_up_pitch(854),  896);   /* 480p luma */
+    CHECK_EQ(up_round_up_pitch(427),  448);   /* 480p chroma */
+    CHECK_EQ(up_round_up_pitch(1920), 1920);  /* already aligned */
+    CHECK_EQ(up_round_up_pitch(1921), 1984);
+    END();
+}
+
+static void test_round_up_pitch_negative(void)
+{
+    BEGIN("round_up_pitch: negative input clamps to 0");
+    CHECK_EQ(up_round_up_pitch(-1),   0);
+    CHECK_EQ(up_round_up_pitch(-100), 0);
+    END();
+}
+
+/* ---------- round_up_lines ---------- */
+
+static void test_round_up_lines_basic(void)
+{
+    BEGIN("round_up_lines: adds 8 rows of padding");
+    CHECK_EQ(up_round_up_lines(0),    0);
+    CHECK_EQ(up_round_up_lines(1),    9);
+    CHECK_EQ(up_round_up_lines(480),  488);
+    CHECK_EQ(up_round_up_lines(1080), 1088);
+    END();
+}
+
+static void test_round_up_lines_negative(void)
+{
+    BEGIN("round_up_lines: negative input clamps to 0");
+    CHECK_EQ(up_round_up_lines(-1), 0);
+    END();
+}
+
+/* ---------- plane_pitch ---------- */
+
+static void test_plane_pitch_no_subsample(void)
+{
+    BEGIN("plane_pitch: sub_w=0 yields full-width pitch");
+    CHECK_EQ(up_plane_pitch(854,  0), 896);
+    CHECK_EQ(up_plane_pitch(1920, 0), 1920);
+    CHECK_EQ(up_plane_pitch(1280, 0), 1280);
+    END();
+}
+
+static void test_plane_pitch_h_subsample(void)
+{
+    BEGIN("plane_pitch: sub_w=1 yields half-width pitch");
+    CHECK_EQ(up_plane_pitch(854,  1), 448);   /* ceil(427) padded to 448 */
+    CHECK_EQ(up_plane_pitch(1920, 1), 960);
+    /* odd-width source: ceil to next int, then pitch-align */
+    CHECK_EQ(up_plane_pitch(7, 1), 64);       /* (7+1)/2 = 4 -> 64 */
+    END();
+}
+
+static void test_plane_pitch_quarter_subsample(void)
+{
+    BEGIN("plane_pitch: sub_w=2 yields quarter-width pitch");
+    CHECK_EQ(up_plane_pitch(1920, 2), 512);   /* 480, padded to 512 */
+    END();
+}
+
+static void test_plane_pitch_zero_neg(void)
+{
+    BEGIN("plane_pitch: zero/negative input is 0");
+    CHECK_EQ(up_plane_pitch(0,  0), 0);
+    CHECK_EQ(up_plane_pitch(-1, 0), 0);
+    CHECK_EQ(up_plane_pitch(1920, -1), 0);
+    END();
+}
+
+/* ---------- plane_lines ---------- */
+
+static void test_plane_lines_basic(void)
+{
+    BEGIN("plane_lines: subsample-aware row count + padding");
+    CHECK_EQ(up_plane_lines(480,  0), 488);
+    CHECK_EQ(up_plane_lines(480,  1), 248);   /* 240 + 8 pad */
+    CHECK_EQ(up_plane_lines(1080, 0), 1088);
+    CHECK_EQ(up_plane_lines(1080, 1), 548);
+    END();
+}
+
+static void test_plane_lines_odd_height(void)
+{
+    BEGIN("plane_lines: odd height ceils to integer chroma rows");
+    /* 7-row source with sub_h=1: ceil(7/2)=4 chroma rows + 8 pad = 12 */
+    CHECK_EQ(up_plane_lines(7, 1), 12);
+    END();
+}
+
+/* ---------- zimg_plane_idx ---------- */
+
+static void test_zimg_plane_idx_no_swap(void)
+{
+    BEGIN("zimg_plane_idx: swap=0 is identity");
+    CHECK_EQ(up_zimg_plane_idx(0, 0), 0);
+    CHECK_EQ(up_zimg_plane_idx(1, 0), 1);
+    CHECK_EQ(up_zimg_plane_idx(2, 0), 2);
+    CHECK_EQ(up_zimg_plane_idx(3, 0), 3);  /* untouched outside [0..2] */
+    END();
+}
+
+static void test_zimg_plane_idx_yv12_swap(void)
+{
+    BEGIN("zimg_plane_idx: swap=1 swaps U/V (planes 1,2)");
+    CHECK_EQ(up_zimg_plane_idx(0, 1), 0);  /* Y unchanged */
+    CHECK_EQ(up_zimg_plane_idx(1, 1), 2);  /* U <-> V */
+    CHECK_EQ(up_zimg_plane_idx(2, 1), 1);
+    CHECK_EQ(up_zimg_plane_idx(3, 1), 3);  /* untouched */
+    END();
+}
+
+/* ---------- copy_plane ---------- */
+
+static void test_copy_plane_same_stride(void)
+{
+    BEGIN("copy_plane: stride==row_bytes uses single memcpy fast path");
+    uint8_t src[3 * 8] = {0};
+    for (int i = 0; i < 24; i++) src[i] = (uint8_t)i;
+    uint8_t dst[3 * 8] = {0};
+    up_copy_plane(dst, 8, src, 8, 8, 3);
+    for (int i = 0; i < 24; i++) CHECK_EQ(dst[i], src[i]);
+    END();
+}
+
+static void test_copy_plane_different_strides(void)
+{
+    BEGIN("copy_plane: different strides copies per-row");
+    /* src has stride 16 (each row 16 bytes wide, but only first 8 useful) */
+    uint8_t src[4 * 16] = {0};
+    /* dst has stride 12 */
+    uint8_t dst[4 * 12] = {0};
+    /* Mark all dst with sentinel. */
+    memset(dst, 0xFF, sizeof dst);
+    /* Fill src with row-major counter. */
+    for (int r = 0; r < 4; r++)
+        for (int c = 0; c < 8; c++)
+            src[r * 16 + c] = (uint8_t)(r * 100 + c);
+    /* Copy 4 rows of 8 bytes from stride-16 src to stride-12 dst. */
+    up_copy_plane(dst, 12, src, 16, 8, 4);
+    /* Check: bytes [0..8) of each dst row should match src row's first 8;
+     * bytes [8..12) should still be 0xFF (sentinel). */
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 8; c++)
+            CHECK_EQ(dst[r * 12 + c], (uint8_t)(r * 100 + c));
+        for (int c = 8; c < 12; c++)
+            CHECK_EQ(dst[r * 12 + c], 0xFF);
+    }
+    END();
+}
+
+static void test_copy_plane_zero_rows(void)
+{
+    BEGIN("copy_plane: rows=0 is no-op");
+    uint8_t dst[16];
+    memset(dst, 0xAA, 16);
+    uint8_t src[16];
+    memset(src, 0x55, 16);
+    up_copy_plane(dst, 8, src, 8, 8, 0);
+    /* dst should be unchanged */
+    for (int i = 0; i < 16; i++) CHECK_EQ(dst[i], 0xAA);
+    END();
+}
+
+static void test_copy_plane_zero_row_bytes(void)
+{
+    BEGIN("copy_plane: row_bytes=0 is no-op");
+    uint8_t dst[16];
+    memset(dst, 0xAA, 16);
+    uint8_t src[16];
+    memset(src, 0x55, 16);
+    up_copy_plane(dst, 8, src, 8, 0, 4);
+    for (int i = 0; i < 16; i++) CHECK_EQ(dst[i], 0xAA);
+    END();
+}
+
+static void test_copy_plane_negative_inputs(void)
+{
+    BEGIN("copy_plane: negative rows/row_bytes is no-op");
+    uint8_t dst[16];
+    memset(dst, 0xAA, 16);
+    uint8_t src[16];
+    memset(src, 0x55, 16);
+    up_copy_plane(dst, 8, src, 8, -1, 1);
+    for (int i = 0; i < 16; i++) CHECK_EQ(dst[i], 0xAA);
+    up_copy_plane(dst, 8, src, 8, 8, -1);
+    for (int i = 0; i < 16; i++) CHECK_EQ(dst[i], 0xAA);
+    END();
+}
+
+static void test_copy_plane_realistic_480p_luma(void)
+{
+    BEGIN("copy_plane: realistic 854x480 luma copy");
+    /* src has VLC-style pitch 896, visible 854 cols, 480 rows. */
+    int src_pitch = 896, dst_pitch = 854, w = 854, h = 480;
+    uint8_t *src = malloc(src_pitch * h);
+    uint8_t *dst = malloc(dst_pitch * h);
+    /* Fill src with a deterministic pattern. */
+    for (int r = 0; r < h; r++)
+        for (int c = 0; c < src_pitch; c++)
+            src[r * src_pitch + c] = (uint8_t)((r * 7 + c * 13) & 0xff);
+    memset(dst, 0, dst_pitch * h);
+    up_copy_plane(dst, dst_pitch, src, src_pitch, w, h);
+    /* Verify each visible pixel matches. */
+    for (int r = 0; r < h; r++) {
+        for (int c = 0; c < w; c++) {
+            CHECK_EQ(dst[r * dst_pitch + c],
+                     src[r * src_pitch + c]);
+        }
+    }
+    free(src);
+    free(dst);
+    END();
+}
+
+int main(void)
+{
+    printf("Running zimg_helpers tests...\n");
+
+    test_round_up_pitch_basic();
+    test_round_up_pitch_negative();
+    test_round_up_lines_basic();
+    test_round_up_lines_negative();
+
+    test_plane_pitch_no_subsample();
+    test_plane_pitch_h_subsample();
+    test_plane_pitch_quarter_subsample();
+    test_plane_pitch_zero_neg();
+
+    test_plane_lines_basic();
+    test_plane_lines_odd_height();
+
+    test_zimg_plane_idx_no_swap();
+    test_zimg_plane_idx_yv12_swap();
+
+    test_copy_plane_same_stride();
+    test_copy_plane_different_strides();
+    test_copy_plane_zero_rows();
+    test_copy_plane_zero_row_bytes();
+    test_copy_plane_negative_inputs();
+    test_copy_plane_realistic_480p_luma();
+
+    printf("\n%d tests run, %d failed\n", g_run, g_fail);
+    return g_fail == 0 ? 0 : 1;
+}

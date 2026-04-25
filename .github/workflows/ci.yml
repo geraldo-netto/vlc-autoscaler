@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build, test, fuzz-smoke, analyze
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cppcheck pkg-config \
+            libvlccore-dev libvlc-dev \
+            libswscale-dev libavutil-dev
+
+      - name: Show toolchain info
+        run: make info
+
+      - name: Build the VLC plugin
+        run: make plugin
+
+      - name: Unit tests (ASan + UBSan)
+        run: make test
+
+      - name: Smoke fuzz (100k iterations under ASan + UBSan)
+        run: make fuzz-smoke
+
+      - name: Static analysis (cppcheck)
+        run: make analyze
+
+  libfuzzer:
+    name: libFuzzer (60s each)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang
+
+      - name: Build fuzzers
+        run: make fuzz
+
+      - name: Run libFuzzer (upscale_logic) for 60 seconds
+        run: |
+          mkdir -p corpus_logic
+          if [ -d tests/corpus ]; then cp tests/corpus/* corpus_logic/ 2>/dev/null || true; fi
+          build/fuzz_upscale_logic corpus_logic -max_total_time=60 -print_final_stats=1
+
+      - name: Run libFuzzer (usm) for 60 seconds
+        run: |
+          mkdir -p corpus_usm
+          build/fuzz_usm corpus_usm -max_total_time=60 -max_len=64 -print_final_stats=1
+
+      - name: Upload findings
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzzer-findings
+          path: |
+            crash-*
+            timeout-*
+            leak-*
