@@ -52,6 +52,7 @@
 #include <zimg.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -96,7 +97,10 @@ typedef struct
     int               yv12_swap_uv;
     unsigned          sub_w, sub_h;
 
-    /* Scratch buffers. Sized at Open(), pinned for the plugin lifetime. */
+    /* Scratch buffers. Sized + allocated on first Filter() call (lazy
+     * init), pinned for the plugin lifetime after that. Open() is kept
+     * cheap so VLC's chain solver can probe us without paying for 30
+     * worker thread spawns and 6 MB of scratch per probe. */
     uint8_t          *sy, *su, *sv;
     uint8_t          *dy, *du, *dv;
     int               src_w, src_h, dst_w, dst_h;
@@ -104,6 +108,25 @@ typedef struct
     int               dst_pitch_y, dst_pitch_c;
     int               src_lines_y,  src_lines_c;
     int               dst_lines_y,  dst_lines_c;
+
+    /* Lazy-init state. lazy_init_done is set by zimg_lazy_init() after
+     * the worker pool, scratch, and per-stripe graphs are constructed
+     * successfully. lazy_init_failed sticks once the first attempt has
+     * failed so we don't retry-allocate every frame. The algo and
+     * log_obj are saved at Open() time so lazy_init can build graphs
+     * and emit its diagnostic message without needing the ctx. */
+    bool              lazy_init_done;
+    bool              lazy_init_failed;
+    int               algo_saved;
+    void             *log_obj_saved;
+
+    /* Destination zero-copy mode. When true, workers write directly into
+     * VLC's destination picture; the dy/du/dv pointers and dst pitch
+     * fields above are NOT allocated and are instead overwritten per
+     * frame from the picture passed to zimg_process(). Skips the final
+     * memcpy back from scratch -> VLC dst (~125 us/frame at 1080p).
+     * Opt-in via the autoupscale-zerocopy-dst module option; default off. */
+    bool              dst_zerocopy;
 } zimg_priv_t;
 
 /* ---------- chroma + algo mappings ---------- */
@@ -249,21 +272,36 @@ static void zimg_close(scaler_ctx_t *ctx);
 /* Compute stripe bounds: see up_compute_stripe_bounds in zimg_helpers.h. */
 
 /*
- * Allocate the persistent scratch buffers (one per plane, src + dst).
- * Returns 0 on success, -1 on any allocation failure (in which case the
- * partially-allocated state is freed by zimg_close via priv->sy etc).
- * CCN 4.
+ * Allocate the persistent scratch buffers (one per plane). The src side
+ * (sy/su/sv) is always allocated - workers cannot read directly from
+ * VLC's pool-managed source buffers (segfaults observed). The dst side
+ * (dy/du/dv) is allocated only when dst_zerocopy is OFF; with zero-copy
+ * enabled, workers write straight into VLC's destination picture and
+ * the dst scratch is unused.
+ *
+ * Returns 0 on success, -1 on any allocation failure. Partial state is
+ * freed by zimg_close via priv->sy etc. CCN 4.
  */
 static int alloc_scratch_buffers(zimg_priv_t *p)
 {
-    p->sy = aligned_alloc(UP_PITCH_ALIGN, (size_t)p->src_lines_y * p->src_pitch_y);
-    p->su = aligned_alloc(UP_PITCH_ALIGN, (size_t)p->src_lines_c * p->src_pitch_c);
-    p->sv = aligned_alloc(UP_PITCH_ALIGN, (size_t)p->src_lines_c * p->src_pitch_c);
-    p->dy = aligned_alloc(UP_PITCH_ALIGN, (size_t)p->dst_lines_y * p->dst_pitch_y);
-    p->du = aligned_alloc(UP_PITCH_ALIGN, (size_t)p->dst_lines_c * p->dst_pitch_c);
-    p->dv = aligned_alloc(UP_PITCH_ALIGN, (size_t)p->dst_lines_c * p->dst_pitch_c);
-    if (!p->sy || !p->su || !p->sv || !p->dy || !p->du || !p->dv)
-        return -1;
+    p->sy = aligned_alloc(UP_PITCH_ALIGN,
+                          (size_t)p->src_lines_y * p->src_pitch_y);
+    p->su = aligned_alloc(UP_PITCH_ALIGN,
+                          (size_t)p->src_lines_c * p->src_pitch_c);
+    p->sv = aligned_alloc(UP_PITCH_ALIGN,
+                          (size_t)p->src_lines_c * p->src_pitch_c);
+    if (!p->sy || !p->su || !p->sv) return -1;
+
+    if (p->dst_zerocopy)
+        return 0;  /* dy/du/dv stay NULL, set per-frame from VLC dst */
+
+    p->dy = aligned_alloc(UP_PITCH_ALIGN,
+                          (size_t)p->dst_lines_y * p->dst_pitch_y);
+    p->du = aligned_alloc(UP_PITCH_ALIGN,
+                          (size_t)p->dst_lines_c * p->dst_pitch_c);
+    p->dv = aligned_alloc(UP_PITCH_ALIGN,
+                          (size_t)p->dst_lines_c * p->dst_pitch_c);
+    if (!p->dy || !p->du || !p->dv) return -1;
     return 0;
 }
 
@@ -369,16 +407,19 @@ static void construct_workers(zimg_priv_t *p, const scaler_ctx_t *ctx,
 static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
 {
     if (!log_obj) return;
-    size_t scratch_mb = (
-          (size_t)p->src_lines_y * p->src_pitch_y
-        + 2 * (size_t)p->src_lines_c * p->src_pitch_c
-        + (size_t)p->dst_lines_y * p->dst_pitch_y
-        + 2 * (size_t)p->dst_lines_c * p->dst_pitch_c) >> 20;
+    size_t src_mb = ((size_t)p->src_lines_y * p->src_pitch_y
+                   + 2 * (size_t)p->src_lines_c * p->src_pitch_c) >> 20;
+    size_t dst_mb = p->dst_zerocopy ? 0
+        : (((size_t)p->dst_lines_y * p->dst_pitch_y
+          + 2 * (size_t)p->dst_lines_c * p->dst_pitch_c) >> 20);
     msg_Info(log_obj,
              "zimg: %d worker thread%s, %dx%d -> %dx%d, "
-             "scratch %zu MB (copy-in/copy-out)",
+             "scratch %zu MB (%s)",
              p->n_threads, p->n_threads == 1 ? "" : "s",
-             p->src_w, p->src_h, p->dst_w, p->dst_h, scratch_mb);
+             p->src_w, p->src_h, p->dst_w, p->dst_h,
+             src_mb + dst_mb,
+             p->dst_zerocopy ? "copy-in/zero-copy-out"
+                             : "copy-in/copy-out");
 }
 
 /*
@@ -386,13 +427,59 @@ static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
  * the partial priv on the context so zimg_close() can free what was
  * already allocated (scratch buffers, workers array, semaphore). CCN 1.
  */
-static int zimg_open_fail(scaler_ctx_t *ctx, zimg_priv_t *p)
+/*
+ * Lazy initialization of the worker pool, scratch buffers, and per-stripe
+ * filter graphs. Called on the first zimg_process() invocation rather
+ * than from zimg_open().
+ *
+ * Why defer this? VLC's filter-chain solver instantiates filters
+ * speculatively while searching for a working chain. With hardware
+ * decode + a non-trivial filter chain (e.g. postproc + autoupscale),
+ * the solver may construct and tear down our filter 3-4 times before
+ * settling on a working configuration. Each of those Open()/Close()
+ * round trips spawning 30 worker threads + allocating 6 MB of scratch
+ * is wasteful. Doing it lazily means VLC pays nothing for probes that
+ * never produce a frame; only the first real Filter() call triggers
+ * the expensive setup.
+ *
+ * Returns 0 on success, -1 on any allocation/thread-spawn failure.
+ * On failure the priv is left in a partial state and lazy_init_failed
+ * is set so subsequent Filter() calls return -1 immediately rather
+ * than retry-allocating every frame.
+ */
+static int zimg_lazy_init(zimg_priv_t *p)
 {
-    ctx->priv = p;
-    zimg_close(ctx);
-    return -1;
+    if (alloc_scratch_buffers(p) != 0) return -1;
+
+    p->workers = calloc((size_t)p->n_threads, sizeof(*p->workers));
+    if (!p->workers) return -1;
+
+    if (sem_init(&p->done, 0, 0) != 0) return -1;
+
+    int constructed = 0;
+    /* construct_workers needs ctx-shaped data: build a fake scaler_ctx_t
+     * with just the fields it reads (src/dst geometry). The priv struct
+     * has all of those already from init_priv_geometry. */
+    scaler_ctx_t fake_ctx;
+    memset(&fake_ctx, 0, sizeof fake_ctx);
+    fake_ctx.src_w = p->src_w; fake_ctx.src_h = p->src_h;
+    fake_ctx.dst_w = p->dst_w; fake_ctx.dst_h = p->dst_h;
+
+    construct_workers(p, &fake_ctx, p->n_threads, p->sub_w, p->sub_h,
+                      (zimg_resample_filter_e)p->algo_saved, &constructed);
+    if (constructed == 0) return -1;
+
+    log_zimg_open((vlc_object_t *)p->log_obj_saved, p);
+    return 0;
 }
 
+/*
+ * zimg_open: cheap setup only. Validates that we can handle the input
+ * chroma, computes geometry and thread count, allocates the priv struct,
+ * and returns. Does NOT spawn workers, allocate scratch, or build
+ * per-stripe graphs - that all happens lazily on the first Filter()
+ * call. See zimg_lazy_init() for rationale.
+ */
 static int zimg_open(scaler_ctx_t *ctx)
 {
     unsigned sub_w, sub_h;
@@ -413,19 +500,11 @@ static int zimg_open(scaler_ctx_t *ctx)
     p->n_threads = n_threads;
     init_priv_geometry(p, ctx, sub_w, sub_h, swap);
 
-    if (alloc_scratch_buffers(p) != 0) return zimg_open_fail(ctx, p);
+    /* Save what zimg_lazy_init() needs that isn't already in priv. */
+    p->algo_saved    = (int)AlgoToZimg(ctx->algo);
+    p->log_obj_saved = ctx->log_obj;
+    p->dst_zerocopy  = (ctx->dst_zerocopy != 0);
 
-    p->workers = calloc((size_t)n_threads, sizeof(*p->workers));
-    if (!p->workers) return zimg_open_fail(ctx, p);
-
-    if (sem_init(&p->done, 0, 0) != 0) return zimg_open_fail(ctx, p);
-
-    int constructed = 0;
-    construct_workers(p, ctx, n_threads, sub_w, sub_h,
-                      AlgoToZimg(ctx->algo), &constructed);
-    if (constructed == 0) return zimg_open_fail(ctx, p);
-
-    log_zimg_open(ctx->log_obj, p);
     ctx->priv = p;
     return 0;
 }
@@ -435,6 +514,18 @@ static int zimg_process(scaler_ctx_t *ctx,
 {
     zimg_priv_t *p = ctx->priv;
     if (!p) return -1;
+
+    /* Lazy init: spawn workers, allocate scratch, build per-stripe
+     * graphs. Done once on the first frame so VLC's chain solver can
+     * probe us cheaply during chain setup. */
+    if (!p->lazy_init_done) {
+        if (p->lazy_init_failed) return -1;  /* sticky failure */
+        if (zimg_lazy_init(p) != 0) {
+            p->lazy_init_failed = true;
+            return -1;
+        }
+        p->lazy_init_done = true;
+    }
 
     /* Copy IN: VLC's source picture -> our scratch source buffers. */
     {
@@ -451,6 +542,29 @@ static int zimg_process(scaler_ctx_t *ctx,
                    src->p[s_v].p_pixels, src->p[s_v].i_pitch, cw, ch);
     }
 
+    /* Zero-copy dst: point workers at VLC's dst picture for this frame.
+     * Workers read these fields fresh on every dispatch, so we just
+     * overwrite them; no synchronization needed because workers are
+     * blocked on their `go` semaphore until we sem_post below. The
+     * per-stripe filter graphs don't bake in the dst stride - it lives
+     * in the per-call zimg_image_buffer constructed in worker_main.
+     * VLC's pitch may differ from our scratch pitch (typically larger
+     * due to VLC's alignment); zimg handles arbitrary strides fine. */
+    if (p->dst_zerocopy) {
+        const int swap = p->yv12_swap_uv;
+        int d_y = 0;
+        int d_u = up_zimg_plane_idx(1, swap);
+        int d_v = up_zimg_plane_idx(2, swap);
+        for (int i = 0; i < p->n_threads; i++) {
+            stripe_worker_t *w = &p->workers[i];
+            w->dy           = dst->p[d_y].p_pixels;
+            w->du           = dst->p[d_u].p_pixels;
+            w->dv           = dst->p[d_v].p_pixels;
+            w->dst_pitch_y  = dst->p[d_y].i_pitch;
+            w->dst_pitch_c  = dst->p[d_u].i_pitch;
+        }
+    }
+
     /* Dispatch all workers, wait for all. */
     for (int i = 0; i < p->n_threads; i++) {
         p->workers[i].result = 0;
@@ -463,8 +577,10 @@ static int zimg_process(scaler_ctx_t *ctx,
         if (p->workers[i].result != 0) return -1;
     }
 
-    /* Copy OUT: scratch destination buffers -> VLC's dst picture. */
-    {
+    /* Copy OUT: scratch destination buffers -> VLC's dst picture.
+     * Skipped entirely when zero-copy is on - workers wrote directly
+     * into VLC's dst picture above. */
+    if (!p->dst_zerocopy) {
         const int swap = p->yv12_swap_uv;
         int d_y = 0, d_u = up_zimg_plane_idx(1, swap), d_v = up_zimg_plane_idx(2, swap);
         up_copy_plane(dst->p[d_y].p_pixels, dst->p[d_y].i_pitch,

@@ -32,6 +32,9 @@ typedef struct scaler_ctx_s
     int                     dst_w, dst_h;
     int                     algo;       /* UP_ALGO_* */
     int                     threads_pref; /* 0 = auto; >0 = explicit */
+    int                     dst_zerocopy; /* 0 = copy-out (safe); 1 = write
+                                           * directly to VLC dst picture
+                                           * (opt-in, may not work everywhere) */
     vlc_fourcc_t            chroma;     /* same on input and output */
     vlc_object_t           *log_obj;    /* for msg_Dbg/msg_Warn */
 } scaler_ctx_t;

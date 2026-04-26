@@ -1,0 +1,43 @@
+vlc: raise filter-chain MAX_CHAIN_LEVEL from 3 to 5
+
+The filter chain solver in VLC's filter_chain.c bails out with
+"Too high level of recursion (3)" when constructing chains that need
+more than 3 filters in series. This occurs in practice when a user
+combines two pixel-reading filters (e.g. postproc + autoupscale) with
+hardware decode, because VLC must thread a hw->sw download converter
+between the decoder and the first filter, pushing the chain to 4 deep:
+
+    HW_decoder -> hw->sw_converter -> postproc -> autoupscale -> vout
+                                          (already 3 levels into recursion)
+
+Bumping MAX_CHAIN_LEVEL to 5 lets these chains construct without any
+filter or syntax changes from the user's side. Higher values risk longer
+chain-search times in pathological cases but the search is bounded by
+the available filter modules; 5 is conservative.
+
+Apply with:
+
+    cd /path/to/vlc-source
+    patch -p1 < /path/to/this/file.patch
+
+Then rebuild VLC normally.
+
+This patch is unaffiliated with VideoLAN; it's offered as a workaround
+for a specific deep-chain scenario, not a recommended upstream change.
+If you find it useful, consider sending it upstream with a clear
+reproducer.
+
+---
+
+diff --git a/src/misc/filter_chain.c b/src/misc/filter_chain.c
+--- a/src/misc/filter_chain.c
++++ b/src/misc/filter_chain.c
+@@ -41,7 +41,7 @@
+  * Local prototypes
+  *****************************************************************************/
+
+-#define MAX_CHAIN_LEVEL 3
++#define MAX_CHAIN_LEVEL 5
+
+ /*****************************************************************************
+  * Filter chain functions

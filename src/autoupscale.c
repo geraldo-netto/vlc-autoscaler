@@ -26,6 +26,7 @@
 
 #include "upscale_logic.h"
 #include "usm.h"
+#include "usm_pool.h"
 #include "scaler.h"
 #include "perfmon.h"
 #include "threading.h"
@@ -95,14 +96,27 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
     "plugin emits a one-time warning suggesting how to tune down. Set to " \
     "0 to disable performance monitoring. Default 60.")
 
-#define THREADS_TEXT    N_("Number of worker threads for the scaler (planned, currently single-threaded)")
+#define THREADS_TEXT    N_("Number of worker threads for the zimg scaler")
 #define THREADS_LONGTEXT N_( \
-    "Reserved for future slice-threaded zimg processing. Currently the " \
-    "plugin runs single-threaded per frame regardless of this setting; " \
-    "zimg's internal SIMD already provides significant within-thread " \
-    "parallelism. The option is accepted now so configurations don't " \
-    "break when slice threading lands. 0 = auto (cores - 2 in future), " \
-    "1..64 = explicit count.")
+    "0 = auto (cores - 2, clamped to [1,64]); 1..64 = explicit count. " \
+    "The zimg backend partitions each frame into N horizontal stripes " \
+    "and runs one persistent worker thread per stripe. swscale backend " \
+    "runs single-threaded regardless. Higher values reduce per-frame " \
+    "latency at the cost of more memory and lower per-thread cache " \
+    "locality; cores - 2 is a sensible default.")
+
+#define ZEROCOPY_DST_TEXT N_("Write directly to VLC's destination picture")
+#define ZEROCOPY_DST_LONGTEXT N_( \
+    "1 = on (default): worker threads write directly into VLC's " \
+    "destination picture, skipping a final memcpy. Saves about 125 " \
+    "microseconds per 1080p frame (~0.8% of a 60 fps budget) and ~3 " \
+    "MB of scratch memory. 0 = off (safe fallback): worker threads " \
+    "write to plugin-owned scratch buffers, then a final memcpy moves " \
+    "the result into VLC's destination picture. Set to 0 if you see " \
+    "garbled output, crashes, or other instability with the default - " \
+    "the writeback to VLC's destination picture has been verified " \
+    "byte-identical to the copy-out path in our testing but cannot be " \
+    "fully verified across every VLC build configuration.")
 
 /*****************************************************************************
  * Forward declarations
@@ -144,6 +158,8 @@ vlc_module_begin()
     add_integer_with_range( CFG_PREFIX "threads", UP_THREADS_AUTO,
                             0, UP_THREADS_MAX,
                             THREADS_TEXT, THREADS_LONGTEXT, false )
+    add_integer_with_range( CFG_PREFIX "zerocopy-dst", 1, 0, 1,
+                            ZEROCOPY_DST_TEXT, ZEROCOPY_DST_LONGTEXT, false )
 vlc_module_end()
 
 /*****************************************************************************
@@ -154,9 +170,11 @@ struct filter_sys_t
     scaler_ctx_t  scaler;
 
     /* Post-pass unsharp mask. Disabled when usm_amount_q8 == 0 OR
-     * usm_workspace == NULL. */
+     * usm_pool == NULL. The pool encapsulates the workspace and the
+     * worker threads (lazy-spawned on first apply); when amount is 0,
+     * apply() takes a fast identity path with no thread activity. */
     int           usm_amount_q8;
-    uint8_t      *usm_workspace;
+    usm_pool_t   *usm_pool;
 
     /* Performance monitoring. Disabled when target_fps <= 0. */
     up_perfmon_t  perfmon;
@@ -257,8 +275,15 @@ static int Open( vlc_object_t *p_this )
     p_sys->scaler.algo         = algo;
     p_sys->scaler.threads_pref = var_InheritInteger( p_filter,
                                                      CFG_PREFIX "threads" );
+    p_sys->scaler.dst_zerocopy = var_InheritInteger( p_filter,
+                                                     CFG_PREFIX "zerocopy-dst" );
     p_sys->scaler.chroma       = chroma;
     p_sys->scaler.log_obj      = p_this;
+
+    if( !p_sys->scaler.dst_zerocopy )
+        msg_Info( p_filter,
+                  "AutoUpscale: dst zero-copy DISABLED via "
+                  "--autoupscale-zerocopy-dst=0 (using copy-out path)" );
 
     if( be->open( &p_sys->scaler ) != 0 )
     {
@@ -267,21 +292,24 @@ static int Open( vlc_object_t *p_this )
         return VLC_EGENERIC;
     }
 
-    /* USM post-pass. */
+    /* USM post-pass. Uses a worker pool with the same thread count
+     * as the scaler. The pool is lazy: workers and workspace are not
+     * spawned until the first apply() call, so probing-only Open/Close
+     * cycles cost nothing. */
     const int usm_pct = var_InheritInteger( p_filter, CFG_PREFIX "usm" );
     if( usm_pct > 0 && ChromaHasYPlane( chroma ) )
     {
-        size_t ws_bytes = up_usm_workspace_size( target.width, target.height );
-        if( ws_bytes > 0 )
-        {
-            p_sys->usm_workspace = malloc( ws_bytes );
-            if( p_sys->usm_workspace )
-                p_sys->usm_amount_q8 = up_usm_amount_pct_to_q8( usm_pct );
-            else
-                msg_Warn( p_filter,
-                          "USM workspace alloc failed (%zu bytes); "
-                          "sharpening disabled", ws_bytes );
-        }
+        int n_threads = up_threads_decide( p_sys->scaler.threads_pref,
+                                           cores );
+        p_sys->usm_pool = up_usm_pool_create( n_threads,
+                                              target.width, target.height );
+        if( p_sys->usm_pool )
+            p_sys->usm_amount_q8 = up_usm_amount_pct_to_q8( usm_pct );
+        else
+            msg_Warn( p_filter,
+                      "USM pool create failed (%dx%d, %d threads); "
+                      "sharpening disabled",
+                      target.width, target.height, n_threads );
     }
 
     /* Performance monitor. */
@@ -352,16 +380,15 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
         return NULL;
     }
 
-    if( p_sys->usm_amount_q8 > 0 && p_sys->usm_workspace
+    if( p_sys->usm_amount_q8 > 0 && p_sys->usm_pool
         && p_out->i_planes >= 1 )
     {
         plane_t *y = &p_out->p[0];
-        up_usm_apply_plane(
+        up_usm_pool_apply(
+            p_sys->usm_pool,
             y->p_pixels, y->i_pitch,
             y->p_pixels, y->i_pitch,        /* in-place */
-            p_sys->scaler.dst_w, p_sys->scaler.dst_h,
-            p_sys->usm_amount_q8,
-            p_sys->usm_workspace );
+            p_sys->usm_amount_q8 );
     }
 
     int64_t t_end = monotonic_ns();
@@ -425,7 +452,7 @@ static void Close( vlc_object_t *p_this )
     {
         if( p_sys->scaler.backend )
             p_sys->scaler.backend->close( &p_sys->scaler );
-        free( p_sys->usm_workspace );
+        up_usm_pool_destroy( p_sys->usm_pool );
         free( p_sys );
     }
 }

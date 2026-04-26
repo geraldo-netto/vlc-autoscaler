@@ -1,0 +1,334 @@
+/*****************************************************************************
+ * usm_pool.c - persistent worker pool for threaded USM post-pass
+ *****************************************************************************
+ * See usm_pool.h for the API and algorithm description.
+ *
+ * Implementation notes:
+ *
+ * - Each worker is bound to a contiguous y-row range [y_start, y_end).
+ *   Stripes partition [0, height) with no gaps and no overlap. With N
+ *   workers, stripe i is [i*h/N, (i+1)*h/N) using integer division;
+ *   the last stripe absorbs any rounding remainder.
+ *
+ * - The shared workspace is sized width * height bytes. It's overwritten
+ *   in pass 1 by all workers (each writing only its own rows) and read
+ *   in pass 2 by all workers (each reading three rows centered on its
+ *   own; the topmost and bottommost rows clamp at workspace edges).
+ *
+ * - Pass-1-then-pass-2 ordering is enforced by the main thread waiting
+ *   on all N pass-1 done signals before sending pass-2 go signals.
+ *   No barrier primitive needed; semaphores already serialize.
+ *
+ * - The thread pool is lazy: created on the first apply() call so that
+ *   probing-only Open/Close cycles (chain solver) cost nothing.
+ *
+ * - amount_q8 == 0 short-circuits to an identity copy with no thread
+ *   activity. This matches up_usm_apply_plane's behavior and keeps the
+ *   pool cheap when USM is configured off.
+ *****************************************************************************/
+
+#include "usm_pool.h"
+#include "usm.h"
+
+#include <pthread.h>
+#include <semaphore.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Each stripe at least this many rows tall; smaller stripes are
+ * dominated by kernel boundary handling and not worth threading. */
+#define USM_STRIPE_MIN_ROWS 8
+
+/* Workspace alignment - matches the rest of the plugin. */
+#define USM_POOL_ALIGN 64
+
+typedef struct usm_worker_s {
+    pthread_t  thread;
+    sem_t      go;
+    sem_t     *done;          /* shared, owned by pool */
+    bool       thread_started;
+    bool       go_inited;
+    bool       should_exit;
+
+    /* Per-worker constants set at lazy_init. */
+    int        y_start, y_end;
+    int        width, height;
+    uint8_t   *workspace;     /* shared buffer, owned by pool */
+
+    /* Per-frame state set by main thread before sem_post(go). */
+    int             phase;    /* 0 = hblur (pass 1), 1 = combine (pass 2) */
+    const uint8_t  *src;
+    uint8_t        *dst;
+    int             src_stride;
+    int             dst_stride;
+    int             amount_q8;
+} usm_worker_t;
+
+struct usm_pool_s {
+    int            n_threads;       /* effective count after lazy_init may shrink */
+    int            n_threads_pref;  /* user preference, before clamp */
+    int            width, height;
+
+    usm_worker_t  *workers;
+    sem_t          done;
+    bool           done_inited;
+    uint8_t       *workspace;
+
+    bool           lazy_init_done;
+    bool           lazy_init_failed;
+};
+
+/* ===========================================================================
+ * Worker thread main loop. Receives work via sem_post(&w->go) and signals
+ * completion via sem_post(w->done). Phases distinguished by w->phase.
+ * Exits cleanly when the main thread sets should_exit = true and posts go.
+ * =========================================================================*/
+static void *usm_worker_main(void *arg)
+{
+    usm_worker_t *w = (usm_worker_t *)arg;
+    for (;;) {
+        sem_wait(&w->go);
+        if (w->should_exit) break;
+
+        if (w->phase == 0) {
+            /* Pass 1: horizontal blur every row in our stripe into the
+             * shared workspace. No reads of other workers' rows; no
+             * race because each worker writes a disjoint row range. */
+            for (int y = w->y_start; y < w->y_end; y++) {
+                up_usm__hblur_row(
+                    w->workspace + (size_t)y * (size_t)w->width,
+                    w->src + (size_t)y * (size_t)w->src_stride,
+                    w->width);
+            }
+        } else {
+            /* Pass 2: combine workspace[y-1, y, y+1] with src to produce
+             * dst, on each row in our stripe. Reads of workspace rows
+             * just above y_start and just below y_end-1 belong to the
+             * neighboring workers but are race-free because pass 1
+             * fully completed before any pass 2 work began. */
+            for (int y = w->y_start; y < w->y_end; y++) {
+                int yu = (y > 0) ? (y - 1) : 0;
+                int yd = (y < w->height - 1) ? (y + 1) : (w->height - 1);
+                up_usm__combine_row(
+                    w->dst + (size_t)y * (size_t)w->dst_stride,
+                    w->src + (size_t)y * (size_t)w->src_stride,
+                    w->workspace + (size_t)yu * (size_t)w->width,
+                    w->workspace + (size_t)y  * (size_t)w->width,
+                    w->workspace + (size_t)yd * (size_t)w->width,
+                    w->width, w->amount_q8);
+            }
+        }
+        sem_post(w->done);
+    }
+    return NULL;
+}
+
+/* ===========================================================================
+ * Lazy initialization: workspace alloc + worker spawn. Called on the first
+ * apply() invocation that actually has work to do (amount_q8 > 0). Returns
+ * 0 on success, -1 on any allocation/spawn failure (caller sets the sticky
+ * lazy_init_failed flag in that case). On partial failure (some workers
+ * spawned but not all), n_threads is shrunk to the actually-spawned count
+ * and we proceed - the partition logic handles uneven counts.
+ * =========================================================================*/
+static int usm_pool_init_done_sem(usm_pool_t *p)
+{
+    if (sem_init(&p->done, 0, 0) != 0) return -1;
+    p->done_inited = true;
+    return 0;
+}
+
+static int usm_pool_spawn_worker(usm_pool_t *p, int i, int n)
+{
+    usm_worker_t *w = &p->workers[i];
+    w->done      = &p->done;
+    w->workspace = p->workspace;
+    w->width     = p->width;
+    w->height    = p->height;
+    w->y_start   = (int)((int64_t)i * p->height / n);
+    w->y_end     = (i == n - 1)
+        ? p->height
+        : (int)((int64_t)(i + 1) * p->height / n);
+
+    if (sem_init(&w->go, 0, 0) != 0) return -1;
+    w->go_inited = true;
+
+    if (pthread_create(&w->thread, NULL, usm_worker_main, w) != 0)
+        return -1;
+    w->thread_started = true;
+    return 0;
+}
+
+static int usm_pool_lazy_init(usm_pool_t *p)
+{
+    /* aligned_alloc requires size to be a multiple of alignment per
+     * C11 (glibc relaxes this; ASan does not). Round up. */
+    size_t plane_bytes = (size_t)p->width * (size_t)p->height;
+    size_t aligned_bytes =
+        (plane_bytes + (USM_POOL_ALIGN - 1)) & ~(size_t)(USM_POOL_ALIGN - 1);
+    p->workspace = aligned_alloc(USM_POOL_ALIGN, aligned_bytes);
+    if (!p->workspace) return -1;
+
+    p->workers = calloc((size_t)p->n_threads_pref, sizeof(*p->workers));
+    if (!p->workers) return -1;
+
+    if (usm_pool_init_done_sem(p) != 0) return -1;
+
+    int constructed = 0;
+    for (int i = 0; i < p->n_threads_pref; i++) {
+        if (usm_pool_spawn_worker(p, i, p->n_threads_pref) != 0) break;
+        constructed++;
+    }
+    if (constructed == 0) return -1;
+
+    /* If we got fewer workers than requested, repartition the stripes
+     * across only the constructed ones. The unused worker slots stay
+     * zeroed (calloc) and are skipped by destroy. */
+    if (constructed < p->n_threads_pref) {
+        for (int i = 0; i < constructed; i++) {
+            usm_worker_t *w = &p->workers[i];
+            w->y_start = (int)((int64_t)i * p->height / constructed);
+            w->y_end   = (i == constructed - 1)
+                ? p->height
+                : (int)((int64_t)(i + 1) * p->height / constructed);
+        }
+    }
+    p->n_threads = constructed;
+    return 0;
+}
+
+/* ===========================================================================
+ * Public API
+ * =========================================================================*/
+
+usm_pool_t *up_usm_pool_create(int n_threads, int width, int height)
+{
+    if (n_threads < 1 || width <= 0 || height <= 0) return NULL;
+
+    /* Each stripe at least USM_STRIPE_MIN_ROWS rows tall. */
+    int max_by_size = height / USM_STRIPE_MIN_ROWS;
+    if (max_by_size < 1) max_by_size = 1;
+    if (n_threads > max_by_size) n_threads = max_by_size;
+
+    usm_pool_t *p = calloc(1, sizeof(*p));
+    if (!p) return NULL;
+    p->n_threads_pref = n_threads;
+    p->n_threads      = n_threads;  /* updated by lazy_init if it shrinks */
+    p->width          = width;
+    p->height         = height;
+    return p;
+}
+
+/*
+ * Identity-copy fast path for amount_q8 == 0. Mirrors the matching
+ * branch in up_usm_apply_plane (single-threaded). No thread activity.
+ */
+static void usm_pool_identity(uint8_t *dst, int dst_stride,
+                              const uint8_t *src, int src_stride,
+                              int width, int height)
+{
+    if (dst == src && dst_stride == src_stride) return;
+    for (int y = 0; y < height; y++) {
+        memcpy(dst + (size_t)y * (size_t)dst_stride,
+               src + (size_t)y * (size_t)src_stride,
+               (size_t)width);
+    }
+}
+
+/*
+ * Update each worker's per-frame state to point at the current src/dst
+ * buffers and amount. Called by the main thread while workers are
+ * blocked on their `go` semaphore - no synchronization needed.
+ */
+static void usm_pool_set_per_frame(usm_pool_t *p,
+                                   uint8_t *dst, int dst_stride,
+                                   const uint8_t *src, int src_stride,
+                                   int amount_q8)
+{
+    for (int i = 0; i < p->n_threads; i++) {
+        usm_worker_t *w = &p->workers[i];
+        w->src        = src;
+        w->src_stride = src_stride;
+        w->dst        = dst;
+        w->dst_stride = dst_stride;
+        w->amount_q8  = amount_q8;
+    }
+}
+
+/*
+ * Dispatch one phase to all workers and wait for all to finish.
+ * Returns after the N-th sem_wait(&done), which means every worker
+ * has completed its row range for the requested phase.
+ */
+static void usm_pool_run_phase(usm_pool_t *p, int phase)
+{
+    for (int i = 0; i < p->n_threads; i++) {
+        p->workers[i].phase = phase;
+        sem_post(&p->workers[i].go);
+    }
+    for (int i = 0; i < p->n_threads; i++)
+        sem_wait(&p->done);
+}
+
+int up_usm_pool_apply(usm_pool_t *p,
+                      uint8_t *dst, int dst_stride,
+                      const uint8_t *src, int src_stride,
+                      int amount_q8)
+{
+    if (!p) return 0;
+    if (!dst || !src) return 0;
+    if (dst_stride < p->width || src_stride < p->width) return 0;
+
+    /* Clamp amount, matching up_usm_apply_plane. */
+    if (amount_q8 < 0) amount_q8 = 0;
+    if (amount_q8 > UP_USM_AMOUNT_Q8_MAX) amount_q8 = UP_USM_AMOUNT_Q8_MAX;
+
+    /* Identity fast path: no thread activity, no workspace alloc. */
+    if (amount_q8 == 0) {
+        usm_pool_identity(dst, dst_stride, src, src_stride,
+                          p->width, p->height);
+        return 1;
+    }
+
+    /* Lazy init on first real call. */
+    if (!p->lazy_init_done) {
+        if (p->lazy_init_failed) return 0;
+        if (usm_pool_lazy_init(p) != 0) {
+            p->lazy_init_failed = true;
+            return 0;
+        }
+        p->lazy_init_done = true;
+    }
+
+    usm_pool_set_per_frame(p, dst, dst_stride, src, src_stride, amount_q8);
+    usm_pool_run_phase(p, 0);  /* pass 1: hblur into workspace */
+    usm_pool_run_phase(p, 1);  /* pass 2: combine workspace + src -> dst */
+    return 1;
+}
+
+void up_usm_pool_destroy(usm_pool_t *p)
+{
+    if (!p) return;
+
+    if (p->workers) {
+        /* Signal all started threads to exit. Workers that never
+         * started (partial init) have thread_started == false. */
+        for (int i = 0; i < p->n_threads; i++) {
+            if (p->workers[i].thread_started) {
+                p->workers[i].should_exit = true;
+                sem_post(&p->workers[i].go);
+            }
+        }
+        for (int i = 0; i < p->n_threads; i++) {
+            if (p->workers[i].thread_started)
+                pthread_join(p->workers[i].thread, NULL);
+            if (p->workers[i].go_inited)
+                sem_destroy(&p->workers[i].go);
+        }
+        free(p->workers);
+    }
+    if (p->done_inited) sem_destroy(&p->done);
+    free(p->workspace);
+    free(p);
+}

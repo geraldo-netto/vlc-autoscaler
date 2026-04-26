@@ -50,6 +50,20 @@ sudo vlc-cache-gen /usr/lib/x86_64-linux-gnu/vlc/plugins
 
 # 4. Try it on a sub-720p file
 vlc --video-filter=autoupscale path/to/lowres.mp4
+
+# NOTE: with --video-filter, VLC downscales the upscaled output back to
+# the source's display size. To actually feed 1080p frames to your screen
+# (and to interoperate cleanly with hardware decode), use the transcode
+# pipeline instead. Use vcodec=h264 — VLC 3.0.20's mp4v encoder fails on
+# modern FFmpeg (6.x) due to legacy option parsing bugs. Use
+# preset=ultrafast — the intermediate H.264 stream is decoded immediately
+# for display, so encoding quality doesn't matter, only speed does.
+# Include acodec=mp4a so audio runs through the same pipeline as video
+# (without it, audio takes a parallel path that desyncs):
+vlc --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=autoupscale}:display' \
+    path/to/lowres.mp4
+
+# See "Hardware-accelerated decode" section below for why this matters.
 ```
 
 ## Does it run automatically when I play a video?
@@ -78,6 +92,7 @@ setup: enable once, leave it on, only sub-HD content is touched.
 | `--autoupscale-backend`      | 0–2    | 0       | 0 = auto (zimg → swscale), 1 = zimg only, 2 = swscale only |
 | `--autoupscale-target-fps`   | 0–240  | 60      | Per-frame work over `1 / target_fps` triggers a one-time tuning hint. 0 disables monitoring. |
 | `--autoupscale-threads`      | 0–64   | 0       | Slice the frame into N horizontal stripes processed in parallel. 0 = auto (`cores − 2`), 1 = single-threaded, 2..64 = explicit. |
+| `--autoupscale-zerocopy-dst` | 0–1    | **1**   | 1 = workers write directly into VLC's destination picture (default). Saves ~125 µs/frame at 1080p. Set to 0 to use the copy-out path if you see garbled output or crashes. |
 
 The plugin defaults to **Spline36 on zimg** — the highest-quality
 combination available. On systems without zimg, swscale transparently
@@ -148,12 +163,25 @@ A 480p I420 frame is ~615 KB in and a 1080p frame is ~3.1 MB out, so the
 copies cost a few hundred MB/s of memory bandwidth — invisible against
 modern memory's 50+ GB/s and dwarfed by the parallelism win.
 
-The scratch path is mandatory because passing VLC's pool-managed picture
-buffers directly to per-stripe zimg graphs from worker threads is
-unreliable (we couldn't fully isolate the cause through instrumentation,
-but the pure pattern works in standalone tests and in-VLC self-tests on
-fresh buffers). Going through scratch trades a tiny memcpy cost for
-correctness.
+The scratch path on the **source** side is mandatory: passing VLC's
+pool-managed picture buffers directly to per-stripe zimg graphs from
+worker threads is unreliable (we couldn't fully isolate the cause
+through instrumentation, but the pure pattern works in standalone tests
+and in-VLC self-tests on fresh buffers). The src memcpy trades a small
+bandwidth cost for correctness.
+
+The scratch path on the **destination** side is opt-out via
+`--autoupscale-zerocopy-dst=1`. VLC's destination picture comes from
+`filter_NewPicture()`, which uses a different allocator than the
+source-pool buffers that crashed under the per-stripe pattern. With
+zero-copy enabled, workers write directly into the VLC dst picture and
+the final memcpy is skipped, saving ~125 µs/frame at 1080p
+(~0.8% of a 60 fps budget). This is opt-in because we can't fully
+verify it across every VLC configuration, and a misconfiguration here
+shows up as garbled output or a crash rather than a soft failure. The
+default is the safe copy-out path; turn zero-copy on if you've measured
+that the savings matter on your hardware and verified that playback is
+stable.
 
 The swscale backend stays single-threaded (it's the universal-fallback
 backend; threading is a quality-tier-only nicety here).
@@ -169,6 +197,21 @@ plane only. Defaults to 30% (subtle); 100% gives a clearly sharper
 look, 200% is aggressive. Only applied to YUV chromas — sharpening
 packed RGB or chroma planes causes visible colour fringing on edges.
 Set to `0` to disable.
+
+**Threaded USM.** USM uses the same worker count as the scaler
+(`--autoupscale-threads`). The luma plane is partitioned into N
+horizontal stripes; each worker hblurs its rows into a shared
+workspace (pass 1), then a synchronization barrier ensures the
+workspace is fully populated, and finally each worker combines
+`workspace[y-1, y, y+1]` with `src[y]` to produce `dst[y]` on its rows
+(pass 2). The pool is lazy: workers and workspace spawn on the first
+frame, not in `Open()`. When `--autoupscale-usm=0` the pool's identity
+fast path skips all thread activity, so disabling USM truly costs
+nothing. At 1080p luma this drops USM from ~2-3 ms/frame
+single-threaded to ~0.5 ms with 8 stripes — roughly 12% of a 60 fps
+budget. Output is bit-identical to the single-threaded path; that's
+verified end-to-end by the unit tests (`test_usm_pool.c` runs both
+implementations on synthetic data and asserts byte-for-byte match).
 
 ### Hardware-accelerated decode
 
@@ -187,13 +230,152 @@ us with the resolved software chroma (typically I420). Filtering
 proceeds normally from there, but you pay the GPU→CPU readback cost on
 every frame.
 
-If you see VLC's filter chain fail with `Too high level of recursion`
-when combining `--video-filter='postproc:autoupscale'` with hardware
-decode, the cleanest workaround is to disable hardware decode for that
-session: `--avcodec-hw=none`. The recursion is VLC's chain solver
-exhausting its depth budget while trying to thread converters between
-two filters that both need software pixels and a decoder that produces
-GPU surfaces — not really anyone's fault, just an awkward combination.
+**Lazy worker init.** Open() is intentionally cheap: it validates
+chroma compatibility, computes geometry, allocates a small priv struct,
+and returns. The 30-worker-thread pool and 6 MB of scratch are
+allocated on the first `Filter()` call. This way, when VLC's chain
+solver instantiates us 3-4 times during chain probing (which happens
+when combined with other filters that reject hardware chromas), the
+probes that don't produce a frame cost essentially nothing.
+
+### The "Too high level of recursion (3)" error
+
+If you combine `--video-filter='postproc:autoupscale'` with hardware
+decode, VLC's filter chain solver may give up with:
+
+```
+chain filter error: Too high level of recursion (3)
+```
+
+This is a **hard-coded limit in VLC core** (`MAX_CHAIN_LEVEL` in
+`src/misc/filter_chain.c`), not something the plugin can fix.
+
+**Where the recursion actually happens** (verified from a full debug
+log): it's *not* in your `postproc → autoupscale` chain itself. That
+chain constructs fine. The recursion fires in VLC's "compensate for
+format changes" sub-chain, which VLC inserts after autoupscale to
+convert our 1440×1080 I420 output back to whatever the display expects
+(640×480 VDV0 with VDPAU, etc.). That sub-chain needs:
+
+1. swscale: resize 1440×1080 I420 → 640×480 I420
+2. chroma converter: 640×480 I420 → 640×480 (some intermediate)
+3. chroma converter: 640×480 (intermediate) → 640×480 VDV0/VAOP
+
+Three converters in series, each one costing one level of recursion.
+With software decode the chroma chain is shorter (display takes I420
+directly, no VDV0 conversion needed), so the budget fits. Add hwaccel
+and the budget runs out.
+
+**There's a deeper issue this exposes:** even when the chain succeeds,
+the compensation step downscales autoupscale's 1440×1080 output back
+to your display's source-buffer size (typically the original
+resolution, like 640×480). So in standard `--video-filter=` usage you
+pay for the upscale work and OpenGL re-scales the downscaled buffer to
+fit your screen — meaning **you don't visibly benefit from autoupscale's
+quality.** The workaround below addresses both problems.
+
+**Workarounds, ranked by what they fix:**
+
+1. **`--sout '#transcode{vfilter=postproc:autoupscale}:display'`** —
+   The genuine fix. Transcode operates on an encoded stream and feeds
+   the upscaled output to the display directly, with no "compensate
+   for format changes" sub-chain. The display renders 1440×1080
+   buffers at full quality, and the recursion limit doesn't apply
+   because there's no compensation chain to construct.
+
+   The naive form drops frames in real-time playback because x264's
+   default `preset=medium` is too slow to keep up at 50+ fps while
+   competing with autoupscale's worker threads for cores. **Use
+   `preset=ultrafast` and `tune=zerolatency`** — the intermediate
+   H.264 stream is decoded immediately for display, so encoding
+   quality doesn't matter; only speed does. Also **include
+   `acodec=mp4a`** so audio runs through the same sout pipeline as
+   video — without it, audio takes a parallel path that desyncs:
+
+   ```bash
+   vlc --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=postproc:autoupscale}:display' video.mp4
+   ```
+
+   On a many-core system, also consider leaving cores for the encoder
+   by capping autoupscale's thread count. With 32 cores, splitting
+   16/16 between autoupscale and x264 avoids starvation and runs
+   smoother than 30/all:
+
+   ```bash
+   vlc --autoupscale-threads=16 \
+       --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=postproc:autoupscale}:display' \
+       video.mp4
+   ```
+
+   **Use `vcodec=h264`, not `mp4v`** — VLC 3.0.20's mp4v encoder passes
+   legacy options (`qsquish`, `border_mask`, `noise_reduction`, `lmin`,
+   `lmax`, `rc_buffer_aggressivity`) that FFmpeg 6.x has removed,
+   causing `cannot open mp4v video encoder`. h264, h265, and hevc all
+   use modern option pipelines that work cleanly with FFmpeg 6.x. This
+   is a VLC core bug, unrelated to autoupscale.
+
+   **If audio still doesn't play**, your default audio sink may be a
+   Bluetooth device that's off or out of range. Check with `pactl info |
+   grep "Default Sink"` and switch with
+   `pactl set-default-sink alsa_output.pci-XXXX.hdmi-stereo-extra2`
+   (your HDMI sink name from `pactl list short sinks`), or pick the
+   right device in VLC: Audio → Audio Device.
+
+   **If frames still drop at startup**, it's the vout module probing
+   (gl/glx/egl_x11 switches, font database build, hw-decode probes)
+   eating ~500 ms before the first frame can display. Add caching and
+   relax the late-frame heuristic:
+
+   ```bash
+   vlc --file-caching=3000 --clock-jitter=0 \
+       --autoupscale-threads=16 \
+       --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=postproc:autoupscale}:display' \
+       video.mp4
+   ```
+
+   `--file-caching=3000` gives the pipeline 3 s of demuxer pre-roll
+   (default is 1000 ms). `--clock-jitter=0` disables the heuristic
+   that aggressively drops late frames before the cache has time to
+   smooth things out. These help with the *startup hump*; they don't
+   fix sustained throughput deficits — for those you need lower bitrate,
+   a smaller upscale target, or fewer chained filters.
+
+2. **`--avcodec-hw=none`** — disable hardware decode for the session.
+   The hw→sw converter goes away; the compensation chain stays short
+   enough to fit the recursion budget. The upscale-then-downscale
+   waste *still* happens (you don't visibly benefit from autoupscale's
+   quality unless you also use option 1), but at least playback won't
+   thrash on chain rebuilds.
+
+3. **Drop one filter.** With hardware decode, `postproc + autoupscale`
+   together exceed the budget. Either filter alone fits:
+
+   ```bash
+   vlc --video-filter='autoupscale' video.mp4   # autoupscale only with hwaccel
+   vlc --video-filter='postproc' video.mp4      # postproc only with hwaccel
+   ```
+
+   Same upscale-vs-display caveat applies if you use autoupscale via
+   `--video-filter`.
+
+4. **Patch VLC's `MAX_CHAIN_LEVEL`.** The most surgical fix if you
+   build VLC yourself. Bump the constant from 3 to 4 or 5 in
+   `src/misc/filter_chain.c` and rebuild. One-line patch — included
+   in this repo at
+   [`patches/vlc-3.0-raise-max-chain-level.patch`](patches/vlc-3.0-raise-max-chain-level.patch).
+   Lets `postproc + autoupscale + hwaccel` chains succeed without any
+   plugin or filter-syntax changes. Note: this lets the chain
+   *construct*, but the upscale-then-downscale waste still happens
+   unless you also use option 1. Send the patch upstream while you're
+   at it.
+
+**What we did fix from the plugin side:** lazy worker init means each
+of those 3-4 chain-solver probes used to cost 30 thread spawns and
+~24 MB of scratch allocations (90+ wasted thread spawns and ~72 MB
+churn per playback start). With lazy init the failed probes spawn
+nothing — verified end-to-end in user logs: 4 `AutoUpscale engaged`
+messages but only 1 `zimg: 30 worker threads` message, meaning only
+the chain that actually plays paid for the worker pool.
 
 ## Better quality: chain with VLC's postproc filter
 
@@ -243,6 +425,8 @@ Full design notes in [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md).
 src/
   upscale_logic.h         pure resolution-decision math (no VLC/FFmpeg deps)
   usm.h                   pure unsharp-mask post-pass (header-only)
+  usm_pool.h              public API for the threaded USM worker pool
+  usm_pool.c              threaded USM implementation (lazy worker spawn)
   perfmon.h               pure EWMA perf monitor (header-only)
   threading.h             pure thread-count decision (header-only)
   zimg_helpers.h          pure pitch/lines/plane/stripe-bounds helpers
@@ -259,6 +443,7 @@ tests/
   corpus/                 curated seed inputs including regression cases
 
 docs/HOW_IT_WORKS.md      design notes
+patches/                  optional VLC patches (workaround for chain depth limit)
 .github/workflows/ci.yml  build, test, smoke fuzz, libFuzzer, cppcheck
 Makefile                  everything (`make help` lists targets)
 ```

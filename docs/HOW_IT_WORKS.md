@@ -77,22 +77,47 @@ postproc, deinterlace, etc.) cannot consume these directly.
 
 `chroma_classify.h` exports `up_chroma_is_opaque()` which returns true
 for the 16 known opaque chroma fourccs. `Open()` calls this very early
-and returns `VLC_EGENERIC` if it matches — *before* allocating any
-scratch buffers or spawning worker threads. This matters because VLC's
-filter-chain solver probes filters multiple times during chain setup;
-without the early reject we'd allocate 30 worker threads × 3 probes =
-90 wasted thread spawns before VLC tears us down.
+and returns `VLC_EGENERIC` if it matches, prompting VLC to insert a
+hardware-to-software download converter upstream and re-probe us with
+the resolved software chroma (typically I420).
 
-After the reject, VLC inserts a hardware-to-software download converter
-upstream and probes us once more with the resolved software chroma
-(typically I420), at which point Open() succeeds normally. The user
-pays a GPU→CPU readback cost per frame but everything else works.
+### Lazy worker initialization
 
-If the user combines `--video-filter='postproc:autoupscale'` with
-hardware decode, VLC's chain solver may still hit `Too high level of
-recursion (3)` because both filters need software pixels and the solver
-has to thread converters around them. The clean workaround is to
-disable hardware decode for that session: `--avcodec-hw=none`.
+Even with the opaque-chroma reject in place, VLC's filter-chain solver
+may still instantiate us multiple times during chain setup when other
+filters in the chain (notably `postproc`) also reject the hardware
+chroma. Each instantiation is a complete `Open()` / `Close()` round
+trip. If `Open()` were to spawn 30 worker threads and allocate 6 MB of
+scratch on every call, four chain-solver probes would cost 120 wasted
+thread spawns and 24 MB of churned allocations.
+
+To avoid this, `zimg_open()` does only the cheap work — chroma
+validation, geometry computation, thread-count decision, priv struct
+allocation — and returns. The actual worker pool, scratch buffers, and
+per-stripe filter graphs are constructed lazily on the first `Filter()`
+call (`zimg_lazy_init()`). Probes that don't produce a frame cost
+essentially nothing. The first frame after a successful chain
+construction pays a one-time setup cost (~5-10 ms for 30 threads on a
+32-core box, dominated by `pthread_create`); subsequent frames are
+unaffected.
+
+A `lazy_init_failed` sticky flag prevents retry-allocating every frame
+if the first lazy init fails (e.g. because of memory pressure).
+
+### The recursion warning is partially out of our hands
+
+If you see `chain filter error: Too high level of recursion (3)` in the
+log when combining `--video-filter='postproc:autoupscale'` with hardware
+decode, that comes from VLC's chain solver hitting its hard-coded depth
+limit while threading converters around two filters that both reject
+the hardware chroma. We cannot raise that limit from a plugin. Lazy
+init prevents the *cost* of the failed probes (no wasted threads or
+allocations), but the warnings themselves still appear.
+
+The clean workaround is to disable hardware decode for that VLC
+session: `--avcodec-hw=none`. The user pays the cost of software
+decoding but the chain solver finds a working configuration on its
+first attempt.
 
 The list of opaque fourccs is unit-tested (`test_chroma_classify.c`)
 including a cross-predicate invariant that no opaque chroma is also
@@ -194,8 +219,67 @@ reference for a 17×13 plane with random fill.
 
 **Performance.** Two memory-bound passes over the Y plane. On a modern
 x86 core with `-O2`, roughly 2 ns/pixel, so a 1080p Y plane (≈ 2.07 MP)
-costs ~4 ms per frame on one core. Well inside a 30 fps frame budget;
-not worth vectorizing given how cheap it already is.
+costs ~4 ms per frame single-threaded. The threaded variant (see next
+section) brings this down to ~0.5 ms with 8 workers.
+
+### Threaded USM (`src/usm_pool.h`, `src/usm_pool.c`)
+
+The single-threaded path (`up_usm_apply_plane` in `usm.h`) processes
+the luma plane in two passes: a horizontal blur that fills a workspace
+buffer, then a combine that reads three consecutive workspace rows
+plus the source row to produce each output row. The threaded pool
+parallelizes both passes across N workers using horizontal stripes
+and a barrier between passes.
+
+**Partition.** N workers, height H. Worker i owns rows
+`[i·H/N, (i+1)·H/N)` (last worker absorbs rounding remainder). N is
+clamped to `H/8` so each stripe is at least 8 rows tall — below that,
+the kernel boundary handling dominates and threading hurts rather than
+helps.
+
+**Pass 1.** Each worker hblurs its own rows into a shared workspace.
+No row is written by more than one worker, so this phase is naturally
+race-free even though the workspace is shared.
+
+**Barrier.** The main thread `sem_wait`s the shared "done" semaphore N
+times after dispatching pass 1 (one wait per worker). Only when all N
+have signaled does the main thread dispatch pass 2. This guarantees
+the workspace is fully populated before any worker reads it.
+
+**Pass 2.** Each worker combines `workspace[y-1, y, y+1]` with `src[y]`
+to produce `dst[y]` for every y in its stripe. The workspace reads
+just above and below the worker's stripe boundary belong to neighbor
+workers, but those rows were finalized in pass 1 (which is fully
+complete) so the reads are race-free.
+
+**Lazy init.** Like the zimg backend, the USM pool's worker spawn and
+workspace allocation happen on the first `apply()` call rather than
+in `up_usm_pool_create()`. This means probing-only Open/Close cycles
+during VLC's chain solving cost nothing for USM.
+
+**Identity fast path.** `up_usm_pool_apply()` with `amount_q8 == 0`
+short-circuits to a memcpy (or no-op when src and dst alias) with no
+thread activity and no workspace allocation. So `--autoupscale-usm=0`
+truly disables USM at zero cost, even if the pool was created.
+
+**Correctness verification.** The crucial invariant is that pool
+output equals single-threaded output bit-for-bit. This is enforced by
+`tests/test_usm_pool.c`, which runs `up_usm_apply_plane` and
+`up_usm_pool_apply` on synthetic data and compares every byte. The
+test exercises N = 1, 2, 3, 4, 8 workers across odd dimensions
+(213×137), tall narrow (32×2000), short wide (4096×32), and the
+height-clamp case (requesting 64 workers on h=16). It also runs the
+same pool across 5 different frames to verify lazy init caches
+correctly. End-to-end live VLC byte-identity (decoded video MD5
+matches the pre-threaded-USM build) is the integration check.
+
+**Why bit-identity rather than approximate.** The math is fully
+deterministic — same inputs produce same outputs, regardless of which
+thread runs which row. There's no floating-point reordering involved
+(USM operates on uint8 with int arithmetic). If the threaded variant
+produced different output, that would mean either a partition bug
+(rows missed or processed twice) or a race (workspace read before
+write). Both should fail the test.
 
 ## Composing with VLC's `postproc` filter
 
@@ -409,7 +493,8 @@ At each Filter() call the backend:
 1. `memcpy`s VLC's source picture into the scratch source buffers.
 2. Sets each worker's per-frame state, then `sem_post`s their go semaphores.
 3. `sem_wait`s the shared "done" semaphore N times.
-4. `memcpy`s the scratch destination into VLC's output picture.
+4. `memcpy`s the scratch destination into VLC's output picture
+   (skipped when `--autoupscale-zerocopy-dst=1` — see below).
 
 At Close() the backend signals exit on every worker, joins, and frees.
 
@@ -435,9 +520,43 @@ We isolated the failure with a layered diagnostic:
 We didn't fully isolate the root cause inside VLC's picture allocator
 (the segfault was downstream of any logging we could add, and valgrind
 couldn't reach it inside VLC's process before timing out on its own
-overhead). The pragmatic fix is to never hand VLC's picture buffers to
-zimg's per-stripe graphs in the first place — copy through scratch and
-pay a few hundred MB/s of memory bandwidth for guaranteed correctness.
+overhead). The pragmatic fix is to never hand VLC's *source* picture
+buffers to zimg's per-stripe graphs — copy through scratch and pay a
+few hundred MB/s of memory bandwidth for guaranteed correctness.
+
+### Partial zero-copy on the destination side
+
+The crash investigation specifically implicated VLC's source-pool
+buffers — the buffers that come from a recycling pool managed by the
+upstream filter. The destination picture is different: it comes from
+`filter_NewPicture()`, which uses VLC's per-output allocator path and
+is not pool-recycled (each output gets a fresh allocation). Reasoning
+that the failure mode might not transfer to the dst side, the
+`--autoupscale-zerocopy-dst=1` opt-in lets users skip the copy-out
+entirely:
+
+- Workers receive VLC's destination picture pointers (with VLC's pitch)
+  per-frame instead of using the priv's scratch dst pointers.
+- `alloc_scratch_buffers()` skips the dst allocation when zero-copy is
+  on, so the scratch footprint drops by ~3 MB at 1080p.
+- The per-stripe filter graphs don't bake in destination stride — it
+  lives in the per-call `zimg_image_buffer` constructed by `worker_main`
+  — so the strides can change per frame without rebuilding graphs.
+
+In sandbox testing the byte-identical decoded MD5 matches between
+zerocopy-dst=0 and zerocopy-dst=1 on both single-threaded and
+multi-threaded runs, which is strong evidence that the zero-copy is
+correct at the pixel level. We can't fully verify the path under every
+VLC build (especially the hardware-decode + chain-converter
+configurations the user reported), so the option is opt-in and
+conservatively defaulted off. The failure mode if it doesn't work on
+some VLC build is garbled output or a crash, not a soft fallback —
+which is why it's documented as experimental and the option's longtext
+tells users to fall back to =0 if playback misbehaves.
+
+The savings are modest: about 125 µs per 1080p frame (~0.8% of a 60 fps
+budget) on this hardware. Worth shipping because some users have
+specifically asked for it, but not worth recommending as a default.
 
 ### Why this isn't a regression vs single-threaded zimg
 
