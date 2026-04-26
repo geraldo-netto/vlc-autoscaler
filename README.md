@@ -19,9 +19,9 @@ fast enough for real-time playback on modest hardware.
 
 | Check                                  | Result                                  |
 |----------------------------------------|-----------------------------------------|
-| Unit tests (ASan + UBSan)              | 113/113 pass across 7 suites            |
-| Smoke fuzz (520k iters, ASan + UBSan)  | pass across 7 fuzzers                   |
-| libFuzzer (60s × 3 in CI, seeded)      | 0 crashes; corpora accelerate discovery ~2× |
+| Unit tests (ASan + UBSan)              | 126/126 pass across 8 suites            |
+| Smoke fuzz (620k iters, ASan + UBSan)  | pass across 8 fuzzers                   |
+| libFuzzer (60s × 4 in CI, seeded)      | 0 crashes; corpora accelerate discovery ~2× |
 | `cppcheck` (warning + style)           | clean                                   |
 | Plugin compiles against VLC 3.0.20     | clean, no warnings                      |
 | Live transcode (zimg + swscale)        | verified end-to-end up to 8K            |
@@ -93,6 +93,7 @@ setup: enable once, leave it on, only sub-HD content is touched.
 | `--autoupscale-target-fps`   | 0–240  | 60      | Per-frame work over `1 / target_fps` triggers a one-time tuning hint. 0 disables monitoring. |
 | `--autoupscale-threads`      | 0–64   | 0       | Slice the frame into N horizontal stripes processed in parallel. 0 = auto (`cores − 2`), 1 = single-threaded, 2..64 = explicit. |
 | `--autoupscale-zerocopy-dst` | 0–1    | **1**   | 1 = workers write directly into VLC's destination picture (default). Saves ~125 µs/frame at 1080p. Set to 0 to use the copy-out path if you see garbled output or crashes. |
+| `--autoupscale-content-probe`| 0–1    | **1**   | 1 = run the diagnostic content probe on the first ~60 frames to detect heavily-compressed soft sources where upscaling actively hurts. Logs a one-time advisory when triggered. Observe-only — never modifies output. 0 = skip the probe. |
 
 The plugin defaults to **Spline36 on zimg** — the highest-quality
 combination available. On systems without zimg, swscale transparently
@@ -431,6 +432,8 @@ src/
   threading.h             pure thread-count decision (header-only)
   zimg_helpers.h          pure pitch/lines/plane/stripe-bounds helpers
   chroma_classify.h       pure hwaccel/Y-plane chroma predicates
+  scaler_zimg_chroma.h    pure chroma->zimg-subsample mapping (extracted for fuzzing)
+  content_probe.h         pure no-reference quality probe (Laplacian + block-edge)
   scaler.h                backend interface
   scaler.c                backend picker (auto / zimg / swscale)
   scaler_swscale.c        libswscale backend (universal fallback)
@@ -442,6 +445,7 @@ tests/
   fuzz_*.c                libFuzzer + deterministic smoke targets (one source each)
   corpus/                 binary seeds for fuzz_upscale_logic (16 files, 32 bytes each)
   corpus_frame_shape/     binary seeds for fuzz_frame_shape (22 files, 24 bytes each)
+  corpus_scaler_chroma/   binary seeds for fuzz_scaler_chroma (21 files, 8 bytes each)
 
 docs/HOW_IT_WORKS.md      design notes
 patches/                  optional VLC patches (workaround for chain depth limit)
@@ -459,8 +463,8 @@ header — there's no shadow re-implementation in the tests.
 ```sh
 make            # build the VLC plugin (libautoupscale_plugin.so)
 make plugin     # same
-make test       # unit tests under ASan + UBSan (113 tests across 7 suites)
-make fuzz-smoke # 520k deterministic random inputs across 7 fuzzers under ASan + UBSan
+make test       # unit tests under ASan + UBSan (126 tests across 8 suites)
+make fuzz-smoke # 620k deterministic random inputs across 8 fuzzers under ASan + UBSan
 make fuzz       # libFuzzer build (clang); run e.g. build/fuzz_upscale_logic tests/corpus/
 make analyze    # cppcheck across the source
 make install    # install plugin into VLC's plugins dir

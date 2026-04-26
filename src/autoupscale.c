@@ -31,6 +31,7 @@
 #include "perfmon.h"
 #include "threading.h"
 #include "chroma_classify.h"
+#include "content_probe.h"
 
 /* VLC's <libintl.h>-based N_() isn't always pulled in transitively.
  * Provide a no-op fallback if it's missing — we don't translate strings. */
@@ -121,6 +122,20 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
     "byte-identical to the copy-out path in our testing but cannot be " \
     "fully verified across every VLC build configuration.")
 
+#define PROBE_TEXT N_("Content-aware quality probe")
+#define PROBE_LONGTEXT N_( \
+    "1 = on (default): observe the first ~60 frames of luma to " \
+    "estimate source quality. If the source is both very soft (low " \
+    "Laplacian variance: heavy blur or noise reduction) AND very " \
+    "blocky (high edge intensity at 8-pixel boundaries: heavy " \
+    "compression), log a one-time advisory recommending the user " \
+    "disable AutoUpscale for this source. The probe is DIAGNOSTIC " \
+    "only — VLC 3's filter API does not allow runtime format " \
+    "renegotiation, so the filter cannot self-bypass mid-stream. " \
+    "Probe cost is ~50us/frame at 480p (only during the first 60 " \
+    "frames). 0 = off: skip the probe entirely. The probe is also " \
+    "skipped automatically for non-planar chromas (no Y plane).")
+
 /*****************************************************************************
  * Forward declarations
  *****************************************************************************/
@@ -163,6 +178,8 @@ vlc_module_begin()
                             THREADS_TEXT, THREADS_LONGTEXT, false )
     add_integer_with_range( CFG_PREFIX "zerocopy-dst", 1, 0, 1,
                             ZEROCOPY_DST_TEXT, ZEROCOPY_DST_LONGTEXT, false )
+    add_integer_with_range( CFG_PREFIX "content-probe", 1, 0, 1,
+                            PROBE_TEXT, PROBE_LONGTEXT, false )
 vlc_module_end()
 
 /*****************************************************************************
@@ -184,7 +201,38 @@ struct filter_sys_t
     int           target_fps;     /* kept around so we can include it in warn msg */
     int           algo;           /* kept around for warn message */
     int           usm_pct;        /* kept around for warn message */
+
+    /* Content-aware bypass. The probe runs over the first
+     * UP_PROBE_WINDOW_FRAMES frames, accumulating Laplacian variance
+     * and block-edge intensity on the luma plane. Once the window
+     * closes, up_should_bypass_for_content() decides whether the source
+     * is so soft+blocky that upscaling actively hurts.
+     *
+     * IMPORTANT scope note: VLC 3's video-filter API doesn't allow
+     * runtime format renegotiation, so we can't actually "stop scaling"
+     * mid-stream — the downstream chain expects target-resolution
+     * pictures from frame 1. Instead, when the probe decides the
+     * upscale is hurting, we log a one-time msg_Info recommending the
+     * user disable the filter (or set --autoupscale-target=1) for next
+     * playback, and we keep scaling. This is HONEST about what's
+     * achievable; a real bypass would need a structural change to
+     * VLC's filter graph that we can't make from a video filter.
+     *
+     *   probe_enabled : 1 if the probe is configured to run (option), 0 disabled
+     *   probe_active  : 1 while we're still collecting samples
+     *   advice_logged : 1 once we've logged the bypass recommendation
+     *   probe_accum   : accumulator state passed to up_probe_observe()
+     */
+    int                probe_enabled;
+    int                probe_active;
+    int                advice_logged;
+    up_probe_accum_t   probe_accum;
 };
+
+/* How many frames to observe before deciding. At 30fps this is 2 seconds
+ * — enough for a few I-frames and a couple of GOPs to characterize the
+ * encoder's quality across motion changes. */
+#define UP_PROBE_WINDOW_FRAMES 60
 
 /*****************************************************************************
  * Helpers
@@ -323,6 +371,17 @@ static int Open( vlc_object_t *p_this )
     p_sys->algo       = algo;
     p_sys->usm_pct    = usm_pct;
 
+    /* Content-aware bypass probe. Runs only when the source has a
+     * planar Y component (probe metrics are computed on luma only).
+     * For opaque/packed/RGB chromas the probe stays disabled — those
+     * are either GPU-managed (can't read) or have no luma plane.
+     * The accumulator is already zeroed by calloc(). */
+    p_sys->probe_enabled = var_InheritInteger( p_filter,
+                                               CFG_PREFIX "content-probe" )
+                       && ChromaHasYPlane( chroma );
+    p_sys->probe_active  = p_sys->probe_enabled;
+    p_sys->advice_logged = 0;
+
     /* Output format: same chroma, new dimensions. */
     p_filter->fmt_out.video.i_chroma         = chroma;
     p_filter->fmt_out.video.i_width          = target.width;
@@ -366,6 +425,58 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
 {
     filter_sys_t *p_sys = p_filter->p_sys;
     if( !p_in ) return NULL;
+
+    /* Content-aware probe: observe the source luma BEFORE upscaling.
+     * Cheap (~50 us at 480p, much less at higher resolutions because
+     * we sample on a fixed grid). Only runs while probe_active and
+     * only on planar chromas (gated by probe_enabled in Open). */
+    if( p_sys->probe_active && p_in->i_planes >= 1 )
+    {
+        const plane_t *y = &p_in->p[0];
+        int w = y->i_visible_pitch ? y->i_visible_pitch : y->i_pitch;
+        int h = y->i_visible_lines ? y->i_visible_lines : y->i_lines;
+        uint64_t lap_n = 0, edge_n = 0;
+        uint64_t lap  = up_laplacian_variance(  y->p_pixels, y->i_pitch,
+                                                w, h, &lap_n );
+        uint64_t edge = up_block_edge_strength( y->p_pixels, y->i_pitch,
+                                                w, h, &edge_n );
+        up_probe_observe( &p_sys->probe_accum, lap, lap_n, edge, edge_n );
+
+        if( p_sys->probe_accum.frames >= UP_PROBE_WINDOW_FRAMES )
+        {
+            p_sys->probe_active = 0;
+            int recommend_bypass = up_should_bypass_for_content(
+                                       &p_sys->probe_accum );
+            uint64_t lap_mean  = p_sys->probe_accum.lap_samples
+                ? p_sys->probe_accum.lap_sum  / p_sys->probe_accum.lap_samples : 0;
+            uint64_t edge_mean = p_sys->probe_accum.edge_samples
+                ? p_sys->probe_accum.edge_sum / p_sys->probe_accum.edge_samples : 0;
+            if( recommend_bypass && !p_sys->advice_logged )
+            {
+                p_sys->advice_logged = 1;
+                msg_Info( p_filter,
+                          "AutoUpscale: content probe complete: source is "
+                          "soft (lap_mean=%llu) AND blocky (edge_mean=%llu). "
+                          "Upscaling is amplifying compression artifacts "
+                          "without recovering detail.",
+                          (unsigned long long)lap_mean,
+                          (unsigned long long)edge_mean );
+                msg_Info( p_filter,
+                          "  Consider disabling AutoUpscale for this source, "
+                          "or set --autoupscale-target=1 to halve the per-"
+                          "frame cost. Set --autoupscale-content-probe=0 to "
+                          "silence this message." );
+            }
+            else
+            {
+                msg_Dbg( p_filter,
+                         "AutoUpscale: content probe complete (lap_mean=%llu "
+                         "edge_mean=%llu): upscale is appropriate.",
+                         (unsigned long long)lap_mean,
+                         (unsigned long long)edge_mean );
+            }
+        }
+    }
 
     picture_t *p_out = filter_NewPicture( p_filter );
     if( !p_out )

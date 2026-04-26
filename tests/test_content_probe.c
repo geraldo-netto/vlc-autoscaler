@@ -1,0 +1,302 @@
+/*****************************************************************************
+ * test_content_probe.c - unit tests for the content-probe metrics
+ *****************************************************************************
+ * Tests three things:
+ *   1. Laplacian variance: zero on flat plane, high on textured plane
+ *   2. Block-edge strength: zero on smooth plane, high on synthetic blocky
+ *   3. Bypass decision: returns 1 only on (very soft AND very blocky)
+ *****************************************************************************/
+
+#include "../src/content_probe.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int g_tests_run = 0;
+static int g_tests_failed = 0;
+static int g_failed_in_test = 0;
+
+#define BEGIN(name) do { \
+    printf("  [....] %s\n", name); \
+    g_failed_in_test = 0; \
+} while (0)
+
+#define END() do { \
+    g_tests_run++; \
+    if (g_failed_in_test) { \
+        printf("  [FAIL] %s\n", "(see above)"); \
+        g_tests_failed++; \
+    } \
+} while (0)
+
+#define CHECK(cond) do { \
+    if (!(cond)) { \
+        printf("    %s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond); \
+        g_failed_in_test = 1; \
+    } \
+} while (0)
+
+#define CHECK_EQ(a, b) do { \
+    long long _a = (long long)(a); \
+    long long _b = (long long)(b); \
+    if (_a != _b) { \
+        printf("    %s:%d: CHECK_EQ failed: %lld != %lld\n", \
+               __FILE__, __LINE__, _a, _b); \
+        g_failed_in_test = 1; \
+    } \
+} while (0)
+
+/* ---------- Laplacian variance ---------- */
+
+static void test_laplacian_flat_plane_zero(void)
+{
+    BEGIN("laplacian_variance: flat plane has zero variance");
+    int w = 64, h = 64;
+    uint8_t buf[64 * 64];
+    memset(buf, 128, sizeof buf);
+    uint64_t n = 0;
+    uint64_t sum = up_laplacian_variance(buf, w, w, h, &n);
+    CHECK_EQ(sum, 0);
+    CHECK(n > 0);  /* did sample, just got zero variance */
+    END();
+}
+
+static void test_laplacian_checkerboard_high(void)
+{
+    BEGIN("laplacian_variance: 1-pixel checkerboard has high variance");
+    int w = 64, h = 64;
+    uint8_t buf[64 * 64];
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            buf[y * w + x] = ((x + y) & 1) ? 255 : 0;
+    uint64_t n = 0;
+    uint64_t sum = up_laplacian_variance(buf, w, w, h, &n);
+    /* Need samples to compute a mean. Failing this would indicate the
+     * function bailed out unexpectedly. */
+    if (n == 0) {
+        CHECK_EQ(1, 0);  /* no samples taken */
+        END();
+        return;
+    }
+    /* Each Laplacian response is ±1020; squared = 1,040,400.
+     * With many samples, sum/n should be near 1,040,400. */
+    uint64_t mean = sum / n;
+    CHECK(mean > 100000);
+    END();
+}
+
+static void test_laplacian_invalid_input(void)
+{
+    BEGIN("laplacian_variance: invalid inputs return 0");
+    uint64_t n = 999;
+    CHECK_EQ(up_laplacian_variance(NULL, 64, 64, 64, &n), 0);
+    CHECK_EQ(n, 0);
+
+    const uint8_t scratch[64] = {0};  /* read-only, values irrelevant - function rejects on shape */
+    n = 999;
+    CHECK_EQ(up_laplacian_variance(scratch, 0, 64, 64, &n), 0);  /* stride=0 */
+    CHECK_EQ(up_laplacian_variance(scratch, 64, 1, 64, &n), 0);  /* w<=2 */
+    CHECK_EQ(up_laplacian_variance(scratch, 64, 64, 1, &n), 0);  /* h<=2 */
+
+    /* NULL n_samples_out is allowed (just don't write to it). */
+    const uint8_t buf2[64*64] = {0};
+    (void)up_laplacian_variance(buf2, 64, 64, 64, NULL);  /* must not crash */
+    END();
+}
+
+/* ---------- Block-edge strength ---------- */
+
+static void test_block_edge_smooth_low(void)
+{
+    BEGIN("block_edge: gradient plane has low block-edge intensity");
+    int w = 64, h = 64;
+    uint8_t buf[64 * 64];
+    /* Smooth gradient — values change continuously, no block boundaries. */
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            buf[y * w + x] = (uint8_t)((x + y) & 0xff);
+    uint64_t n = 0;
+    uint64_t sum = up_block_edge_strength(buf, w, w, h, &n);
+    if (n == 0) {
+        CHECK_EQ(1, 0);  /* no samples taken */
+        END();
+        return;
+    }
+    /* Each block-edge measurement is just |x - (x-1)| = 1 in our
+     * gradient. Mean should be small (1-2). */
+    uint64_t mean = sum / n;
+    CHECK(mean <= 2);
+    END();
+}
+
+static void test_block_edge_blocky_high(void)
+{
+    BEGIN("block_edge: synthetic blocky plane has high block-edge intensity");
+    int w = 64, h = 64;
+    uint8_t buf[64 * 64];
+    /* Synthesize a blocky pattern: each 8x8 block has a different mean
+     * value with no smooth transition. */
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            int bx = x / 8;
+            int by = y / 8;
+            buf[y * w + x] = (uint8_t)(((bx + by) * 50) & 0xff);
+        }
+    }
+    uint64_t n = 0;
+    uint64_t sum = up_block_edge_strength(buf, w, w, h, &n);
+    if (n == 0) {
+        CHECK_EQ(1, 0);  /* no samples taken */
+        END();
+        return;
+    }
+    uint64_t mean = sum / n;
+    /* Adjacent blocks differ by 50; we sample boundary pixels only.
+     * Mean should be substantially above the smooth case. */
+    CHECK(mean >= 10);
+    END();
+}
+
+static void test_block_edge_invalid_input(void)
+{
+    BEGIN("block_edge: invalid inputs return 0");
+    uint64_t n = 999;
+    CHECK_EQ(up_block_edge_strength(NULL, 64, 64, 64, &n), 0);
+    CHECK_EQ(n, 0);
+
+    const uint8_t buf[64*64] = {0};
+    CHECK_EQ(up_block_edge_strength(buf, 0, 64, 64, &n), 0);
+    /* w/h smaller than block size: must return 0 cleanly. */
+    CHECK_EQ(up_block_edge_strength(buf, 4, 4, 64, &n), 0);
+    CHECK_EQ(up_block_edge_strength(buf, 64, 64, 4, &n), 0);
+
+    /* NULL n_samples_out OK. */
+    (void)up_block_edge_strength(buf, 64, 64, 64, NULL);
+    END();
+}
+
+/* ---------- Bypass decision ---------- */
+
+static void test_bypass_too_few_frames(void)
+{
+    BEGIN("bypass: too few frames -> don't bypass");
+    up_probe_accum_t a = {0};
+    a.frames = UP_PROBE_MIN_FRAMES - 1;
+    a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
+    a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
+    /* Even with "very bad" metrics, insufficient frames -> proceed. */
+    a.lap_sum = 0;  /* extremely soft */
+    a.edge_sum = a.edge_samples * 100;  /* extremely blocky */
+    CHECK_EQ(up_should_bypass_for_content(&a), 0);
+    END();
+}
+
+static void test_bypass_clean_source_no_bypass(void)
+{
+    BEGIN("bypass: clean source (sharp + smooth) -> don't bypass");
+    up_probe_accum_t a = {0};
+    a.frames = 60;
+    a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
+    a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
+    /* Sharp source: lap mean = 1500² */
+    a.lap_sum = a.lap_samples * 1500ULL * 1500ULL;
+    /* Smooth: edge mean = 2 */
+    a.edge_sum = a.edge_samples * 2;
+    CHECK_EQ(up_should_bypass_for_content(&a), 0);
+    END();
+}
+
+static void test_bypass_soft_only_no_bypass(void)
+{
+    BEGIN("bypass: very soft but not blocky -> don't bypass");
+    up_probe_accum_t a = {0};
+    a.frames = 60;
+    a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
+    a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
+    /* Very soft: lap mean = 100² */
+    a.lap_sum = a.lap_samples * 100ULL * 100ULL;
+    /* Smooth: edge mean = 2 */
+    a.edge_sum = a.edge_samples * 2;
+    CHECK_EQ(up_should_bypass_for_content(&a), 0);
+    END();
+}
+
+static void test_bypass_blocky_only_no_bypass(void)
+{
+    BEGIN("bypass: blocky but sharp -> don't bypass (user still wants upscale)");
+    up_probe_accum_t a = {0};
+    a.frames = 60;
+    a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
+    a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
+    /* Sharp: lap mean = 1500² */
+    a.lap_sum = a.lap_samples * 1500ULL * 1500ULL;
+    /* Blocky: edge mean = 12 */
+    a.edge_sum = a.edge_samples * 12;
+    CHECK_EQ(up_should_bypass_for_content(&a), 0);
+    END();
+}
+
+static void test_bypass_soft_and_blocky_yes_bypass(void)
+{
+    BEGIN("bypass: very soft AND very blocky -> bypass");
+    up_probe_accum_t a = {0};
+    a.frames = 60;
+    a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
+    a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
+    /* Very soft: lap mean = 200² */
+    a.lap_sum = a.lap_samples * 200ULL * 200ULL;
+    /* Very blocky: edge mean = 12 */
+    a.edge_sum = a.edge_samples * 12;
+    CHECK_EQ(up_should_bypass_for_content(&a), 1);
+    END();
+}
+
+static void test_bypass_null_input(void)
+{
+    BEGIN("bypass: NULL accumulator -> don't bypass (safe default)");
+    CHECK_EQ(up_should_bypass_for_content(NULL), 0);
+    END();
+}
+
+static void test_observe_accumulates(void)
+{
+    BEGIN("observe: accumulates across frames");
+    up_probe_accum_t a = {0};
+    up_probe_observe(&a, 100, 50, 10, 5);
+    up_probe_observe(&a, 200, 50, 20, 5);
+    up_probe_observe(&a, 300, 50, 30, 5);
+    CHECK_EQ(a.frames, 3);
+    CHECK_EQ(a.lap_sum, 600);
+    CHECK_EQ(a.lap_samples, 150);
+    CHECK_EQ(a.edge_sum, 60);
+    CHECK_EQ(a.edge_samples, 15);
+    /* NULL accumulator must not crash. */
+    up_probe_observe(NULL, 1, 2, 3, 4);
+    END();
+}
+
+int main(void)
+{
+    printf("Running content_probe tests...\n");
+
+    test_laplacian_flat_plane_zero();
+    test_laplacian_checkerboard_high();
+    test_laplacian_invalid_input();
+
+    test_block_edge_smooth_low();
+    test_block_edge_blocky_high();
+    test_block_edge_invalid_input();
+
+    test_bypass_too_few_frames();
+    test_bypass_clean_source_no_bypass();
+    test_bypass_soft_only_no_bypass();
+    test_bypass_blocky_only_no_bypass();
+    test_bypass_soft_and_blocky_yes_bypass();
+    test_bypass_null_input();
+    test_observe_accumulates();
+
+    printf("\n%d tests run, %d failed\n", g_tests_run, g_tests_failed);
+    return g_tests_failed == 0 ? 0 : 1;
+}

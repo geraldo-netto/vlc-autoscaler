@@ -48,6 +48,7 @@
 #include "upscale_logic.h"
 #include "threading.h"
 #include "zimg_helpers.h"
+#include "scaler_zimg_chroma.h"
 
 #include <zimg.h>
 #include <pthread.h>
@@ -131,18 +132,17 @@ typedef struct
 
 /* ---------- chroma + algo mappings ---------- */
 
+/*
+ * Thin wrapper around up_chroma_to_zimg() in scaler_zimg_chroma.h.
+ * The pure logic lives in the header so the same code is exercised by
+ * the production path AND by tests/fuzz_scaler_chroma.c without
+ * pulling in VLC headers. vlc_fourcc_t is a uint32_t, so the cast is
+ * a no-op at runtime.
+ */
 static int ChromaToZimg(vlc_fourcc_t c,
                         unsigned *sub_w, unsigned *sub_h, int *yv12_swap)
 {
-    *yv12_swap = 0;
-    switch (c)
-    {
-        case VLC_CODEC_I420: *sub_w = 1; *sub_h = 1; return 1;
-        case VLC_CODEC_YV12: *sub_w = 1; *sub_h = 1; *yv12_swap = 1; return 1;
-        case VLC_CODEC_I422: *sub_w = 1; *sub_h = 0; return 1;
-        case VLC_CODEC_I444: *sub_w = 0; *sub_h = 0; return 1;
-        default:             return 0;
-    }
+    return up_chroma_to_zimg((uint32_t)c, sub_w, sub_h, yv12_swap);
 }
 
 static zimg_resample_filter_e AlgoToZimg(int algo)

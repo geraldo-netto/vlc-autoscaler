@@ -414,6 +414,110 @@ So zimg with Spline36 is the realistic ceiling for this plugin's
 architecture. The follow-up that's worth doing is parallel slicing
 inside zimg's `process()` to actually use the cores.
 
+## Content-aware quality probe
+
+Not every source benefits from upscaling. A 480p stream that's been
+encoded at 200 kbps will have visible 8×8 blocking artifacts; running
+Spline36 on it produces a 1080p picture where those blocks are 2.25×
+larger and 2.25× more annoying. For these "lost cause" sources, the
+honest answer is "don't upscale" — but how do we detect them
+automatically?
+
+### What's measurable, what isn't
+
+Real per-frame quality measurement (PSNR, SSIM, VMAF) requires a
+*reference* image to compare against. We have only the source frame
+and our upscaled output; the *true* high-resolution image that the
+source was downscaled from doesn't exist in the input stream. So we
+can't say "our upscaled 1080p is closer to ground truth than display-
+time bilinear." There's no ground truth to be closer to.
+
+What IS measurable cheaply, on the source itself, are two
+no-reference proxies:
+
+1. **Laplacian variance** on the luma plane — a high-frequency-energy
+   estimate. High value means the source is sharp (lots of detail
+   for the scaler to interpolate from). Low value means the source
+   is soft — heavily blurred, noise-reduced, or just blank — and
+   there's nothing for a non-AI scaler to "uncover."
+
+2. **Block-edge intensity** at 8-pixel grid boundaries. H.264 and
+   H.265 both use 8×8 transform blocks; when bitrate is too low, the
+   reconstruction has visible discontinuities at those boundaries.
+   High block-edge intensity means heavy compression — and upscaling
+   amplifies blocking, making the artifacts more visible.
+
+The decision rule combines the two: bypass-advisory fires only when
+the source is BOTH very soft AND very blocky. Soft-but-not-blocky is
+fine (smooth output is acceptable). Blocky-but-detailed is fine (the
+user wants the detail upscaled). Only soft+blocky is the case where
+upscaling strictly hurts.
+
+### What's actually achievable in VLC's filter API
+
+VLC 3's video-filter API doesn't allow runtime format renegotiation.
+The filter declares its `fmt_out` in `Open()` and the downstream
+chain locks in expecting that format from frame 1. We physically
+can't start emitting input-resolution pictures mid-stream — every
+downstream stage is wired to receive 1080p (or whatever target was
+chosen).
+
+So the probe is **diagnostic only**: when it detects soft+blocky
+content, it logs a one-time advisory recommending the user disable
+AutoUpscale (or set `--autoupscale-target=1`) for next playback. The
+filter keeps producing target-resolution output to satisfy the
+contract it made when the chain was built.
+
+### Implementation
+
+`src/content_probe.h` is a header-only module with three functions:
+
+- `up_laplacian_variance(plane, stride, w, h, *n_out)` — sub-samples
+  the luma plane on a 4×4 grid and accumulates squared Laplacian
+  responses. ~50 µs at 480p, less at higher resolutions because the
+  grid is fixed-size.
+
+- `up_block_edge_strength(plane, stride, w, h, *n_out)` — measures
+  absolute pixel differences across 8-pixel grid boundaries. Same
+  4-pixel sub-sample step.
+
+- `up_should_bypass_for_content(*accum)` — applies the decision
+  rule to accumulated metrics. Returns 1 when both `lap_mean < 400²`
+  and `edge_mean > 6`, and the probe has gathered enough samples.
+
+The probe runs for 60 frames (~2 seconds at 30fps — long enough for
+a few I-frames so quality varies across GOPs). After that, the
+advisory either fires or doesn't, and the probe deactivates. Total
+probe cost: ~3 ms for the entire window, distributed across 60
+frames so no single frame is delayed perceptibly.
+
+### Honest scope
+
+The probe is a heuristic, not a quality measurement. It catches the
+worst case — heavily compressed soft sources where upscaling
+strictly hurts — and lets everything else through. Real-world
+"would the upscaled picture look better than the original on the
+user's display" depends on display size, viewing distance, and
+personal preference; no in-filter algorithm can answer that.
+
+The thresholds (`UP_PROBE_THRESH_SOFT_LAP_MEAN=400`,
+`UP_PROBE_THRESH_BLOCKY_EDGE_MEAN=6`) are deliberately conservative.
+On clean grainy 480p content the metrics typically read lap-mean
+800–2000 and edge-mean 1–4, so the advisory doesn't fire. On heavily
+artifact-ridden web-rips the metrics shift toward lap-mean 200–400
+and edge-mean 8–15, where the advisory IS appropriate.
+
+### Verification
+
+The probe is observe-only — it reads source pixels, never writes
+anything to the output. This is verified by decoded-MD5 comparison:
+running the same source with `--autoupscale-content-probe=1` and
+`--autoupscale-content-probe=0` produces byte-identical decoded
+output. The 13 unit tests in `test_content_probe.c` exercise the
+metric calculations on synthetic planes (flat, checkerboard,
+gradient, blocky-grid) and verify the decision rule across all 5
+cases (insufficient data, clean, soft-only, blocky-only, soft+blocky).
+
 ## Performance auto-tuning
 
 The plugin ships with the highest-quality defaults available (zimg +
@@ -634,7 +738,7 @@ different class of bug:
 
 ### Unit tests — exact-value assertions
 
-113 tests across 7 suites in `tests/test_*.c`. Each test states a
+126 tests across 8 suites in `tests/test_*.c`. Each test states a
 specific, predictable expected value. They run under AddressSanitizer
 + UndefinedBehaviorSanitizer (`make test`), so memory errors and
 signed-overflow bugs are caught even when the asserted output happens
@@ -671,9 +775,9 @@ rules that aren't otherwise verifiable from output alone:
 
 ### Smoke fuzzers — deterministic mass testing
 
-`make fuzz-smoke` runs 7 standalone harnesses (`tests/fuzz_*.c` with
-`-DFUZZ_MAIN`) totalling 520k iterations under ASan + UBSan, in
-about 6 seconds. Each fuzzer drives a single function (or a small
+`make fuzz-smoke` runs 8 standalone harnesses (`tests/fuzz_*.c` with
+`-DFUZZ_MAIN`) totalling 620k iterations under ASan + UBSan, in
+about 7 seconds. Each fuzzer drives a single function (or a small
 combination of helpers) with deterministic xorshift32 random input
 and verifies a set of post-conditions (the "invariant checker").
 
@@ -686,6 +790,7 @@ and verifies a set of post-conditions (the "invariant checker").
 | `copy_plane`      |  20k      | stride-aware plane copy (memory-safety)     |
 | `stripe_bounds`   | 100k      | stripe partition math                       |
 | `frame_shape`     | 100k      | chroma classification + plane geometry + stripe partition together |
+| `scaler_chroma`   | 100k      | chroma fourcc → zimg backend mapping (the VLC-touching boundary) |
 
 `fuzz_upscale_logic` and `fuzz_frame_shape` use **biased input
 selection** in their smoke mains. Without bias, raw int32 values
@@ -698,14 +803,14 @@ fill the remaining iterations to keep the chaos.
 ### libFuzzer — coverage-guided exploration
 
 `make fuzz` builds clang-libfuzzer targets that explore the input
-space using coverage-guided mutation. CI runs three targets for 60
-seconds each on every push (3 minutes total libFuzzer time):
-`fuzz_upscale_logic`, `fuzz_usm`, and `fuzz_frame_shape`. The
-harnesses share their invariant checker with the smoke fuzzers, so
-any bug found by libFuzzer is also a violation of an explicit, named
-property — not just a crash.
+space using coverage-guided mutation. CI runs four targets for 60
+seconds each on every push (4 minutes total libFuzzer time):
+`fuzz_upscale_logic`, `fuzz_usm`, `fuzz_frame_shape`, and
+`fuzz_scaler_chroma`. The harnesses share their invariant checker
+with the smoke fuzzers, so any bug found by libFuzzer is also a
+violation of an explicit, named property — not just a crash.
 
-**Corpora.** Two structured corpora ship with the repo:
+**Corpora.** Three structured corpora ship with the repo:
 
 - `tests/corpus/` — 16 seeds for `fuzz_upscale_logic`, 32 bytes each
   in the format `<iiiiII>` (src_w, src_h, skip_above, preset, cores,
@@ -717,6 +822,13 @@ property — not just a crash.
   h, n_stripes, dst_h). Covers all four chroma classes (opaque,
   has-y-plane, packed, garbage), geometry boundaries, pathological
   aspects, and 8 invalid-input cases.
+
+- `tests/corpus_scaler_chroma/` — 21 seeds for `fuzz_scaler_chroma`,
+  8 bytes each in the format `<4s B 3x>` (4-byte fourcc + 1-byte
+  null-pointer mask + 3 bytes pad). Covers the 4 supported chromas
+  (I420/YV12/I422/I444), 9 known-rejected chromas (NV12, NV21, YUY2,
+  UYVY, RV32, BGRA, VAOP, VDV0, DX11), 4 NULL-pointer combinations,
+  and 3 garbage/edge fourccs (zero, all-FF, lowercase).
 
 Empirically, the seeded corpora accelerate discovery roughly 2×: in
 30-second runs, libFuzzer adds ~120 new corpus entries from seeds vs
@@ -766,6 +878,32 @@ on every iteration:
 5. **Invalid-input rejection** — `compute_stripe_bounds` returns 0
    for `i < 0`, `i >= n`, `n <= 0`, `src_h <= 0`, or `dst_h <= 0`,
    without writing to its output pointers (proven by canaries).
+
+`fuzz_scaler_chroma.c` exercises the VLC-interface boundary —
+specifically `up_chroma_to_zimg()` from `src/scaler_zimg_chroma.h`,
+which maps a VLC chroma fourcc to zimg's (sub_w, sub_h, yv12_swap)
+triple. This is the function the production zimg backend calls on
+every frame to decide whether and how to consume it. The invariants:
+
+1. **Known-supported coverage** — every iteration verifies that
+   I420 → (1,1,0), YV12 → (1,1,1), I422 → (1,0,0), I444 → (0,0,0).
+   Catches a sub_w/sub_h regression instantly.
+2. **Known-unsupported rejection** — NV12, NV21, YUY2, UYVY, RV32,
+   RV24, BGRA, VAOP, VDV0, DX11 must all return 0. Catches a
+   regression where someone naively adds NV12 to the supported list
+   (would crash at runtime — zimg can't consume semi-planar UV).
+3. **Random fourcc safety** — any 32-bit value must produce rc=0 or
+   rc=1, never crash, never leave outputs partially written when
+   rc=1 (sentinel detection on each output).
+4. **NULL output rejection** — passing NULL for any subset of the
+   three output pointers must return 0 cleanly without crashing.
+5. **Cross-property: zimg-supported ⊂ has-y-plane** — every chroma
+   `up_chroma_to_zimg` accepts must also be classified as has-y-plane
+   by `chroma_classify.h`. Strict subset (NV12 has Y plane but isn't
+   accepted by zimg).
+6. **Cross-property: zimg-supported ∩ opaque = ∅** — no opaque
+   chroma should ever be accepted. Catches a regression where an
+   hwaccel fourcc accidentally got added.
 
 Both fuzzers print the violated invariant with full input context to
 stderr, flush, then `abort()`. libFuzzer reports the abort as a

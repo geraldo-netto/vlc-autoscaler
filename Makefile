@@ -90,7 +90,7 @@ $(BUILD)/%.o: src/%.c src/scaler.h src/upscale_logic.h src/usm.h src/perfmon.h s
 	$(CC) $(PLUGIN_CFLAGS) -c -o $@ $<
 
 # --------- unit tests ---------
-test: $(BUILD)/test_upscale_logic $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_threading $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool
+test: $(BUILD)/test_upscale_logic $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_threading $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/test_upscale_logic
@@ -112,6 +112,9 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUIL
 	@echo
 	@echo "=== usm_pool ==="
 	@$(BUILD)/test_usm_pool
+	@echo
+	@echo "=== content_probe ==="
+	@$(BUILD)/test_content_probe
 
 $(BUILD)/test_upscale_logic: tests/test_upscale_logic.c src/upscale_logic.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
@@ -123,7 +126,7 @@ $(BUILD)/test_perfmon: tests/test_perfmon.c src/perfmon.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
 # --------- libFuzzer (clang) ---------
-fuzz: $(BUILD)/fuzz_upscale_logic $(BUILD)/fuzz_usm $(BUILD)/fuzz_perfmon $(BUILD)/fuzz_threading $(BUILD)/fuzz_copy_plane $(BUILD)/fuzz_stripe_bounds $(BUILD)/fuzz_frame_shape
+fuzz: $(BUILD)/fuzz_upscale_logic $(BUILD)/fuzz_usm $(BUILD)/fuzz_perfmon $(BUILD)/fuzz_threading $(BUILD)/fuzz_copy_plane $(BUILD)/fuzz_stripe_bounds $(BUILD)/fuzz_frame_shape $(BUILD)/fuzz_scaler_chroma
 	@echo "Built libFuzzer targets:"
 	@echo "  $(BUILD)/fuzz_upscale_logic"
 	@echo "  $(BUILD)/fuzz_usm"
@@ -132,6 +135,7 @@ fuzz: $(BUILD)/fuzz_upscale_logic $(BUILD)/fuzz_usm $(BUILD)/fuzz_perfmon $(BUIL
 	@echo "  $(BUILD)/fuzz_copy_plane"
 	@echo "  $(BUILD)/fuzz_stripe_bounds"
 	@echo "  $(BUILD)/fuzz_frame_shape"
+	@echo "  $(BUILD)/fuzz_scaler_chroma"
 	@echo "Run e.g.: $(BUILD)/fuzz_upscale_logic -max_total_time=60"
 
 $(BUILD)/fuzz_upscale_logic: tests/fuzz_upscale_logic.c src/upscale_logic.h | $(BUILD)
@@ -155,8 +159,11 @@ $(BUILD)/fuzz_stripe_bounds: tests/fuzz_stripe_bounds.c src/zimg_helpers.h | $(B
 $(BUILD)/fuzz_frame_shape: tests/fuzz_frame_shape.c src/chroma_classify.h src/zimg_helpers.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
+$(BUILD)/fuzz_scaler_chroma: tests/fuzz_scaler_chroma.c src/scaler_zimg_chroma.h src/chroma_classify.h | $(BUILD)
+	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
+
 # --------- smoke fuzz (no libFuzzer needed) ---------
-fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_perfmon_smoke $(BUILD)/fuzz_threading_smoke $(BUILD)/fuzz_copy_plane_smoke $(BUILD)/fuzz_stripe_bounds_smoke $(BUILD)/fuzz_frame_shape_smoke
+fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_perfmon_smoke $(BUILD)/fuzz_threading_smoke $(BUILD)/fuzz_copy_plane_smoke $(BUILD)/fuzz_stripe_bounds_smoke $(BUILD)/fuzz_frame_shape_smoke $(BUILD)/fuzz_scaler_chroma_smoke
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/fuzz_smoke
@@ -178,6 +185,9 @@ fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_perfmon_sm
 	@echo
 	@echo "=== frame_shape ==="
 	@$(BUILD)/fuzz_frame_shape_smoke
+	@echo
+	@echo "=== scaler_chroma ==="
+	@$(BUILD)/fuzz_scaler_chroma_smoke
 
 $(BUILD)/fuzz_smoke: tests/fuzz_upscale_logic.c src/upscale_logic.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
@@ -200,6 +210,9 @@ $(BUILD)/fuzz_stripe_bounds_smoke: tests/fuzz_stripe_bounds.c src/zimg_helpers.h
 $(BUILD)/fuzz_frame_shape_smoke: tests/fuzz_frame_shape.c src/chroma_classify.h src/zimg_helpers.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
+$(BUILD)/fuzz_scaler_chroma_smoke: tests/fuzz_scaler_chroma.c src/scaler_zimg_chroma.h src/chroma_classify.h | $(BUILD)
+	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
+
 # --------- static analysis ---------
 analyze:
 	@command -v cppcheck >/dev/null 2>&1 || { \
@@ -210,7 +223,7 @@ analyze:
 	cppcheck --enable=warning,style,performance,portability \
 		--inline-suppr --std=c11 --error-exitcode=2 \
 		--suppress=missingIncludeSystem \
-		-I src src/upscale_logic.h src/usm.h src/perfmon.h src/threading.h src/zimg_helpers.h src/chroma_classify.h src/usm_pool.h src/usm_pool.c tests/
+		-I src src/upscale_logic.h src/usm.h src/perfmon.h src/threading.h src/zimg_helpers.h src/chroma_classify.h src/scaler_zimg_chroma.h src/content_probe.h src/usm_pool.h src/usm_pool.c tests/
 
 # --------- install ---------
 install: $(BUILD)/$(PLUGIN).so
@@ -251,3 +264,6 @@ $(BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.
 
 $(BUILD)/test_usm_pool: tests/test_usm_pool.c src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< src/usm_pool.c $(TEST_LDFLAGS) -lpthread
+
+$(BUILD)/test_content_probe: tests/test_content_probe.c src/content_probe.h | $(BUILD)
+	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
