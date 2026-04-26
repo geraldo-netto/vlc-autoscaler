@@ -79,6 +79,14 @@ static inline uint64_t up_laplacian_variance(const uint8_t *plane,
     if (n_samples_out) *n_samples_out = 0;
     if (plane == NULL || stride <= 0 || w <= 2 || h <= 2)
         return 0;
+    /* Defensive: the caller's buffer is sized as stride * h. If stride
+     * is less than w, our `row[x]` access for x in [step, w-1) would
+     * read past the end of the row's actual storage and into either
+     * the next row or off the buffer entirely. VLC's frame layout
+     * always satisfies i_pitch >= i_visible_pitch, but we don't trust
+     * the input — caught by ASan in fuzz_content_probe. */
+    if (stride < w)
+        return 0;
     /* UP_PROBE_GRID_STEP is a compile-time constant >= 1; no defensive
      * clamp needed. */
     int step = UP_PROBE_GRID_STEP;
@@ -126,6 +134,10 @@ static inline uint64_t up_block_edge_strength(const uint8_t *plane,
     if (n_samples_out) *n_samples_out = 0;
     if (plane == NULL || stride <= 0 || w <= UP_PROBE_BLOCK_SIZE
                                      || h <= UP_PROBE_BLOCK_SIZE)
+        return 0;
+    /* Same stride defensive check as up_laplacian_variance — see comment
+     * there. Reading past the end of the row's storage is UB; bail. */
+    if (stride < w)
         return 0;
 
     uint64_t sum_abs = 0;

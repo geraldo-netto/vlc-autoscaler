@@ -509,6 +509,93 @@ static int zimg_open(scaler_ctx_t *ctx)
     return 0;
 }
 
+/*
+ * Phase 1: Copy IN. VLC's source picture (which we cannot read from
+ * worker threads — pool-managed buffers segfault) is copied to our
+ * scratch source buffers. Workers then read from the scratch.
+ *
+ * Extracted from zimg_process to keep its cognitive complexity low.
+ */
+static void zimg_copy_in(zimg_priv_t *p, const picture_t *src)
+{
+    const int swap = p->yv12_swap_uv;
+    int s_y = 0;
+    int s_u = up_zimg_plane_idx(1, swap);
+    int s_v = up_zimg_plane_idx(2, swap);
+    up_copy_plane(p->sy, p->src_pitch_y,
+                  src->p[s_y].p_pixels, src->p[s_y].i_pitch,
+                  p->src_w, p->src_h);
+    const int cw = (p->src_w + (1 << p->sub_w) - 1) >> p->sub_w;
+    const int ch = (p->src_h + (1 << p->sub_h) - 1) >> p->sub_h;
+    up_copy_plane(p->su, p->src_pitch_c,
+                  src->p[s_u].p_pixels, src->p[s_u].i_pitch, cw, ch);
+    up_copy_plane(p->sv, p->src_pitch_c,
+                  src->p[s_v].p_pixels, src->p[s_v].i_pitch, cw, ch);
+}
+
+/*
+ * Phase 2 (only when zero-copy dst is enabled): point each worker at
+ * VLC's destination picture for this frame. Workers read these fields
+ * fresh on each dispatch (they're blocked on `go` until sem_post), so
+ * no synchronization is needed. The per-stripe filter graphs do not
+ * bake in dst stride — that goes into the per-call zimg_image_buffer
+ * inside worker_main.
+ */
+static void zimg_zerocopy_point_workers(zimg_priv_t *p, picture_t *dst)
+{
+    const int swap = p->yv12_swap_uv;
+    int d_y = 0;
+    int d_u = up_zimg_plane_idx(1, swap);
+    int d_v = up_zimg_plane_idx(2, swap);
+    for (int i = 0; i < p->n_threads; i++) {
+        stripe_worker_t *w = &p->workers[i];
+        w->dy           = dst->p[d_y].p_pixels;
+        w->du           = dst->p[d_u].p_pixels;
+        w->dv           = dst->p[d_v].p_pixels;
+        w->dst_pitch_y  = dst->p[d_y].i_pitch;
+        w->dst_pitch_c  = dst->p[d_u].i_pitch;
+    }
+}
+
+/*
+ * Phase 3: Dispatch all workers and wait for completion.
+ * Returns 0 if every worker succeeded, -1 otherwise.
+ */
+static int zimg_dispatch_and_wait(zimg_priv_t *p)
+{
+    for (int i = 0; i < p->n_threads; i++) {
+        p->workers[i].result = 0;
+        sem_post(&p->workers[i].go);
+    }
+    for (int i = 0; i < p->n_threads; i++)
+        sem_wait(&p->done);
+    for (int i = 0; i < p->n_threads; i++) {
+        if (p->workers[i].result != 0) return -1;
+    }
+    return 0;
+}
+
+/*
+ * Phase 4 (only when zero-copy dst is OFF): copy the scratch
+ * destination buffers back to VLC's dst picture. Skipped entirely
+ * with zero-copy, since workers already wrote into VLC's dst above.
+ */
+static void zimg_copy_out(zimg_priv_t *p, picture_t *dst)
+{
+    const int swap = p->yv12_swap_uv;
+    int d_y = 0;
+    int d_u = up_zimg_plane_idx(1, swap);
+    int d_v = up_zimg_plane_idx(2, swap);
+    up_copy_plane(dst->p[d_y].p_pixels, dst->p[d_y].i_pitch,
+                  p->dy, p->dst_pitch_y, p->dst_w, p->dst_h);
+    const int cw = (p->dst_w + (1 << p->sub_w) - 1) >> p->sub_w;
+    const int ch = (p->dst_h + (1 << p->sub_h) - 1) >> p->sub_h;
+    up_copy_plane(dst->p[d_u].p_pixels, dst->p[d_u].i_pitch,
+                  p->du, p->dst_pitch_c, cw, ch);
+    up_copy_plane(dst->p[d_v].p_pixels, dst->p[d_v].i_pitch,
+                  p->dv, p->dst_pitch_c, cw, ch);
+}
+
 static int zimg_process(scaler_ctx_t *ctx,
                         const picture_t *src, picture_t *dst)
 {
@@ -519,7 +606,7 @@ static int zimg_process(scaler_ctx_t *ctx,
      * graphs. Done once on the first frame so VLC's chain solver can
      * probe us cheaply during chain setup. */
     if (!p->lazy_init_done) {
-        if (p->lazy_init_failed) return -1;  /* sticky failure */
+        if (p->lazy_init_failed) return -1;
         if (zimg_lazy_init(p) != 0) {
             p->lazy_init_failed = true;
             return -1;
@@ -527,71 +614,16 @@ static int zimg_process(scaler_ctx_t *ctx,
         p->lazy_init_done = true;
     }
 
-    /* Copy IN: VLC's source picture -> our scratch source buffers. */
-    {
-        const int swap = p->yv12_swap_uv;
-        int s_y = 0, s_u = up_zimg_plane_idx(1, swap), s_v = up_zimg_plane_idx(2, swap);
-        up_copy_plane(p->sy, p->src_pitch_y,
-                   src->p[s_y].p_pixels, src->p[s_y].i_pitch,
-                   p->src_w, p->src_h);
-        const int cw = (p->src_w + (1 << p->sub_w) - 1) >> p->sub_w;
-        const int ch = (p->src_h + (1 << p->sub_h) - 1) >> p->sub_h;
-        up_copy_plane(p->su, p->src_pitch_c,
-                   src->p[s_u].p_pixels, src->p[s_u].i_pitch, cw, ch);
-        up_copy_plane(p->sv, p->src_pitch_c,
-                   src->p[s_v].p_pixels, src->p[s_v].i_pitch, cw, ch);
-    }
+    zimg_copy_in(p, src);
 
-    /* Zero-copy dst: point workers at VLC's dst picture for this frame.
-     * Workers read these fields fresh on every dispatch, so we just
-     * overwrite them; no synchronization needed because workers are
-     * blocked on their `go` semaphore until we sem_post below. The
-     * per-stripe filter graphs don't bake in the dst stride - it lives
-     * in the per-call zimg_image_buffer constructed in worker_main.
-     * VLC's pitch may differ from our scratch pitch (typically larger
-     * due to VLC's alignment); zimg handles arbitrary strides fine. */
-    if (p->dst_zerocopy) {
-        const int swap = p->yv12_swap_uv;
-        int d_y = 0;
-        int d_u = up_zimg_plane_idx(1, swap);
-        int d_v = up_zimg_plane_idx(2, swap);
-        for (int i = 0; i < p->n_threads; i++) {
-            stripe_worker_t *w = &p->workers[i];
-            w->dy           = dst->p[d_y].p_pixels;
-            w->du           = dst->p[d_u].p_pixels;
-            w->dv           = dst->p[d_v].p_pixels;
-            w->dst_pitch_y  = dst->p[d_y].i_pitch;
-            w->dst_pitch_c  = dst->p[d_u].i_pitch;
-        }
-    }
+    if (p->dst_zerocopy)
+        zimg_zerocopy_point_workers(p, dst);
 
-    /* Dispatch all workers, wait for all. */
-    for (int i = 0; i < p->n_threads; i++) {
-        p->workers[i].result = 0;
-        sem_post(&p->workers[i].go);
-    }
-    for (int i = 0; i < p->n_threads; i++)
-        sem_wait(&p->done);
+    if (zimg_dispatch_and_wait(p) != 0)
+        return -1;
 
-    for (int i = 0; i < p->n_threads; i++) {
-        if (p->workers[i].result != 0) return -1;
-    }
-
-    /* Copy OUT: scratch destination buffers -> VLC's dst picture.
-     * Skipped entirely when zero-copy is on - workers wrote directly
-     * into VLC's dst picture above. */
-    if (!p->dst_zerocopy) {
-        const int swap = p->yv12_swap_uv;
-        int d_y = 0, d_u = up_zimg_plane_idx(1, swap), d_v = up_zimg_plane_idx(2, swap);
-        up_copy_plane(dst->p[d_y].p_pixels, dst->p[d_y].i_pitch,
-                   p->dy, p->dst_pitch_y, p->dst_w, p->dst_h);
-        const int cw = (p->dst_w + (1 << p->sub_w) - 1) >> p->sub_w;
-        const int ch = (p->dst_h + (1 << p->sub_h) - 1) >> p->sub_h;
-        up_copy_plane(dst->p[d_u].p_pixels, dst->p[d_u].i_pitch,
-                   p->du, p->dst_pitch_c, cw, ch);
-        up_copy_plane(dst->p[d_v].p_pixels, dst->p[d_v].i_pitch,
-                   p->dv, p->dst_pitch_c, cw, ch);
-    }
+    if (!p->dst_zerocopy)
+        zimg_copy_out(p, dst);
 
     return 0;
 }
