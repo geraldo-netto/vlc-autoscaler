@@ -244,9 +244,10 @@ static void test_auto_never_above_1080p(void)
     }
     /* Also for sources above 1080p — AUTO should not upscale them at all
      * via plan_upscale (skip_above guards), but the decider itself should
-     * still never return a value above max(src_h, 1080). */
+     * never return a value above max(src_h, 1080) and never below src_h. */
     int r = up_decide_target_height(1440, UP_TARGET_AUTO, 256, 1048576);
-    CHECK(r <= 1440 || r == 1440);  /* not downscaled, not upscaled past src */
+    CHECK(r >= 1440);   /* never downscale (no-op or no-change) */
+    CHECK(r <= 1440);   /* never upscale past src_h when src_h > 1080 */
     END();
 }
 

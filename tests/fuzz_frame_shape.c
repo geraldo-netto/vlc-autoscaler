@@ -275,31 +275,39 @@ static void check_stripe_partition(int n, int src_h, int dst_h)
     }
 }
 
-static void check_stripe_invalid(int n, int src_h, int dst_h)
+static void check_stripe_invalid(int i, int n, int src_h, int dst_h)
 {
-    /* For invalid inputs, stripe_bounds must return 0 and not touch
-     * the output pointers. We prove "didn't touch" by canaries. */
-    int s_a = 0xDEAD, s_b = 0xBEEF, d_a = 0xCAFE, d_b = 0xBABE;
-    int ok = up_compute_stripe_bounds(/*i*/ -1, n, src_h, dst_h,
+    /* For invalid inputs, stripe_bounds must return 0. We test a wide
+     * range of possibly-invalid (i, n, src_h, dst_h) tuples driven by
+     * fuzz input, not just hardcoded -1, so cppcheck can't dead-code-
+     * eliminate the failure branches.
+     *
+     * Pre-fill outputs with canaries. The function's contract is that
+     * output values may or may not be defined when it returns 0 — we
+     * don't assert anything about them in that case, only that it
+     * doesn't crash and returns 0 for invalid inputs. */
+    int s_a = 0x4DEAD, s_b = 0x4BEEF, d_a = 0x4CAFE, d_b = 0x4BABE;
+    int ok = up_compute_stripe_bounds(i, n, src_h, dst_h,
                                       &s_a, &s_b, &d_a, &d_b);
-    if (n <= 0 || src_h <= 0 || dst_h <= 0) {
-        if (ok) {
-            FAIL("stripe_bounds accepted invalid n=%d src_h=%d dst_h=%d",
-                 n, src_h, dst_h);
-        }
+
+    /* Compute whether the input is invalid per the documented contract. */
+    int invalid = (n <= 0) || (src_h <= 0) || (dst_h <= 0)
+               || (i < 0)  || (i >= n);
+
+    if (invalid && ok) {
+        FAIL("stripe_bounds accepted invalid input "
+             "i=%d n=%d src_h=%d dst_h=%d", i, n, src_h, dst_h);
     }
-    /* i=-1 with otherwise-valid inputs must also reject. */
-    if (ok && n > 0 && src_h > 0 && dst_h > 0) {
-        FAIL("stripe_bounds accepted i=-1 n=%d src_h=%d dst_h=%d",
-             n, src_h, dst_h);
-    }
-    /* And i >= n must reject. */
-    if (n > 0 && src_h > 0 && dst_h > 0) {
-        ok = up_compute_stripe_bounds(n, n, src_h, dst_h,
-                                      &s_a, &s_b, &d_a, &d_b);
-        if (ok) {
-            FAIL("stripe_bounds accepted i=n: n=%d src_h=%d dst_h=%d",
-                 n, src_h, dst_h);
+    if (!invalid && !ok) {
+        /* Valid (i, n, src_h, dst_h) by entry-guard rules — but the
+         * function may still return 0 for degenerate stripes. Only
+         * complain if all four output values are unchanged from the
+         * canary, which would indicate the function exited from the
+         * entry guard without doing any work despite valid inputs. */
+        if (s_a == 0x4DEAD && s_b == 0x4BEEF
+         && d_a == 0x4CAFE && d_b == 0x4BABE) {
+            FAIL("stripe_bounds rejected valid input without computing: "
+                 "i=%d n=%d src_h=%d dst_h=%d", i, n, src_h, dst_h);
         }
     }
 }
@@ -334,7 +342,26 @@ static void run_one(const uint8_t *data, size_t size)
 
     /* 3. Stripe partition — coverage and rejection-of-invalid. */
     check_stripe_partition(i_n_stripes, i_h, i_dst_h);
-    check_stripe_invalid(i_n_stripes, i_h, i_dst_h);
+
+    /* 4. Stripe rejection — drive `i` through several interesting
+     * values to exercise the entry guard from many angles. cppcheck
+     * can no longer dead-code-eliminate the failure branches because
+     * `i` is a runtime value, not a literal. */
+    int trial_indices[] = {
+        -1,                  /* canonical "below range" */
+        i_n_stripes,         /* exactly at the upper edge */
+        i_n_stripes + 1,     /* one past upper */
+        (int)(cls_byte >> 16),   /* random bits from fuzz input */
+        i_w,                 /* could be anything including INT_MIN */
+    };
+    for (size_t k = 0; k < sizeof trial_indices / sizeof *trial_indices; k++) {
+        check_stripe_invalid(trial_indices[k], i_n_stripes, i_h, i_dst_h);
+    }
+    /* Also test the originally-intended use-case: i in valid range. */
+    if (i_n_stripes > 0) {
+        int valid_i = ((unsigned)cls_byte) % (unsigned)i_n_stripes;
+        check_stripe_invalid(valid_i, i_n_stripes, i_h, i_dst_h);
+    }
 }
 
 /* ---- entry points ---- */
