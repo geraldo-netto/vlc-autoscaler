@@ -73,6 +73,45 @@ static void check_invariants(int src_w, int src_h, int skip_above,
     if (src_h > 0 && src_h <= INT_MAX / UP_MAX_RATIO) {
         if (out->height > src_h * UP_MAX_RATIO) abort();
     }
+
+    /* --- Design-rule invariants for the resolution ladder --- */
+
+    /* AUTO must never produce output above 1080p. Going higher requires
+     * explicit user opt-in (target=3..6). This is the design ceiling. */
+    if (preset == UP_TARGET_AUTO && out->height > 1080) {
+        fprintf(stderr,
+                "INVARIANT: AUTO produced height=%d (must be <= 1080) for "
+                "src=(%d,%d) cores=%ld mem=%lu\n",
+                out->height, src_w, src_h, cores, mem_mb);
+        abort();
+    }
+
+    /* For valid known presets: if no ratio cap binds, the output height
+     * must reach the preset's nominal target. This guards against a
+     * regression where a switch case silently falls through to AUTO. */
+    int nominal = 0;
+    switch (preset) {
+        case UP_TARGET_720P:   nominal =  720; break;
+        case UP_TARGET_1080P:  nominal = 1080; break;
+        case UP_TARGET_1440P:  nominal = 1440; break;
+        case UP_TARGET_4K:     nominal = 2160; break;
+        case UP_TARGET_5K:     nominal = 2880; break;
+        case UP_TARGET_8K:     nominal = 4320; break;
+        default: nominal = 0;  /* AUTO or unknown -> no fixed target */
+    }
+    if (nominal > 0 && src_h > 0 && src_h <= INT_MAX / UP_MAX_RATIO) {
+        int cap = src_h * UP_MAX_RATIO;
+        int expected = (nominal <= cap) ? nominal : cap;
+        if (expected < src_h) expected = src_h;
+        /* Even-rounding can shave 1 pixel; allow that slack. */
+        if (out->height + 1 < expected) {
+            fprintf(stderr,
+                    "INVARIANT: preset=%d expected height>=%d (cap=%d) "
+                    "got %d for src_h=%d\n",
+                    preset, expected, cap, out->height, src_h);
+            abort();
+        }
+    }
 }
 
 /*
@@ -160,6 +199,30 @@ int main(int argc, char **argv)
             s ^= s <<  5;
             memcpy(buf + j, &s, 4);
         }
+
+        /* Bias every 4th iteration to use a *valid* preset value. The raw
+         * xorshift bytes give roughly uniform 32-bit ints, which means
+         * meaningful presets (0..6) hit only ~1.6e-7 of the time. Without
+         * biasing, the new ladder branches would be functionally untested
+         * by the smoke runner. With biasing, every preset gets ~25%/7 ≈
+         * 3.5% of iterations, which at 100k = 3500 hits per preset. */
+        if ((i & 3) == 0) {
+            int p = (int)(s % (UP_TARGET_MAX + 1u));  /* 0..UP_TARGET_MAX */
+            memcpy(buf + 12, &p, 4);
+        }
+
+        /* Bias every 4th-plus-1 iteration to use realistic source heights.
+         * Otherwise random int32 src_h is almost always negative or huge. */
+        if ((i & 3) == 1) {
+            static const int common_heights[] = {
+                144, 240, 288, 360, 480, 540, 576, 720, 1080, 1440, 2160, 4320
+            };
+            int h = common_heights[s % (sizeof common_heights / sizeof *common_heights)];
+            int w = (h * 16) / 9;  /* 16:9 default */
+            memcpy(buf + 0, &w, 4);
+            memcpy(buf + 4, &h, 4);
+        }
+
         run_one(buf, sizeof buf);
     }
 

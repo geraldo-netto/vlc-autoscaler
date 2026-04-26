@@ -22,6 +22,11 @@
 #define UP_TARGET_AUTO    0
 #define UP_TARGET_720P    1
 #define UP_TARGET_1080P   2
+#define UP_TARGET_1440P   3
+#define UP_TARGET_4K      4   /* 2160p */
+#define UP_TARGET_5K      5   /* 2880p */
+#define UP_TARGET_8K      6   /* 4320p */
+#define UP_TARGET_MAX     UP_TARGET_8K
 
 /* Algorithm presets (user-visible: do NOT renumber). */
 #define UP_ALGO_FAST_BILINEAR  0
@@ -52,6 +57,30 @@ static inline int up__clamp_even(int v)
     return v & ~1;
 }
 
+/*
+ * AUTO branch of up_decide_target_height. Returns the target height
+ * AUTO would pick given hardware capacity and source size. Never
+ * exceeds 1080p — going higher must be explicit (target=3..6).
+ *
+ * Extracted from up_decide_target_height to keep its cyclomatic
+ * complexity under the 15 ceiling.
+ */
+static inline int up__auto_target_height(int src_h, long cores,
+                                         unsigned long mem_mb)
+{
+    /* AUTO: 1080p only if we have >= 4 cores AND (>= 2 GB RAM or unknown)
+     * AND the upscale ratio to 1080p stays within UP_MAX_RATIO.
+     * AUTO never picks targets above 1080p — going higher must be
+     * explicit, since 1440p+ doubles+ the per-frame work and most
+     * users won't notice on typical displays. */
+    int ratio_ok_for_1080p = (src_h <= INT_MAX / UP_MAX_RATIO)
+                          && (src_h * UP_MAX_RATIO >= 1080);
+    int can_1080p = (cores >= 4)
+                 && (mem_mb == 0 || mem_mb >= 2048)
+                 && ratio_ok_for_1080p;
+    return can_1080p ? 1080 : 720;
+}
+
 /* ---------------------- Public API ---------------------- */
 
 /*
@@ -77,19 +106,16 @@ static inline int up_decide_target_height(int src_h, int preset,
         cores = 1;
 
     int target_h;
-    if (preset == UP_TARGET_720P) {
-        target_h = 720;
-    } else if (preset == UP_TARGET_1080P) {
-        target_h = 1080;
-    } else {
-        /* AUTO: 1080p only if we have >= 4 cores AND (>= 2 GB RAM or unknown)
-         * AND the upscale ratio to 1080p stays within UP_MAX_RATIO. */
-        int ratio_ok_for_1080p = (src_h <= INT_MAX / UP_MAX_RATIO)
-                              && (src_h * UP_MAX_RATIO >= 1080);
-        int can_1080p = (cores >= 4)
-                     && (mem_mb == 0 || mem_mb >= 2048)
-                     && ratio_ok_for_1080p;
-        target_h = can_1080p ? 1080 : 720;
+    switch (preset) {
+        case UP_TARGET_720P:   target_h =  720; break;
+        case UP_TARGET_1080P:  target_h = 1080; break;
+        case UP_TARGET_1440P:  target_h = 1440; break;
+        case UP_TARGET_4K:     target_h = 2160; break;
+        case UP_TARGET_5K:     target_h = 2880; break;
+        case UP_TARGET_8K:     target_h = 4320; break;
+        default:
+            target_h = up__auto_target_height(src_h, cores, mem_mb);
+            break;
     }
 
     /* Clamp to UP_MAX_RATIO * src_h, watching for overflow. */
@@ -170,7 +196,10 @@ static inline int up_plan_upscale(int src_w, int src_h, int skip_above,
         return 0;
     if (src_w > UP_MAX_DIM || src_h > UP_MAX_DIM)
         return 0;
-    if (skip_above > 0 && src_h >= skip_above)
+    /* skip_above only applies to AUTO. If the user explicitly asked for a
+     * specific target, respect it even when the source is already HD —
+     * e.g. preset=4K should upscale a 1080p source to 4K. */
+    if (preset == UP_TARGET_AUTO && skip_above > 0 && src_h >= skip_above)
         return 0;
 
     int target_h = up_decide_target_height(src_h, preset, cores, mem_mb);

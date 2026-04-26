@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
   workflow_dispatch:
 
 jobs:
@@ -62,6 +62,12 @@ jobs:
         run: |
           mkdir -p corpus_usm
           build/fuzz_usm corpus_usm -max_total_time=60 -max_len=64 -print_final_stats=1
+
+      - name: Run libFuzzer (frame_shape) for 60 seconds
+        run: |
+          mkdir -p corpus_frame_shape
+          if [ -d tests/corpus_frame_shape ]; then cp tests/corpus_frame_shape/* corpus_frame_shape/ 2>/dev/null || true; fi
+          build/fuzz_frame_shape corpus_frame_shape -max_total_time=60 -max_len=24 -print_final_stats=1
 
       - name: Upload findings
         if: failure()

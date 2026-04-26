@@ -63,7 +63,10 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 #define TARGET_TEXT     N_("Target resolution")
 #define TARGET_LONGTEXT N_( \
     "0 = auto (decide between 720p and 1080p based on CPU/RAM), " \
-    "1 = force 720p, 2 = force 1080p.")
+    "1 = 720p, 2 = 1080p, 3 = 1440p, 4 = 4K (2160p), " \
+    "5 = 5K (2880p), 6 = 8K (4320p). " \
+    "Targets above 1080p require explicit selection. " \
+    "All targets are subject to the 4x linear ratio cap relative to source.")
 
 #define ALGO_TEXT       N_("Scaling algorithm")
 #define ALGO_LONGTEXT   N_( \
@@ -140,7 +143,7 @@ vlc_module_begin()
     add_shortcut( "autoupscale" )
 
     add_integer_with_range( CFG_PREFIX "target", UP_TARGET_AUTO,
-                            UP_TARGET_AUTO, UP_TARGET_1080P,
+                            UP_TARGET_AUTO, UP_TARGET_MAX,
                             TARGET_TEXT, TARGET_LONGTEXT, false )
     add_integer_with_range( CFG_PREFIX "algo", UP_ALGO_SPLINE36,
                             UP_ALGO_FAST_BILINEAR, UP_ALGO_MAX,

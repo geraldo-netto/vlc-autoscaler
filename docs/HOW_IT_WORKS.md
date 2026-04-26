@@ -126,8 +126,43 @@ surface — a guaranteed crash).
 
 ## The auto-target heuristic
 
-When `target=0` (auto), the plugin picks 720p or 1080p based on three
-inputs:
+The `--autoupscale-target` option accepts seven values, controlling the
+output resolution height:
+
+| Value | Constant         | Height | Notes                                           |
+|-------|------------------|--------|-------------------------------------------------|
+| 0     | `UP_TARGET_AUTO` | 720 or 1080 | Default. Picks based on HW capacity. Never above 1080p. |
+| 1     | `UP_TARGET_720P` | 720    | Force 720p, even on capable hardware            |
+| 2     | `UP_TARGET_1080P`| 1080   | Force 1080p                                     |
+| 3     | `UP_TARGET_1440P`| 1440   | Explicit opt-in only                            |
+| 4     | `UP_TARGET_4K`   | 2160   | Explicit opt-in only                            |
+| 5     | `UP_TARGET_5K`   | 2880   | Explicit opt-in only                            |
+| 6     | `UP_TARGET_8K`   | 4320   | Explicit opt-in only                            |
+
+**The ratio cap (`UP_MAX_RATIO = 4`) binds for every preset.** Output
+height never exceeds `4 × src_h`. So `target=6` (8K) from 1080p input
+produces exactly 4320p, but `target=6` from 720p input only reaches
+2880p (= 720×4); the user gets the best the ratio cap allows rather
+than a refusal. Non-AI scalers (Lanczos, Spline36 included) don't
+recover detail — they reconstruct missing pixels by interpolation, and
+a 5×+ upscale produces a softer, ringy result that's worse than just
+letting the player scale on output. 4× is a generous ceiling.
+
+**AUTO never picks above 1080p, regardless of hardware.** Going higher
+than 1080p doubles or quadruples the per-frame work, and most users
+don't notice on typical 1080p–1440p displays. So the auto path is
+conservative — it caps where the cost/benefit is well-understood, and
+defers to the user for anything bigger. This is enforced by both a
+unit test (`test_auto_never_above_1080p`) and a fuzzer invariant.
+
+**`--autoupscale-skip-above` only applies to AUTO.** The default
+`skip_above=720` means AUTO does not engage on 720p+ sources (where
+upscaling is a debatable improvement). But explicit presets bypass
+this gate — if the user explicitly requests `target=4` (4K), a 1080p
+source is upscaled to 4K even though it's above `skip_above`. The
+user has stated their intent; the plugin respects it.
+
+When AUTO is active, three signals decide between 720p and 1080p:
 
 | Signal              | Threshold for 1080p       |
 |---------------------|---------------------------|
@@ -135,15 +170,16 @@ inputs:
 | Total RAM (Linux)   | ≥ 2 GB, or unknown        |
 | Upscale ratio       | ≤ 4× (i.e. `src_h * 4 ≥ 1080`) |
 
-If any threshold is missed, it falls back to 720p. The ratio cap exists
-because non-AI scalers (Lanczos included) don't recover detail — they only
-reconstruct missing pixels by interpolation, and a 5×+ upscale produces a
-softer, ringy result that's worse than just letting the player scale on
-output. 4× is a generous ceiling.
-
-RAM detection uses Linux's `sysinfo()`. On other platforms `mem_mb` stays
-at 0, which the heuristic interprets as "unknown — assume sufficient", so
+If any threshold is missed, AUTO falls back to 720p. RAM detection
+uses Linux's `sysinfo()`. On other platforms `mem_mb` stays at 0,
+which the heuristic interprets as "unknown — assume sufficient", so
 non-Linux systems behave like Linux systems with plenty of RAM.
+
+**Forward-compatibility:** unknown preset values (e.g. a future option
+introduced by a different build, or a typo'd integer outside the 0–6
+range) fall through to the AUTO branch. This is asserted by
+`test_unknown_preset_treated_as_auto`. The plugin should never produce
+nonsense output even if some downstream tool sets `target=999`.
 
 ## The actual scaling, in `Filter()`
 
@@ -590,3 +626,150 @@ includes it. The same code runs in all three places, which means:
 
 The trade-off is that all helper functions are `static inline`. That's fine
 for this size of code — `upscale_logic.h` is under 200 lines.
+
+## Testing strategy
+
+The project has three layers of correctness checking, each catching a
+different class of bug:
+
+### Unit tests — exact-value assertions
+
+113 tests across 7 suites in `tests/test_*.c`. Each test states a
+specific, predictable expected value. They run under AddressSanitizer
++ UndefinedBehaviorSanitizer (`make test`), so memory errors and
+signed-overflow bugs are caught even when the asserted output happens
+to be correct.
+
+| Suite                  | Count | Covers                                      |
+|------------------------|-------|---------------------------------------------|
+| `upscale_logic`        | 31    | preset dispatch (incl. all of 720p..8K), aspect math, ratio cap, AUTO ceiling, skip-above gating |
+| `usm`                  | 13    | unsharp-mask single-thread reference        |
+| `perfmon`              | 10    | EWMA performance monitor                    |
+| `threading`            | 8     | thread-count decision                       |
+| `zimg_helpers`         | 23    | stripe bounds, copy-plane                   |
+| `chroma_classify`      | 14    | opaque chroma list + cross-predicate invariant |
+| `usm_pool`             | 14    | threaded USM byte-identity vs single-thread |
+
+The `upscale_logic` suite includes targeted regression tests for design
+rules that aren't otherwise verifiable from output alone:
+
+- `test_auto_never_above_1080p`: AUTO must never produce > 1080p output
+  regardless of HW capacity. Loops over realistic source heights with
+  hypothetical mega-hardware (256 cores, 1 TB RAM).
+- `test_unknown_preset_treated_as_auto`: unknown preset values
+  (`UP_TARGET_MAX + 1`, `INT_MAX`, `INT_MIN`, `999`, `-1`) all fall
+  back to AUTO. Forward-compat guard.
+- `test_high_res_ratio_cap_boundary`: the ratio cap is exact, not
+  off-by-one. For each high-res preset, asserts both the exact-fit
+  edge case (`src_h * 4 == target`) and the one-below case
+  (`(src_h-2) * 4 < target`) produce the right values.
+- `test_compute_4k_aspect_preserved`, `test_compute_8k_aspect_preserved`:
+  exact 16:9 alignment from 1080p source to 4K and 8K.
+- `test_plan_full_ladder_spot_check`: end-to-end smoke through
+  `up_plan_upscale` for every preset 0..6 with a realistic 854×480
+  source, asserting evenness, no-downscale, and ratio-cap compliance.
+
+### Smoke fuzzers — deterministic mass testing
+
+`make fuzz-smoke` runs 7 standalone harnesses (`tests/fuzz_*.c` with
+`-DFUZZ_MAIN`) totalling 520k iterations under ASan + UBSan, in
+about 6 seconds. Each fuzzer drives a single function (or a small
+combination of helpers) with deterministic xorshift32 random input
+and verifies a set of post-conditions (the "invariant checker").
+
+| Fuzzer            | Iters/run | Targets                                     |
+|-------------------|-----------|---------------------------------------------|
+| `upscale_logic`   | 100k      | preset dispatch, aspect math, ratio cap     |
+| `usm`             |  50k      | unsharp-mask convolution                    |
+| `perfmon`         |  50k      | EWMA tracker                                |
+| `threading`       | 100k      | thread-count decision                       |
+| `copy_plane`      |  20k      | stride-aware plane copy (memory-safety)     |
+| `stripe_bounds`   | 100k      | stripe partition math                       |
+| `frame_shape`     | 100k      | chroma classification + plane geometry + stripe partition together |
+
+`fuzz_upscale_logic` and `fuzz_frame_shape` use **biased input
+selection** in their smoke mains. Without bias, raw int32 values
+almost never hit valid presets (0–6), realistic source heights, or
+real chroma fourccs — so the structured branches would go essentially
+untested by random bytes. The biased mode picks valid values every
+3rd–5th iteration to guarantee meaningful coverage; raw random bytes
+fill the remaining iterations to keep the chaos.
+
+### libFuzzer — coverage-guided exploration
+
+`make fuzz` builds clang-libfuzzer targets that explore the input
+space using coverage-guided mutation. CI runs three targets for 60
+seconds each on every push (3 minutes total libFuzzer time):
+`fuzz_upscale_logic`, `fuzz_usm`, and `fuzz_frame_shape`. The
+harnesses share their invariant checker with the smoke fuzzers, so
+any bug found by libFuzzer is also a violation of an explicit, named
+property — not just a crash.
+
+**Corpora.** Two structured corpora ship with the repo:
+
+- `tests/corpus/` — 16 seeds for `fuzz_upscale_logic`, 32 bytes each
+  in the format `<iiiiII>` (src_w, src_h, skip_above, preset, cores,
+  mem_mb). Covers every preset value (0..6), ratio-cap boundaries,
+  pathological aspects, and the historical 3×1024 regression.
+
+- `tests/corpus_frame_shape/` — 22 seeds for `fuzz_frame_shape`, 24
+  bytes each in the format `<IIiiii>` (cls_byte, garbage_fourcc, w,
+  h, n_stripes, dst_h). Covers all four chroma classes (opaque,
+  has-y-plane, packed, garbage), geometry boundaries, pathological
+  aspects, and 8 invalid-input cases.
+
+Empirically, the seeded corpora accelerate discovery roughly 2×: in
+30-second runs, libFuzzer adds ~120 new corpus entries from seeds vs
+~55 cold. The seeds give libFuzzer a foothold in the structured
+input space — its mutations crossing-over real chroma fourccs and
+real resolution heights produce more interesting inputs than blind
+exploration of 32-bit space.
+
+### Fuzzer invariants
+
+`fuzz_upscale_logic.c` asserts these resolution-ladder design rules
+on every iteration:
+
+1. **Generic contract** — bypass returns zeroed output; non-bypass
+   returns even, in-range, non-downscaled, aspect-preserving dims
+   under the 4× ratio cap.
+2. **AUTO ceiling** — `preset == UP_TARGET_AUTO` implies
+   `out.height <= 1080`. Catches a regression where AUTO might be
+   silently routed through one of the high-res branches.
+3. **Known-preset target reaching** — for each of the seven valid
+   presets, output height must reach the preset's nominal target (or
+   the ratio cap, whichever is smaller). Catches a regression where a
+   `case` falls through to AUTO and silently produces 720p instead of
+   the requested 4K.
+
+`fuzz_frame_shape.c` asserts these chroma-and-plane design rules:
+
+1. **Chroma class mutual exclusion** — a fourcc is never both
+   "opaque" and "has-y-plane". A USM operation on opaque GPU memory
+   would be a use-of-uninitialized-memory at best, a segfault at
+   worst.
+2. **Class spot-checks** — known opaque fourccs (VAOP, VDV0, DX11,
+   MMAL, CVPN) must be detected by `up_chroma_is_opaque`; known
+   y-plane fourccs (I420, YV12, NV12, NV21, I422, I444) must be
+   detected by `up_chroma_has_y_plane` and not flagged as opaque;
+   known packed fourccs (YUY2, UYVY, RV32, RV24, BGRA) must not be
+   classified as has-y-plane.
+3. **Plane geometry** — pitch/lines never produce values smaller
+   than `ceil(w / 2^sub_w)` or `ceil(h / 2^sub_h)`; pitch is always
+   64-byte aligned; `round_up_pitch` and `round_up_lines` never
+   shrink their input; `zimg_plane_idx` returns a value in [0, 2]
+   regardless of swap.
+4. **Stripe partition coverage** — when the caller honors the
+   production constraint `n_stripes <= dst_h / UP_STRIPE_MIN_DST_LINES`
+   AND `src_h / n_stripes >= 4`, the per-stripe ranges form a
+   non-overlapping, contiguous cover of `[0, src_h)` and `[0, dst_h)`.
+5. **Invalid-input rejection** — `compute_stripe_bounds` returns 0
+   for `i < 0`, `i >= n`, `n <= 0`, `src_h <= 0`, or `dst_h <= 0`,
+   without writing to its output pointers (proven by canaries).
+
+Both fuzzers print the violated invariant with full input context to
+stderr, flush, then `abort()`. libFuzzer reports the abort as a
+finding and minimizes the input. During development of
+`fuzz_frame_shape`, this loop caught two real bugs in the test
+harness itself — proving that the invariants are tight enough to
+distinguish "wrong test" from "correct code".

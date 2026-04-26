@@ -19,13 +19,13 @@ fast enough for real-time playback on modest hardware.
 
 | Check                                  | Result                                  |
 |----------------------------------------|-----------------------------------------|
-| Unit tests (ASan + UBSan)              | 42/42 pass (19 logic + 13 USM + 10 perfmon) |
-| Smoke fuzz (150k iters, ASan + UBSan)  | pass                                    |
-| libFuzzer (5 min, seeded corpus)       | 9.6M+ execs across both targets, 0 crashes |
+| Unit tests (ASan + UBSan)              | 113/113 pass across 7 suites            |
+| Smoke fuzz (520k iters, ASan + UBSan)  | pass across 7 fuzzers                   |
+| libFuzzer (60s × 3 in CI, seeded)      | 0 crashes; corpora accelerate discovery ~2× |
 | `cppcheck` (warning + style)           | clean                                   |
-| Plugin compiles against real VLC 3.0.20| clean, no warnings                      |
-| Live transcode through zimg + swscale  | both verified, 854×480 → 1920×1080      |
-| GitHub Actions CI                      | runs all of the above on every push     |
+| Plugin compiles against VLC 3.0.20     | clean, no warnings                      |
+| Live transcode (zimg + swscale)        | verified end-to-end up to 8K            |
+| GitHub Actions CI                      | runs on push/PR to `main` and `develop` |
 
 ## Quick start
 
@@ -85,7 +85,7 @@ setup: enable once, leave it on, only sub-HD content is touched.
 
 | Option                       | Range  | Default | Meaning                                                  |
 |------------------------------|--------|---------|----------------------------------------------------------|
-| `--autoupscale-target`       | 0–2    | 0       | 0 = auto, 1 = force 720p, 2 = force 1080p                |
+| `--autoupscale-target`       | 0–6    | 0       | 0 = auto (720p/1080p based on HW), 1 = 720p, 2 = 1080p, 3 = 1440p, 4 = 4K, 5 = 5K, 6 = 8K. AUTO never picks above 1080p — higher targets must be explicit. All targets are subject to a 4× linear ratio cap relative to source. |
 | `--autoupscale-algo`         | 0–3    | **3**   | 0 = bilinear, 1 = bicubic, 2 = lanczos, **3 = spline36** |
 | `--autoupscale-skip-above`   | 1+     | 720     | Source heights ≥ this value are passed through untouched |
 | `--autoupscale-usm`          | 0–200  | 30      | Unsharp-mask amount (%) applied to luma post-upscale     |
@@ -440,7 +440,8 @@ src/
 tests/
   test_*.c                unit tests for each pure header (no framework)
   fuzz_*.c                libFuzzer + deterministic smoke targets (one source each)
-  corpus/                 curated seed inputs including regression cases
+  corpus/                 binary seeds for fuzz_upscale_logic (16 files, 32 bytes each)
+  corpus_frame_shape/     binary seeds for fuzz_frame_shape (22 files, 24 bytes each)
 
 docs/HOW_IT_WORKS.md      design notes
 patches/                  optional VLC patches (workaround for chain depth limit)
@@ -458,9 +459,9 @@ header — there's no shadow re-implementation in the tests.
 ```sh
 make            # build the VLC plugin (libautoupscale_plugin.so)
 make plugin     # same
-make test       # unit tests under ASan + UBSan
-make fuzz-smoke # 100k deterministic random inputs under ASan + UBSan
-make fuzz       # libFuzzer build (clang); run with build/fuzz_upscale_logic corpus/
+make test       # unit tests under ASan + UBSan (113 tests across 7 suites)
+make fuzz-smoke # 520k deterministic random inputs across 7 fuzzers under ASan + UBSan
+make fuzz       # libFuzzer build (clang); run e.g. build/fuzz_upscale_logic tests/corpus/
 make analyze    # cppcheck across the source
 make install    # install plugin into VLC's plugins dir
 make uninstall
