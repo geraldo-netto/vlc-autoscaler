@@ -75,6 +75,11 @@ jobs:
           if [ -d tests/corpus_scaler_chroma ]; then cp tests/corpus_scaler_chroma/* corpus_scaler_chroma/ 2>/dev/null || true; fi
           build/fuzz_scaler_chroma corpus_scaler_chroma -max_total_time=60 -max_len=8 -print_final_stats=1
 
+      - name: Run libFuzzer (content_probe) for 60 seconds
+        run: |
+          mkdir -p corpus_content_probe
+          build/fuzz_content_probe corpus_content_probe -max_total_time=60 -max_len=64 -print_final_stats=1
+
       - name: Upload findings
         if: failure()
         uses: actions/upload-artifact@v4

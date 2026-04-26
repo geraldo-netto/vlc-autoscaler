@@ -20,8 +20,8 @@ fast enough for real-time playback on modest hardware.
 | Check                                  | Result                                  |
 |----------------------------------------|-----------------------------------------|
 | Unit tests (ASan + UBSan)              | 126/126 pass across 8 suites            |
-| Smoke fuzz (620k iters, ASan + UBSan)  | pass across 8 fuzzers                   |
-| libFuzzer (60s × 4 in CI, seeded)      | 0 crashes; corpora accelerate discovery ~2× |
+| Smoke fuzz (670k iters, ASan + UBSan)  | pass across 9 fuzzers                   |
+| libFuzzer (60s × 5 in CI, seeded)      | 0 crashes; corpora accelerate discovery ~2× |
 | `cppcheck` (warning + style)           | clean                                   |
 | Plugin compiles against VLC 3.0.20     | clean, no warnings                      |
 | Live transcode (zimg + swscale)        | verified end-to-end up to 8K            |
@@ -464,7 +464,7 @@ header — there's no shadow re-implementation in the tests.
 make            # build the VLC plugin (libautoupscale_plugin.so)
 make plugin     # same
 make test       # unit tests under ASan + UBSan (126 tests across 8 suites)
-make fuzz-smoke # 620k deterministic random inputs across 8 fuzzers under ASan + UBSan
+make fuzz-smoke # 670k deterministic random inputs across 9 fuzzers under ASan + UBSan
 make fuzz       # libFuzzer build (clang); run e.g. build/fuzz_upscale_logic tests/corpus/
 make analyze    # cppcheck across the source
 make install    # install plugin into VLC's plugins dir

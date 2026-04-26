@@ -126,7 +126,7 @@ $(BUILD)/test_perfmon: tests/test_perfmon.c src/perfmon.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
 # --------- libFuzzer (clang) ---------
-fuzz: $(BUILD)/fuzz_upscale_logic $(BUILD)/fuzz_usm $(BUILD)/fuzz_perfmon $(BUILD)/fuzz_threading $(BUILD)/fuzz_copy_plane $(BUILD)/fuzz_stripe_bounds $(BUILD)/fuzz_frame_shape $(BUILD)/fuzz_scaler_chroma
+fuzz: $(BUILD)/fuzz_upscale_logic $(BUILD)/fuzz_usm $(BUILD)/fuzz_perfmon $(BUILD)/fuzz_threading $(BUILD)/fuzz_copy_plane $(BUILD)/fuzz_stripe_bounds $(BUILD)/fuzz_frame_shape $(BUILD)/fuzz_scaler_chroma $(BUILD)/fuzz_content_probe
 	@echo "Built libFuzzer targets:"
 	@echo "  $(BUILD)/fuzz_upscale_logic"
 	@echo "  $(BUILD)/fuzz_usm"
@@ -136,6 +136,7 @@ fuzz: $(BUILD)/fuzz_upscale_logic $(BUILD)/fuzz_usm $(BUILD)/fuzz_perfmon $(BUIL
 	@echo "  $(BUILD)/fuzz_stripe_bounds"
 	@echo "  $(BUILD)/fuzz_frame_shape"
 	@echo "  $(BUILD)/fuzz_scaler_chroma"
+	@echo "  $(BUILD)/fuzz_content_probe"
 	@echo "Run e.g.: $(BUILD)/fuzz_upscale_logic -max_total_time=60"
 
 $(BUILD)/fuzz_upscale_logic: tests/fuzz_upscale_logic.c src/upscale_logic.h | $(BUILD)
@@ -162,8 +163,11 @@ $(BUILD)/fuzz_frame_shape: tests/fuzz_frame_shape.c src/chroma_classify.h src/zi
 $(BUILD)/fuzz_scaler_chroma: tests/fuzz_scaler_chroma.c src/scaler_zimg_chroma.h src/chroma_classify.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
+$(BUILD)/fuzz_content_probe: tests/fuzz_content_probe.c src/content_probe.h | $(BUILD)
+	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
+
 # --------- smoke fuzz (no libFuzzer needed) ---------
-fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_perfmon_smoke $(BUILD)/fuzz_threading_smoke $(BUILD)/fuzz_copy_plane_smoke $(BUILD)/fuzz_stripe_bounds_smoke $(BUILD)/fuzz_frame_shape_smoke $(BUILD)/fuzz_scaler_chroma_smoke
+fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_perfmon_smoke $(BUILD)/fuzz_threading_smoke $(BUILD)/fuzz_copy_plane_smoke $(BUILD)/fuzz_stripe_bounds_smoke $(BUILD)/fuzz_frame_shape_smoke $(BUILD)/fuzz_scaler_chroma_smoke $(BUILD)/fuzz_content_probe_smoke
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/fuzz_smoke
@@ -188,6 +192,9 @@ fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_perfmon_sm
 	@echo
 	@echo "=== scaler_chroma ==="
 	@$(BUILD)/fuzz_scaler_chroma_smoke
+	@echo
+	@echo "=== content_probe ==="
+	@$(BUILD)/fuzz_content_probe_smoke
 
 $(BUILD)/fuzz_smoke: tests/fuzz_upscale_logic.c src/upscale_logic.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
@@ -211,6 +218,9 @@ $(BUILD)/fuzz_frame_shape_smoke: tests/fuzz_frame_shape.c src/chroma_classify.h 
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
 $(BUILD)/fuzz_scaler_chroma_smoke: tests/fuzz_scaler_chroma.c src/scaler_zimg_chroma.h src/chroma_classify.h | $(BUILD)
+	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
+
+$(BUILD)/fuzz_content_probe_smoke: tests/fuzz_content_probe.c src/content_probe.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
 # --------- static analysis ---------

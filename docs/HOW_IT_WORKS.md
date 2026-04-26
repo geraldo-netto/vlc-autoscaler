@@ -775,8 +775,8 @@ rules that aren't otherwise verifiable from output alone:
 
 ### Smoke fuzzers — deterministic mass testing
 
-`make fuzz-smoke` runs 8 standalone harnesses (`tests/fuzz_*.c` with
-`-DFUZZ_MAIN`) totalling 620k iterations under ASan + UBSan, in
+`make fuzz-smoke` runs 9 standalone harnesses (`tests/fuzz_*.c` with
+`-DFUZZ_MAIN`) totalling 670k iterations under ASan + UBSan, in
 about 7 seconds. Each fuzzer drives a single function (or a small
 combination of helpers) with deterministic xorshift32 random input
 and verifies a set of post-conditions (the "invariant checker").
@@ -791,6 +791,7 @@ and verifies a set of post-conditions (the "invariant checker").
 | `stripe_bounds`   | 100k      | stripe partition math                       |
 | `frame_shape`     | 100k      | chroma classification + plane geometry + stripe partition together |
 | `scaler_chroma`   | 100k      | chroma fourcc → zimg backend mapping (the VLC-touching boundary) |
+| `content_probe`   |  50k      | source-content metric reads (pointer arithmetic on bytes) — ASan |
 
 `fuzz_upscale_logic` and `fuzz_frame_shape` use **biased input
 selection** in their smoke mains. Without bias, raw int32 values
@@ -803,8 +804,8 @@ fill the remaining iterations to keep the chaos.
 ### libFuzzer — coverage-guided exploration
 
 `make fuzz` builds clang-libfuzzer targets that explore the input
-space using coverage-guided mutation. CI runs four targets for 60
-seconds each on every push (4 minutes total libFuzzer time):
+space using coverage-guided mutation. CI runs five targets for 60
+seconds each on every push (5 minutes total libFuzzer time):
 `fuzz_upscale_logic`, `fuzz_usm`, `fuzz_frame_shape`, and
 `fuzz_scaler_chroma`. The harnesses share their invariant checker
 with the smoke fuzzers, so any bug found by libFuzzer is also a
