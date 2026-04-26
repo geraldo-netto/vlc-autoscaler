@@ -838,6 +838,50 @@ input space — its mutations crossing-over real chroma fourccs and
 real resolution heights produce more interesting inputs than blind
 exploration of 32-bit space.
 
+### Concurrency stress — TSan-instrumented worker dispatch
+
+`make stress` exercises the `usm_pool` worker dispatch under both
+ASan + UBSan and ThreadSanitizer (TSan). The threading is the most
+likely place for the project to hide a bug that compiles cleanly,
+passes unit tests, and *occasionally* produces wrong output — exactly
+the kind of bug TSan catches even when the pixels happen to match on
+this run.
+
+Tests/stress_usm_pool.c drives 19 configurations spanning the
+interesting axes:
+
+- **Thread count saturation**: 64 workers on 32-line frames (which
+  the pool clamps internally to height/8). Triggers the clamp logic.
+- **Common video paths**: 854×480 at 1, 2, 4, 8, 16, 32, 64 threads,
+  plus 1920×1080 at 16 threads (the realistic end-user config).
+- **All USM amounts**: 0 (identity fast path, no thread spawn), 30
+  (default), 100, and 200 (max).
+- **Pathological aspects**: 8×1080 (tall narrow), 4096×8 (short wide
+  — also triggers the height/8 clamp), odd dimensions like 853×479
+  to flush odd-row handling.
+- **Single-threaded large frame**: 1 worker on 4096×2160 — exercises
+  the workspace allocator at scale and confirms the no-thread-spawn
+  path still produces identical output.
+
+Every frame's output is byte-compared against the single-threaded
+reference `up_usm_apply_plane`. **Bit-perfect match is required** —
+a single byte of divergence fails the run. The input data mutates
+every frame (xorshift32-seeded fill) so workers must fetch fresh
+pointers each call; a bug where workers cached stale source pointers
+would surface as "first frame matches, subsequent frames diverge."
+
+ThreadSanitizer instrumentation tracks every memory access and
+synchronization event. If there were a race on the workspace buffer
+(phase-1 writes vs phase-2 reads), or on the per-frame pointers, or
+on the worker's `result` field, TSan would flag it even when the
+output happens to be correct on this run. **Total: ~1300 frames
+across 19 configs, zero TSan reports, zero divergence.**
+
+The CI job runs both builds end-to-end on every push. ASan+UBSan
+takes ~12 seconds, TSan ~52 seconds, so the full stress step adds
+about 70 seconds to CI — worth it for the confidence in the
+concurrency model.
+
 ### Fuzzer invariants
 
 `fuzz_upscale_logic.c` asserts these resolution-ladder design rules

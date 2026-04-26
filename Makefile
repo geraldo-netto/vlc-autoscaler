@@ -90,7 +90,7 @@ $(BUILD)/%.o: src/%.c src/scaler.h src/upscale_logic.h src/usm.h src/perfmon.h s
 	$(CC) $(PLUGIN_CFLAGS) -c -o $@ $<
 
 # --------- unit tests ---------
-test: $(BUILD)/test_upscale_logic $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_threading $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe
+test: $(BUILD)/test_upscale_logic $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_threading $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/test_upscale_logic
@@ -115,6 +115,9 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUIL
 	@echo
 	@echo "=== content_probe ==="
 	@$(BUILD)/test_content_probe
+	@echo
+	@echo "=== scaler_pick ==="
+	@$(BUILD)/test_scaler_pick
 
 $(BUILD)/test_upscale_logic: tests/test_upscale_logic.c src/upscale_logic.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
@@ -223,6 +226,35 @@ $(BUILD)/fuzz_scaler_chroma_smoke: tests/fuzz_scaler_chroma.c src/scaler_zimg_ch
 $(BUILD)/fuzz_content_probe_smoke: tests/fuzz_content_probe.c src/content_probe.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
+# --------- concurrency stress test ---------
+# Two builds:
+#   stress_usm_pool       - ASan+UBSan, default
+#   stress_usm_pool_tsan  - ThreadSanitizer (catches data races even when
+#                            output is bitwise correct)
+#
+# Bit-identical output to single-threaded reference is required across
+# thousands of frames at unusual (n_threads, w, h) combinations including
+# 64-thread on 32-line frames (clamped down) and 1-thread on 4K.
+
+STRESS_CFLAGS_ASAN := -O2 -g $(WARN) -fsanitize=address,undefined
+STRESS_LDFLAGS_ASAN := -fsanitize=address,undefined -lpthread
+STRESS_CFLAGS_TSAN := -O1 -g $(WARN) -fsanitize=thread
+STRESS_LDFLAGS_TSAN := -fsanitize=thread -lpthread
+
+$(BUILD)/stress_usm_pool: tests/stress_usm_pool.c src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
+	$(CLANG) $(STRESS_CFLAGS_ASAN) -o $@ $< src/usm_pool.c $(STRESS_LDFLAGS_ASAN)
+
+$(BUILD)/stress_usm_pool_tsan: tests/stress_usm_pool.c src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
+	$(CLANG) $(STRESS_CFLAGS_TSAN) -o $@ $< src/usm_pool.c $(STRESS_LDFLAGS_TSAN)
+
+stress: $(BUILD)/stress_usm_pool $(BUILD)/stress_usm_pool_tsan
+	@echo
+	@echo "=== usm_pool stress (ASan + UBSan) ==="
+	@$(BUILD)/stress_usm_pool
+	@echo
+	@echo "=== usm_pool stress (ThreadSanitizer) ==="
+	@$(BUILD)/stress_usm_pool_tsan
+
 # --------- static analysis ---------
 analyze:
 	@command -v cppcheck >/dev/null 2>&1 || { \
@@ -233,7 +265,7 @@ analyze:
 	cppcheck --enable=warning,style,performance,portability \
 		--inline-suppr --std=c11 --error-exitcode=2 \
 		--suppress=missingIncludeSystem \
-		-I src src/upscale_logic.h src/usm.h src/perfmon.h src/threading.h src/zimg_helpers.h src/chroma_classify.h src/scaler_zimg_chroma.h src/content_probe.h src/usm_pool.h src/usm_pool.c tests/
+		-I src src/upscale_logic.h src/usm.h src/perfmon.h src/threading.h src/zimg_helpers.h src/chroma_classify.h src/scaler_zimg_chroma.h src/content_probe.h src/scaler_pick_logic.h src/usm_pool.h src/usm_pool.c tests/
 
 # --------- install ---------
 install: $(BUILD)/$(PLUGIN).so
@@ -276,4 +308,7 @@ $(BUILD)/test_usm_pool: tests/test_usm_pool.c src/usm_pool.c src/usm_pool.h src/
 	$(CC) $(TEST_CFLAGS) -o $@ $< src/usm_pool.c $(TEST_LDFLAGS) -lpthread
 
 $(BUILD)/test_content_probe: tests/test_content_probe.c src/content_probe.h | $(BUILD)
+	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
+
+$(BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
