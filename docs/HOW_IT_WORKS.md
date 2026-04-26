@@ -520,6 +520,34 @@ cases (insufficient data, clean, soft-only, blocky-only, soft+blocky).
 
 ## Performance auto-tuning
 
+### Compiler choice and SIMD
+
+The USM kernels (`up_usm__hblur_row`, `up_usm__combine_row` in
+`src/usm.h`) are autovectorization-friendly inner loops, annotated
+with `restrict` on every pointer to tell the compiler the buffers
+don't alias. gcc and clang both produce correct code, but their
+autovectorization quality differs noticeably:
+
+| Resolution | gcc -O2 | clang -O2 | speedup |
+|---|---|---|---|
+| 854×480 | 1.34 ms | 0.87 ms | 1.5× |
+| 1920×1080 | 4.89 ms | 1.53 ms | **3.2×** |
+| 2560×1440 | 8.62 ms | 2.95 ms | **2.9×** |
+| 3840×2160 | 19.5 ms | 6.4 ms | **3.0×** |
+
+Numbers from the sandbox (2-core x86_64 generic). On a modern
+desktop with AVX2, expect both columns to be lower in absolute
+terms but the gcc-vs-clang gap to remain. clang's loop-vectorizer
+recognizes the `combine_row` shape (4 byte loads, branch-free
+clamp, byte store) and emits `vector width: 16` (one xmm-register
+worth of pixels per iteration); gcc -O2 falls back to scalar.
+
+The Makefile defaults to whatever `cc` resolves to — typically
+gcc on most distros. Users who want maximum throughput on the
+USM post-pass can build with `CC=clang make plugin`. The plugin
+runs identically either way (byte-identical decoded MD5), it's
+purely a compile-time choice.
+
 The plugin ships with the highest-quality defaults available (zimg +
 Spline36 + USM 30%) and watches its own per-frame processing time so it
 can tell the user when those defaults are too expensive for their

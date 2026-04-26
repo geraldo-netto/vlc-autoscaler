@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * scaler_zimg.c - zimg backend with slice-threaded resampling
  *****************************************************************************

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * test_perfmon.c — unit tests for the performance-monitoring logic
  *****************************************************************************/

@@ -476,6 +476,18 @@ make clean
 make info       # show pkg-config paths and toolchain
 ```
 
+**Compiler choice:** The Makefile uses `cc` (typically gcc). For the
+USM post-pass, **clang -O2 produces ~3× faster code than gcc -O2** at
+1080p+ because clang's loop-vectorizer handles the `restrict`-annotated
+inner kernels better. Users prioritizing throughput can build with:
+
+```sh
+CC=clang make plugin
+```
+
+The output is byte-identical either way (verified by decoded MD5), so
+this is purely a compile-time choice with no runtime semantic impact.
+
 `make test`, `make fuzz-smoke`, `make stress`, and `make analyze` do **not** need VLC
 headers — only `make plugin` does. This is intentional so distro packagers
 and CI can run the test suite without a VLC dev install.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * test_scaler_pick.c - unit tests for the backend dispatch logic
  *****************************************************************************

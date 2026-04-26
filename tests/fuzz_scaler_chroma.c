@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * fuzz_scaler_chroma.c - fuzz the chroma->zimg mapping pulled from the
  *                       scaler backend's VLC interface boundary.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * test_content_probe.c - unit tests for the content-probe metrics
  *****************************************************************************

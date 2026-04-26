@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * fuzz_threading.c - libFuzzer/smoke target for up_threads_decide
  *****************************************************************************

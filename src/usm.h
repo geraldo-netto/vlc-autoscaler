@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * usm.h — unsharp-mask post-pass for AutoUpscale
  *****************************************************************************
@@ -68,7 +69,9 @@ static inline size_t up_usm_workspace_size(int width, int height)
 
 /* Horizontal 3-tap blur with [1,2,1]/4 kernel and edge replication.
  * `out` and `in` may not overlap. Width must be > 0. */
-static inline void up_usm__hblur_row(uint8_t *out, const uint8_t *in, int width)
+static inline void up_usm__hblur_row(uint8_t *restrict out,
+                                     const uint8_t *restrict in,
+                                     int width)
 {
     if (width <= 0) return;
     if (width == 1) {
@@ -152,11 +155,11 @@ static inline void up_usm__pass1_hblur(
  * back at amount_q8/256 strength, with [0,255] clamping. CCN 4.
  */
 static inline void up_usm__combine_row(
-    uint8_t *dst_row,
-    const uint8_t *src_row,
-    const uint8_t *up_row,
-    const uint8_t *mid,
-    const uint8_t *dn_row,
+    uint8_t       *restrict dst_row,
+    const uint8_t *restrict src_row,
+    const uint8_t *restrict up_row,
+    const uint8_t *restrict mid,
+    const uint8_t *restrict dn_row,
     int width,
     int amount_q8)
 {

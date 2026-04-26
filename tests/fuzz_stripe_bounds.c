@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * fuzz_stripe_bounds.c - libFuzzer/smoke target for up_compute_stripe_bounds
  *****************************************************************************

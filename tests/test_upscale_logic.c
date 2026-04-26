@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * test_upscale_logic.c — unit tests for the pure decision/math logic
  *****************************************************************************

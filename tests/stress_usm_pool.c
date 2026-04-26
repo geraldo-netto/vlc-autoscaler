@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * stress_usm_pool.c - concurrency stress test for the threaded USM pool
  *****************************************************************************

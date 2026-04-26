@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * threading.h - pure thread-count decision logic for AutoUpscale
  *****************************************************************************

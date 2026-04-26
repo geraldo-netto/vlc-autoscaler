@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * usm_pool.c - persistent worker pool for threaded USM post-pass
  *****************************************************************************

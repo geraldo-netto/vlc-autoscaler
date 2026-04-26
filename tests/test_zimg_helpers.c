@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * test_zimg_helpers.c - unit tests for the pure helpers in zimg_helpers.h
  *****************************************************************************/

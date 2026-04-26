@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * scaler.h — pluggable scaler backend interface for AutoUpscale
  *****************************************************************************

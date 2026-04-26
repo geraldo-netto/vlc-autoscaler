@@ -34,6 +34,9 @@ jobs:
       - name: Smoke fuzz (100k iterations under ASan + UBSan)
         run: make fuzz-smoke
 
+      - name: Concurrency stress (usm_pool, ASan + TSan, ~70s)
+        run: make stress
+
       - name: Static analysis (cppcheck)
         run: make analyze
 

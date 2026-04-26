@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * content_probe.h - pure content-aware metrics for upscaling decision
  *****************************************************************************

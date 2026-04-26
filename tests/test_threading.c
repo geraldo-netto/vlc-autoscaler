@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * test_threading.c - unit tests for thread-count decision logic
  *****************************************************************************/

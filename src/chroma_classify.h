@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * chroma_classify.h - pure chroma-fourcc classification helpers
  *****************************************************************************

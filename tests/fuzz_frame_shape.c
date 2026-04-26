@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
  * fuzz_frame_shape.c - fuzz "picture shape" validation across pure helpers
  *****************************************************************************
