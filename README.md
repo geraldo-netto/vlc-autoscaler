@@ -67,6 +67,14 @@ vlc --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=
 # See "Hardware-accelerated decode" section below for why this matters.
 ```
 
+> **Want command-line recipes for specific situations?**
+> [`docs/USAGE.md`](docs/USAGE.md) has 8 recipes covering: minimal use,
+> bypassing the recursion limit, recommended-default (no postproc),
+> hardware-decode-safe playback, quality-first, low-latency, and
+> file output — plus a step-by-step **diagnostic ladder** for tracking
+> down black screens, freezes, or garbage output, and a section on
+> getting audio to start at 100% volume on Linux.
+
 ## Does it run automatically when I play a video?
 
 Not by default — VLC video filters are opt-in. You have three ways to
@@ -450,6 +458,7 @@ tests/
   corpus_scaler_chroma/   binary seeds for fuzz_scaler_chroma (21 files, 8 bytes each)
 
 docs/HOW_IT_WORKS.md      design notes
+docs/USAGE.md             command-line recipes + diagnostic ladder
 patches/                  optional VLC patches (workaround for chain depth limit)
 .github/workflows/ci.yml  build, test, smoke fuzz, stress, libFuzzer, cppcheck
 Makefile                  everything (`make help` lists targets)

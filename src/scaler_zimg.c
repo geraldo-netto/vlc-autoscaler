@@ -373,22 +373,47 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
 }
 
 /*
- * Construct N stripe workers. May return fewer than n_threads if a
- * stripe degenerates or any worker fails to construct - those partial
- * graphs/tmp buffers are released here before returning. The number of
- * fully-constructed workers is written to *out_constructed. CCN 5.
+ * Tear down all workers that have been constructed (graph, tmp, sem, thread).
+ * Used to clean up after a partial construction so we can retry with a
+ * smaller stripe count. Sets fields back to zeros so the worker slots
+ * can be re-initialized cleanly.
  */
-static void construct_workers(zimg_priv_t *p, const scaler_ctx_t *ctx,
-                              int n_threads, unsigned sub_w, unsigned sub_h,
-                              zimg_resample_filter_e filt,
-                              int *out_constructed)
+static void teardown_constructed_workers(zimg_priv_t *p, int n)
+{
+    for (int i = 0; i < n; i++) {
+        stripe_worker_t *w = &p->workers[i];
+        if (w->thread) {
+            w->should_exit = true;
+            sem_post(&w->go);
+            pthread_join(w->thread, NULL);
+            w->thread = 0;
+        }
+        if (w->graph) { zimg_filter_graph_free(w->graph); w->graph = NULL; }
+        free(w->tmp); w->tmp = NULL;
+        sem_destroy(&w->go);
+        memset(w, 0, sizeof *w);
+    }
+}
+
+/*
+ * Try to construct exactly `n` stripe workers covering [0, dst_h).
+ * Returns the number successfully built (≤ n). On partial build
+ * (a stripe degenerated or worker init failed), the partial set is
+ * left in p->workers — caller may use it directly, OR tear it down
+ * and retry with a smaller n.
+ *
+ * The internal loop is the original construct_workers logic.
+ */
+static int try_construct_workers(zimg_priv_t *p, const scaler_ctx_t *ctx,
+                                 int n, unsigned sub_w, unsigned sub_h,
+                                 zimg_resample_filter_e filt)
 {
     int constructed = 0;
-    for (int i = 0; i < n_threads; i++) {
+    for (int i = 0; i < n; i++) {
         stripe_worker_t *w = &p->workers[i];
 
         int sys, sye, dys, dye;
-        if (!up_compute_stripe_bounds(i, n_threads, ctx->src_h, ctx->dst_h,
+        if (!up_compute_stripe_bounds(i, n, ctx->src_h, ctx->dst_h,
                                    &sys, &sye, &dys, &dye))
             break;
 
@@ -400,6 +425,46 @@ static void construct_workers(zimg_priv_t *p, const scaler_ctx_t *ctx,
         }
         constructed++;
     }
+    return constructed;
+}
+
+/*
+ * Construct N stripe workers covering the full destination height.
+ *
+ * If try_construct_workers returns fewer than requested (a stripe
+ * degenerated), we tear down the partial set and retry with the
+ * smaller count. This is essential for correctness: without retry,
+ * the LAST stripe of a partial construction would not extend to
+ * dst_h (its end is computed against the original `n`, not the
+ * realized count), leaving an unwritten band of rows at the bottom
+ * of every output frame — visible as a black or garbage strip.
+ *
+ * The retry converges in at most a few iterations since each retry
+ * uses a strictly smaller `n`. Returns 0 on success (with at least
+ * one worker covering the full height), -1 on total failure.
+ */
+static void construct_workers(zimg_priv_t *p, const scaler_ctx_t *ctx,
+                              int n_threads, unsigned sub_w, unsigned sub_h,
+                              zimg_resample_filter_e filt,
+                              int *out_constructed)
+{
+    int n = n_threads;
+    int constructed = 0;
+
+    while (n > 0) {
+        constructed = try_construct_workers(p, ctx, n, sub_w, sub_h, filt);
+        if (constructed == n) break;          /* fully covered, done */
+        if (constructed == 0) break;          /* total failure, give up */
+
+        /* Partial build: the realized count is smaller than n, so
+         * the last stripe doesn't extend to dst_h. Tear down and
+         * retry with n = constructed so the new last stripe correctly
+         * closes the partition at dst_h. */
+        teardown_constructed_workers(p, constructed);
+        n = constructed;
+        constructed = 0;
+    }
+
     *out_constructed = constructed;
     p->n_threads = constructed;
 }
