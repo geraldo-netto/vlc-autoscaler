@@ -421,62 +421,120 @@ static inline int64_t monotonic_ns(void)
 /*****************************************************************************
  * Filter: scale one picture, then USM, then performance accounting
  *****************************************************************************/
+/*
+ * Emit the one-time performance-tuning advisory, with concrete
+ * suggestions tailored to the current configuration. Triggered when
+ * up_perfmon_record_ns() returns 1 (meaning EWMA exceeded the budget
+ * for the first time after warmup). Only fires once per filter
+ * lifetime — the perfmon's internal state ensures that.
+ *
+ * Emitted as msg_Info (not msg_Warn) because VLC 3.x's default
+ * verbosity suppresses level-2 warnings; we want the advisory visible
+ * without users having to pass --verbose=1.
+ */
+static void EmitPerfAdvisory( filter_t *p_filter, filter_sys_t *p_sys )
+{
+    long ewma_us   = (long)up_perfmon_ewma_us( &p_sys->perfmon );
+    long budget_us = (long)up_perfmon_budget_us( &p_sys->perfmon );
+    msg_Info( p_filter,
+              "Performance warning: avg frame work is %ld us, "
+              "exceeding the %d FPS budget of %ld us "
+              "(backend=%s algo=%d usm=%d).",
+              ewma_us, p_sys->target_fps, budget_us,
+              p_sys->scaler.backend->name,
+              p_sys->algo, p_sys->usm_pct );
+    msg_Info( p_filter,
+              "  To tune down, try (in order of decreasing quality cost):" );
+    if( p_sys->algo == UP_ALGO_SPLINE36 )
+        msg_Info( p_filter,
+                  "    --autoupscale-algo=2   "
+                  "(lanczos: similar quality, faster)" );
+    if( p_sys->algo > UP_ALGO_BICUBIC )
+        msg_Info( p_filter,
+                  "    --autoupscale-algo=1   "
+                  "(bicubic: noticeably faster, slight quality drop)" );
+    if( p_sys->usm_pct > 0 )
+        msg_Info( p_filter,
+                  "    --autoupscale-usm=0    "
+                  "(disable post-sharpening)" );
+    if( p_sys->scaler.backend->name[0] != 's' )  /* not already swscale */
+        msg_Info( p_filter,
+                  "    --autoupscale-backend=2 "
+                  "(force swscale: faster scaler)" );
+    msg_Info( p_filter,
+              "    --autoupscale-target=1 "
+              "(force 720p instead of 1080p: 2.25x less work)" );
+    msg_Info( p_filter,
+              "  Or set --autoupscale-target-fps=0 to silence this warning." );
+}
+
+/*
+ * Run one iteration of the content probe on the source frame, and
+ * close the probe (logging an advisory) once the window is full.
+ * Observe-only — does not modify p_in or any output. Called from
+ * Filter() while p_sys->probe_active is true and p_in has at least
+ * one plane (planar chromas only; the probe_enabled gate in Open()
+ * already filtered out opaque/packed sources).
+ *
+ * Extracted from Filter() to keep its cyclomatic complexity under
+ * the project's CCN-15 ceiling.
+ */
+static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
+                      const picture_t *p_in )
+{
+    const plane_t *y = &p_in->p[0];
+    int w = y->i_visible_pitch ? y->i_visible_pitch : y->i_pitch;
+    int h = y->i_visible_lines ? y->i_visible_lines : y->i_lines;
+    uint64_t lap_n = 0, edge_n = 0;
+    uint64_t lap  = up_laplacian_variance(  y->p_pixels, y->i_pitch,
+                                            w, h, &lap_n );
+    uint64_t edge = up_block_edge_strength( y->p_pixels, y->i_pitch,
+                                            w, h, &edge_n );
+    up_probe_observe( &p_sys->probe_accum, lap, lap_n, edge, edge_n );
+
+    if( p_sys->probe_accum.frames < UP_PROBE_WINDOW_FRAMES )
+        return;
+
+    p_sys->probe_active = 0;
+    int recommend_bypass = up_should_bypass_for_content( &p_sys->probe_accum );
+    uint64_t lap_mean  = p_sys->probe_accum.lap_samples
+        ? p_sys->probe_accum.lap_sum  / p_sys->probe_accum.lap_samples : 0;
+    uint64_t edge_mean = p_sys->probe_accum.edge_samples
+        ? p_sys->probe_accum.edge_sum / p_sys->probe_accum.edge_samples : 0;
+
+    if( recommend_bypass && !p_sys->advice_logged )
+    {
+        p_sys->advice_logged = 1;
+        msg_Info( p_filter,
+                  "AutoUpscale: content probe complete: source is "
+                  "soft (lap_mean=%llu) AND blocky (edge_mean=%llu). "
+                  "Upscaling is amplifying compression artifacts "
+                  "without recovering detail.",
+                  (unsigned long long)lap_mean,
+                  (unsigned long long)edge_mean );
+        msg_Info( p_filter,
+                  "  Consider disabling AutoUpscale for this source, "
+                  "or set --autoupscale-target=1 to halve the per-"
+                  "frame cost. Set --autoupscale-content-probe=0 to "
+                  "silence this message." );
+    }
+    else
+    {
+        msg_Dbg( p_filter,
+                 "AutoUpscale: content probe complete (lap_mean=%llu "
+                 "edge_mean=%llu): upscale is appropriate.",
+                 (unsigned long long)lap_mean,
+                 (unsigned long long)edge_mean );
+    }
+}
+
 static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
 {
     filter_sys_t *p_sys = p_filter->p_sys;
     if( !p_in ) return NULL;
 
-    /* Content-aware probe: observe the source luma BEFORE upscaling.
-     * Cheap (~50 us at 480p, much less at higher resolutions because
-     * we sample on a fixed grid). Only runs while probe_active and
-     * only on planar chromas (gated by probe_enabled in Open). */
     if( p_sys->probe_active && p_in->i_planes >= 1 )
-    {
-        const plane_t *y = &p_in->p[0];
-        int w = y->i_visible_pitch ? y->i_visible_pitch : y->i_pitch;
-        int h = y->i_visible_lines ? y->i_visible_lines : y->i_lines;
-        uint64_t lap_n = 0, edge_n = 0;
-        uint64_t lap  = up_laplacian_variance(  y->p_pixels, y->i_pitch,
-                                                w, h, &lap_n );
-        uint64_t edge = up_block_edge_strength( y->p_pixels, y->i_pitch,
-                                                w, h, &edge_n );
-        up_probe_observe( &p_sys->probe_accum, lap, lap_n, edge, edge_n );
-
-        if( p_sys->probe_accum.frames >= UP_PROBE_WINDOW_FRAMES )
-        {
-            p_sys->probe_active = 0;
-            int recommend_bypass = up_should_bypass_for_content(
-                                       &p_sys->probe_accum );
-            uint64_t lap_mean  = p_sys->probe_accum.lap_samples
-                ? p_sys->probe_accum.lap_sum  / p_sys->probe_accum.lap_samples : 0;
-            uint64_t edge_mean = p_sys->probe_accum.edge_samples
-                ? p_sys->probe_accum.edge_sum / p_sys->probe_accum.edge_samples : 0;
-            if( recommend_bypass && !p_sys->advice_logged )
-            {
-                p_sys->advice_logged = 1;
-                msg_Info( p_filter,
-                          "AutoUpscale: content probe complete: source is "
-                          "soft (lap_mean=%llu) AND blocky (edge_mean=%llu). "
-                          "Upscaling is amplifying compression artifacts "
-                          "without recovering detail.",
-                          (unsigned long long)lap_mean,
-                          (unsigned long long)edge_mean );
-                msg_Info( p_filter,
-                          "  Consider disabling AutoUpscale for this source, "
-                          "or set --autoupscale-target=1 to halve the per-"
-                          "frame cost. Set --autoupscale-content-probe=0 to "
-                          "silence this message." );
-            }
-            else
-            {
-                msg_Dbg( p_filter,
-                         "AutoUpscale: content probe complete (lap_mean=%llu "
-                         "edge_mean=%llu): upscale is appropriate.",
-                         (unsigned long long)lap_mean,
-                         (unsigned long long)edge_mean );
-            }
-        }
-    }
+        RunProbe( p_filter, p_sys, p_in );
 
     picture_t *p_out = filter_NewPicture( p_filter );
     if( !p_out )
@@ -509,45 +567,7 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
     int64_t elapsed_ns = (t_start > 0 && t_end > t_start) ? t_end - t_start : 0;
 
     if( up_perfmon_record_ns( &p_sys->perfmon, elapsed_ns ) )
-    {
-        /* One-time perf hint with concrete tuning suggestions.
-         * Emitted as msg_Info, not msg_Warn, because VLC 3.x's default
-         * verbosity suppresses level-2 warnings — we want this visible
-         * without users having to pass --verbose=1. The "Performance
-         * warning:" prefix in the body makes the intent unambiguous. */
-        long ewma_us   = (long)up_perfmon_ewma_us( &p_sys->perfmon );
-        long budget_us = (long)up_perfmon_budget_us( &p_sys->perfmon );
-        msg_Info( p_filter,
-                  "Performance warning: avg frame work is %ld us, "
-                  "exceeding the %d FPS budget of %ld us "
-                  "(backend=%s algo=%d usm=%d).",
-                  ewma_us, p_sys->target_fps, budget_us,
-                  p_sys->scaler.backend->name,
-                  p_sys->algo, p_sys->usm_pct );
-        msg_Info( p_filter,
-                  "  To tune down, try (in order of decreasing quality cost):" );
-        if( p_sys->algo == UP_ALGO_SPLINE36 )
-            msg_Info( p_filter,
-                      "    --autoupscale-algo=2   "
-                      "(lanczos: similar quality, faster)" );
-        if( p_sys->algo > UP_ALGO_BICUBIC )
-            msg_Info( p_filter,
-                      "    --autoupscale-algo=1   "
-                      "(bicubic: noticeably faster, slight quality drop)" );
-        if( p_sys->usm_pct > 0 )
-            msg_Info( p_filter,
-                      "    --autoupscale-usm=0    "
-                      "(disable post-sharpening)" );
-        if( p_sys->scaler.backend->name[0] != 's' )  /* not already swscale */
-            msg_Info( p_filter,
-                      "    --autoupscale-backend=2 "
-                      "(force swscale: faster scaler)" );
-        msg_Info( p_filter,
-                  "    --autoupscale-target=1 "
-                  "(force 720p instead of 1080p: 2.25x less work)" );
-        msg_Info( p_filter,
-                  "  Or set --autoupscale-target-fps=0 to silence this warning." );
-    }
+        EmitPerfAdvisory( p_filter, p_sys );
 
     picture_CopyProperties( p_out, p_in );
     picture_Release( p_in );
