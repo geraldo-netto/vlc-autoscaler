@@ -8,8 +8,9 @@
  *  - Result is always >= 1.
  *  - Result is always <= UP_THREADS_MAX.
  *  - Result is always <= max(total_cores, 1).
- *  - When user_pref == UP_THREADS_AUTO and total_cores >= 3, result equals
- *    min(total_cores - 2, UP_THREADS_MAX).
+ *  - When user_pref == UP_THREADS_AUTO and total_cores >= 1, result equals
+ *    clamp(total_cores/2 - 2, 1, UP_THREADS_MAX), but never exceeding
+ *    total_cores.
  *  - When user_pref > 0, result is min(user_pref, total_cores, UP_THREADS_MAX).
  *
  * Two entry points: LLVMFuzzerTestOneInput (libFuzzer) + a deterministic
@@ -22,46 +23,60 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 static int run_one(const uint8_t *data, size_t size)
 {
-    /* Each trial consumes 12 bytes: int user_pref + int64_t total_cores. */
+    /* Each trial consumes 12 bytes: int user_pref + int64_t total_cores.
+     * We accept int64_t for fuzz coverage of overflow-y values, then
+     * narrow to int for the call (matching what up_detect_cores does
+     * in production). */
     while (size >= sizeof(int) + sizeof(int64_t)) {
         int user_pref;
-        int64_t total_cores;
+        int64_t total_cores_64;
         memcpy(&user_pref, data, sizeof user_pref);
         data += sizeof user_pref;
-        memcpy(&total_cores, data, sizeof total_cores);
-        data += sizeof total_cores;
-        size -= sizeof user_pref + sizeof total_cores;
+        memcpy(&total_cores_64, data, sizeof total_cores_64);
+        data += sizeof total_cores_64;
+        size -= sizeof user_pref + sizeof total_cores_64;
 
-        long cores = (long)total_cores;
+        /* Narrow to int with saturation (mirrors production: up_detect_cores
+         * clamps before passing to up_threads_decide). */
+        int cores;
+        if (total_cores_64 > INT_MAX) cores = INT_MAX;
+        else if (total_cores_64 < INT_MIN) cores = INT_MIN;
+        else cores = (int)total_cores_64;
+
         int n = up_threads_decide(user_pref, cores);
 
         if (n < 1) {
-            fprintf(stderr, "FAIL: n=%d < 1 (user_pref=%d cores=%ld)\n",
+            fprintf(stderr, "FAIL: n=%d < 1 (user_pref=%d cores=%d)\n",
                     n, user_pref, cores);
             return 1;
         }
         if (n > UP_THREADS_MAX) {
-            fprintf(stderr, "FAIL: n=%d > MAX=%d (user_pref=%d cores=%ld)\n",
+            fprintf(stderr, "FAIL: n=%d > MAX=%d (user_pref=%d cores=%d)\n",
                     n, UP_THREADS_MAX, user_pref, cores);
             return 1;
         }
-        long effective_cores = (cores < 1) ? 1 : cores;
-        if ((long)n > effective_cores) {
-            fprintf(stderr, "FAIL: n=%d > cores=%ld (user_pref=%d)\n",
+        int effective_cores = (cores < 1) ? 1 : cores;
+        if (n > effective_cores) {
+            fprintf(stderr, "FAIL: n=%d > cores=%d (user_pref=%d)\n",
                     n, effective_cores, user_pref);
             return 1;
         }
 
-        /* Auto path with healthy core count: should equal cores-2 (or MAX). */
-        if (user_pref <= UP_THREADS_AUTO && cores >= 3) {
-            long expected = cores - 2;
+        /* Auto path: should equal clamp(cores/2 - 2, 1, MAX), then
+         * further clamped to <= effective_cores. We compute the same
+         * value here in long to be safe against any cast oddity. */
+        if (user_pref <= UP_THREADS_AUTO) {
+            long expected = (long)effective_cores / 2 - 2;
+            if (expected < 1) expected = 1;
             if (expected > UP_THREADS_MAX) expected = UP_THREADS_MAX;
+            if (expected > effective_cores) expected = effective_cores;
             if ((long)n != expected) {
                 fprintf(stderr,
-                    "FAIL: auto on %ld cores got n=%d, expected %ld\n",
+                    "FAIL: auto on %d cores got n=%d, expected %ld\n",
                     cores, n, expected);
                 return 1;
             }
@@ -74,7 +89,7 @@ static int run_one(const uint8_t *data, size_t size)
             if (expected < 1)                expected = 1;
             if ((long)n != expected) {
                 fprintf(stderr,
-                    "FAIL: explicit %d on %ld cores got n=%d, expected %ld\n",
+                    "FAIL: explicit %d on %d cores got n=%d, expected %ld\n",
                     user_pref, cores, n, expected);
                 return 1;
             }

@@ -230,6 +230,13 @@ static void usm_pool_identity(uint8_t *dst, int dst_stride,
                               int width, int height)
 {
     if (dst == src && dst_stride == src_stride) return;
+    /* Unified-stride fast path: see comment in up_usm__apply_identity
+     * (src/usm.h). Collapses N memcpys into 1 when the whole plane is
+     * contiguous in both buffers. */
+    if (dst_stride == src_stride && src_stride == width) {
+        memcpy(dst, src, (size_t)width * (size_t)height);
+        return;
+    }
     for (int y = 0; y < height; y++) {
         memcpy(dst + (size_t)y * (size_t)dst_stride,
                src + (size_t)y * (size_t)src_stride,

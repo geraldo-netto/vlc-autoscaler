@@ -100,7 +100,7 @@ setup: enable once, leave it on, only sub-HD content is touched.
 | `--autoupscale-usm`          | 0–200  | 30      | Unsharp-mask amount (%) applied to luma post-upscale     |
 | `--autoupscale-backend`      | 0–2    | 0       | 0 = auto (zimg → swscale), 1 = zimg only, 2 = swscale only |
 | `--autoupscale-target-fps`   | 0–240  | 60      | Per-frame work over `1 / target_fps` triggers a one-time tuning hint. 0 disables monitoring. |
-| `--autoupscale-threads`      | 0–64   | 0       | Slice the frame into N horizontal stripes processed in parallel. 0 = auto (`cores − 2`), 1 = single-threaded, 2..64 = explicit. |
+| `--autoupscale-threads`      | 0–64   | 0       | Slice the frame into N horizontal stripes processed in parallel. 0 = auto (`cores/2 − 2`), 1 = single-threaded, 2..64 = explicit. |
 | `--autoupscale-zerocopy-dst` | 0–1    | **1**   | 1 = workers write directly into VLC's destination picture (default). Saves ~125 µs/frame at 1080p. Set to 0 to use the copy-out path if you see garbled output or crashes. |
 | `--autoupscale-content-probe`| 0–1    | **1**   | 1 = run the diagnostic content probe on the first ~60 frames to detect heavily-compressed soft sources where upscaling actively hurts. Logs a one-time advisory when triggered. Observe-only — never modifies output. 0 = skip the probe. |
 
@@ -161,9 +161,12 @@ alarms. Set `--autoupscale-target-fps=0` to disable monitoring entirely.
 
 The plugin slice-threads the zimg backend by splitting each output frame
 into N horizontal stripes processed in parallel by a persistent worker
-pool. Default = `cores − 2`, capped at `[1, 64]`; on a 24-core box that's
-22 workers. Override with `--autoupscale-threads=N` (1 keeps the
-single-threaded fast path).
+pool. Default = `cores/2 − 2`, capped at `[1, 64]`; on a 32-core box that's
+14 workers, on a 16-core box 6, on an 8-core box 2. The "/ 2" reserves
+half the machine for the rest of VLC (decoder, encoder, audio, vout) plus
+other libraries; the "− 2" is an extra absolute reserve. Override with
+`--autoupscale-threads=N` (1 keeps the single-threaded fast path; or set
+explicitly to a higher value if you measured otherwise on your hardware).
 
 **Implementation note:** the plugin maintains pinned, page-aligned
 scratch buffers and copy-in / copy-out per frame: VLC's source picture
@@ -485,17 +488,37 @@ make clean
 make info       # show pkg-config paths and toolchain
 ```
 
-**Compiler choice:** The Makefile uses `cc` (typically gcc). For the
-USM post-pass, **clang -O2 produces ~3× faster code than gcc -O2** at
-1080p+ because clang's loop-vectorizer handles the `restrict`-annotated
-inner kernels better. Users prioritizing throughput can build with:
+**CPU baseline:** The default Makefile passes `-march=x86-64-v3` to the
+compiler, which targets the AVX2 + BMI2 + FMA instruction set (Intel
+Haswell 2013+, AMD Zen 1 2017+). This is what makes the vectorized
+USM kernels emit **32-byte AVX2 vectors instead of 16-byte SSE2** —
+measured ~1.9× speedup on the kernel work at every output resolution
+(480p through 4K) and consistent across both gcc and clang.
+
+| Setting | SIMD width | Speedup vs SSE2 | Hardware |
+|---|---|---|---|
+| `MARCH=x86-64` | 16 byte (SSE2) | 1.0× (baseline) | runs anywhere x86-64 |
+| `MARCH=x86-64-v3` (**default**) | 32 byte (AVX2) | **~1.9×** | Haswell 2013+ / Zen 1 2017+ |
+| `MARCH=x86-64-v4` | 64 byte (AVX-512) | ~2.7× | Skylake-X 2017+ / Zen 4 2022+ |
+| `MARCH=native` | whatever this CPU has | varies | this build host only |
+
+Override examples:
 
 ```sh
-CC=clang make plugin
+make MARCH=x86-64-v4    # AVX-512 if your CPU has it
+make MARCH=native       # tune for the build host
+make MARCH=x86-64       # legacy fallback for pre-2013 Intel / pre-2017 AMD
+make MARCH=             # no -march flag at all
 ```
 
-The output is byte-identical either way (verified by decoded MD5), so
-this is purely a compile-time choice with no runtime semantic impact.
+The decoded output is **byte-identical** across all SIMD widths
+(verified by reproducible MD5) — wider vectors run the same arithmetic
+in more lanes, not different arithmetic.
+
+**Compiler choice:** Both gcc and clang produce competitive SIMD with
+the AVX2 baseline. `CC=clang make plugin` is still slightly faster on
+some kernels but the gap is now ~1.2× rather than the ~3× it was with
+SSE2. Either works.
 
 `make test`, `make fuzz-smoke`, `make stress`, and `make analyze` do **not** need VLC
 headers — only `make plugin` does. This is intentional so distro packagers

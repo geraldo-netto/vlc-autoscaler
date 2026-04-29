@@ -525,28 +525,54 @@ cases (insufficient data, clean, soft-only, blocky-only, soft+blocky).
 The USM kernels (`up_usm__hblur_row`, `up_usm__combine_row` in
 `src/usm.h`) are autovectorization-friendly inner loops, annotated
 with `restrict` on every pointer to tell the compiler the buffers
-don't alias. gcc and clang both produce correct code, but their
-autovectorization quality differs noticeably:
+don't alias. There are two orthogonal levers that control how well
+they actually vectorize.
 
-| Resolution | gcc -O2 | clang -O2 | speedup |
+**Lever 1: gcc cost-model pragmas.** clang -O2 vectorizes both with
+width=16 out of the box. gcc -O2 alone declines on cost-model grounds
+("Loop costings not worthwhile") — a known long-standing gap in gcc's
+vectorizer cost model. The fix is targeted: each hot kernel is wrapped
+in `#pragma GCC optimize("O3")` push/pop blocks (guarded with
+`#if defined(__GNUC__) && !defined(__clang__)` so clang -Wall stays
+silent on unknown pragmas). This pins -O3 to just those two functions
+while everything else compiles at -O2.
+
+Why pragma push/pop and not `__attribute__((optimize))`? The function
+attribute on gcc disables `always_inline` for the attributed function,
+which would defeat `static inline` and force a real call per row.
+The pragma form leaves inlining decisions intact.
+
+**Lever 2: SIMD width via `-march`.** With pragmas applied but the
+default `-march=x86-64` baseline, both gcc and clang emit 16-byte
+(SSE2) SIMD — the lowest-common-denominator x86_64 instruction set,
+which dates to 2003. Modern CPUs support 32-byte (AVX2, 2013) and
+many support 64-byte (AVX-512, 2017). Going wider doubles or
+quadruples the lanes processed per instruction:
+
+| -march level | SIMD width | 1080p USM time | Speedup vs baseline |
 |---|---|---|---|
-| 854×480 | 1.34 ms | 0.87 ms | 1.5× |
-| 1920×1080 | 4.89 ms | 1.53 ms | **3.2×** |
-| 2560×1440 | 8.62 ms | 2.95 ms | **2.9×** |
-| 3840×2160 | 19.5 ms | 6.4 ms | **3.0×** |
+| `x86-64` (baseline) | 16 byte (SSE2) | 1709 µs | 1.0× |
+| `x86-64-v3` (**default**) | 32 byte (AVX2) | 892 µs | **1.92×** |
+| `x86-64-v4` | 64 byte (AVX-512) | 632 µs | **2.70×** |
 
-Numbers from the sandbox (2-core x86_64 generic). On a modern
-desktop with AVX2, expect both columns to be lower in absolute
-terms but the gcc-vs-clang gap to remain. clang's loop-vectorizer
-recognizes the `combine_row` shape (4 byte loads, branch-free
-clamp, byte store) and emits `vector width: 16` (one xmm-register
-worth of pixels per iteration); gcc -O2 falls back to scalar.
+Numbers are median-of-5 trials of `up_usm_apply_plane` at 1080p
+single-threaded. The win is consistent across all output resolutions
+(480p through 4K all see 1.8–2.0× from AVX2, 2.4–2.9× from AVX-512).
 
-The Makefile defaults to whatever `cc` resolves to — typically
-gcc on most distros. Users who want maximum throughput on the
-USM post-pass can build with `CC=clang make plugin`. The plugin
-runs identically either way (byte-identical decoded MD5), it's
-purely a compile-time choice.
+The Makefile defaults to `MARCH=x86-64-v3`. Override examples:
+
+```sh
+make MARCH=x86-64-v4    # AVX-512 if your CPU has it
+make MARCH=native       # tune for the build host
+make MARCH=x86-64       # legacy fallback (pre-2013 Intel / pre-2017 AMD)
+make MARCH=             # no -march flag at all
+```
+
+Decoded MD5 is **byte-identical** across SSE2, AVX2, and AVX-512
+builds — the kernels do bytewise saturating arithmetic, and SIMD
+just runs the same arithmetic in more lanes per instruction. The
+exact pixel-level output you'd get from a scalar reference build is
+preserved across all SIMD widths.
 
 The plugin ships with the highest-quality defaults available (zimg +
 Spline36 + USM 30%) and watches its own per-frame processing time so it
@@ -639,8 +665,13 @@ Plus the escape hatch: `--autoupscale-target-fps=0` to silence the hint.
 
 The zimg backend slice-threads each frame: the destination is split into
 N horizontal stripes processed in parallel by a persistent worker pool.
-Default N = `cores − 2`, clamped to `[1, 64]`. The decision logic lives
-in `src/threading.h` (header-only, exercised by `tests/test_threading.c`).
+Default N = `cores/2 − 2`, clamped to `[1, 64]`. The "/ 2" reserves half
+the machine for VLC's main thread, decoder, encoder, audio, vout, and
+other libraries VLC pulls in; the "− 2" is an extra absolute reserve.
+On a 32-core box this gives 14 workers; on 16 cores, 6; on 8 cores, 2.
+Users on small machines or who measured differently can override with
+`--autoupscale-threads=N`. The decision logic lives in `src/threading.h`
+(header-only, exercised by `tests/test_threading.c`).
 
 ### Architecture
 

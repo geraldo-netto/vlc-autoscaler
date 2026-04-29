@@ -94,8 +94,7 @@ vlc --autoupscale-threads=16 \
   (e.g. you're not network-streaming this), use [Recipe 1](#recipe-1-minimal) instead.
 
 **Tunable parameters:**
-- `--autoupscale-threads=N` — workers for the upscaler. Default: cores−2.
-  Set lower if you want headroom for the rest of the system.
+- `--autoupscale-threads=N` — workers for the upscaler. Default: cores/2 − 2 (so on a 32-core box you get 14 workers, leaving 18 cores for VLC, decoder, encoder, audio, and other libraries). Set lower if you want headroom for the rest of the system, or higher if you measured the upscaler being CPU-starved.
 - `vb=10000` — video bitrate in kbps. Higher = better quality, more CPU.
 - `preset=ultrafast` — x264 speed/quality tradeoff. `ultrafast` is fastest
   but lowest quality; `medium` is balanced; `slow` is high-quality but may

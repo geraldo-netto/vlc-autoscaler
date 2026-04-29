@@ -66,7 +66,7 @@ static inline int up__clamp_even(int v)
  * Extracted from up_decide_target_height to keep its cyclomatic
  * complexity under the 15 ceiling.
  */
-static inline int up__auto_target_height(int src_h, long cores,
+static inline int up__auto_target_height(int src_h, int cores,
                                          unsigned long mem_mb)
 {
     /* AUTO: 1080p only if we have >= 4 cores AND (>= 2 GB RAM or unknown)
@@ -99,7 +99,7 @@ static inline int up__auto_target_height(int src_h, long cores,
  *   UP_MAX_RATIO * src_h. Returns 0 if src_h is invalid.
  */
 static inline int up_decide_target_height(int src_h, int preset,
-                                          long cores, unsigned long mem_mb)
+                                          int cores, unsigned long mem_mb)
 {
     if (src_h <= 0)
         return 0;
@@ -185,7 +185,7 @@ static inline int up_compute_target_dims(int src_w, int src_h,
  * Returns 1 if an upscale should happen, 0 if the filter should bypass.
  */
 static inline int up_plan_upscale(int src_w, int src_h, int skip_above,
-                                  int preset, long cores,
+                                  int preset, int cores,
                                   unsigned long mem_mb, up_dims_t *out)
 {
     if (out == NULL)

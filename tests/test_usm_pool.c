@@ -107,6 +107,54 @@ static void test_identity_amount_zero(void)
     END();
 }
 
+/*
+ * usm_pool_identity has two branches now: unified-stride fast path
+ * (single big memcpy when src_stride == dst_stride == width) and the
+ * row-by-row slow path. The fast path is hit in production for all
+ * VLC YUV planes whose stride happens to equal the visible width
+ * (common at 480p, 720p, 1080p chroma at certain widths). Confirm
+ * the slow path still works correctly when called via the pool.
+ */
+static void test_identity_pool_strided_slow_path(void)
+{
+    BEGIN("amount=0: pool with stride > width preserves padding");
+    enum { W = 13, H = 6, STRIDE = 20 };
+    uint8_t src[STRIDE * H], dst[STRIDE * H];
+
+    /* visible payload + sentinel padding */
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++)
+            src[y * STRIDE + x] = (uint8_t)(y * 41 + x * 19);
+        for (int x = W; x < STRIDE; x++)
+            src[y * STRIDE + x] = 0xCC;
+    }
+    memset(dst, 0xAB, sizeof dst);
+
+    usm_pool_t *pool = up_usm_pool_create(4, W, H);
+    CHECK(pool != NULL);
+    if (!pool) { END(); return; }
+
+    int rc = up_usm_pool_apply(pool, dst, STRIDE, src, STRIDE, 0);
+    CHECK(rc == 1);
+
+    /* Visible region: must equal src. */
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            CHECK(dst[y * STRIDE + x] == src[y * STRIDE + x]);
+        }
+    }
+    /* Dst padding must NOT have been touched (slow path doesn't
+     * touch beyond width per row). */
+    for (int y = 0; y < H; y++) {
+        for (int x = W; x < STRIDE; x++) {
+            CHECK(dst[y * STRIDE + x] == 0xAB);
+        }
+    }
+
+    up_usm_pool_destroy(pool);
+    END();
+}
+
 static void test_typical_30pct(void)
 {
     BEGIN("amount=30 (typical default): all worker counts byte-identical");
@@ -275,6 +323,7 @@ int main(void)
 
     /* Core: byte-identity to single-threaded across many configurations */
     test_identity_amount_zero();
+    test_identity_pool_strided_slow_path();
     test_typical_30pct();
     test_aggressive_100pct();
 

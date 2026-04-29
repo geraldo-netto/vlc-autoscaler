@@ -257,6 +257,129 @@ static void test_apply_stride_greater_than_width(void)
     END();
 }
 
+/*
+ * The identity path (amount=0) has TWO branches now:
+ *   (a) unified-stride fast path: when src_stride == dst_stride == width,
+ *       the whole plane is contiguous in both buffers and we collapse
+ *       to a single big memcpy. (~3x faster at 1080p.)
+ *   (b) row-by-row slow path: anything else.
+ *
+ * The two MUST produce identical output. These tests exercise both
+ * branches with the same logical input and assert byte-equality, then
+ * confirm that the padding bytes (when stride > width) are NOT touched
+ * even though one of them is a single-shot memcpy.
+ */
+
+static void test_apply_amount_zero_unified_stride_fast_path(void)
+{
+    BEGIN("amount=0 fast path: dst_stride==src_stride==width -> single memcpy");
+    enum { W = 17, H = 11 };  /* odd dims to flush off-by-one */
+    uint8_t src[W * H], dst[W * H], ws[W * H];
+    for (size_t i = 0; i < sizeof src; i++) src[i] = (uint8_t)(i * 13 + 7);
+    memset(dst, 0xAB, sizeof dst);
+
+    int rc = up_usm_apply_plane(dst, W, src, W, W, H, 0, ws);
+    CHECK_EQ(rc, 1);
+    CHECK_EQ(memcmp(dst, src, sizeof src), 0);
+    END();
+}
+
+static void test_apply_amount_zero_strided_slow_path(void)
+{
+    BEGIN("amount=0 slow path: stride > width -> row loop, padding preserved");
+    enum { W = 7, H = 5, STRIDE = 12 };
+    uint8_t src[STRIDE * H], dst[STRIDE * H], ws[W * H];
+
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++)
+            src[y * STRIDE + x] = (uint8_t)(y * 23 + x * 17);
+        for (int x = W; x < STRIDE; x++)
+            src[y * STRIDE + x] = 0xCC;  /* sentinel padding */
+    }
+    memset(dst, 0xAB, sizeof dst);  /* sentinel everywhere */
+
+    int rc = up_usm_apply_plane(dst, STRIDE, src, STRIDE, W, H, 0, ws);
+    CHECK_EQ(rc, 1);
+
+    /* Visible region: must equal src. */
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            CHECK_EQ(dst[y * STRIDE + x], src[y * STRIDE + x]);
+        }
+    }
+    /* dst padding: must still be 0xAB (untouched by the slow path). */
+    for (int y = 0; y < H; y++) {
+        for (int x = W; x < STRIDE; x++) {
+            CHECK_EQ(dst[y * STRIDE + x], 0xAB);
+        }
+    }
+    /* src padding: must still be 0xCC (read-only). */
+    for (int y = 0; y < H; y++) {
+        for (int x = W; x < STRIDE; x++) {
+            CHECK_EQ(src[y * STRIDE + x], 0xCC);
+        }
+    }
+    END();
+}
+
+static void test_apply_amount_zero_fast_and_slow_agree(void)
+{
+    BEGIN("amount=0: fast path output == slow path output (same logical input)");
+    /* Set up two parallel runs with identical visible content but
+     * different stride configurations. The first hits the fast path
+     * (stride=width); the second hits the slow path (stride>width).
+     * After identity copy, the visible payload must be identical. */
+    enum { W = 19, H = 7 };
+    uint8_t src1[W * H], dst1[W * H], ws[W * H];
+    enum { STRIDE = W + 5 };
+    uint8_t src2[STRIDE * H], dst2[STRIDE * H];
+
+    for (size_t i = 0; i < sizeof src1; i++) src1[i] = (uint8_t)(i * 31 + 5);
+    memset(dst1, 0, sizeof dst1);
+
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++)
+            src2[y * STRIDE + x] = src1[y * W + x];
+        for (int x = W; x < STRIDE; x++)
+            src2[y * STRIDE + x] = 0xFF;  /* arbitrary padding */
+    }
+    memset(dst2, 0xEE, sizeof dst2);
+
+    /* Fast path: stride == width */
+    int rc1 = up_usm_apply_plane(dst1, W, src1, W, W, H, 0, ws);
+    CHECK_EQ(rc1, 1);
+
+    /* Slow path: stride > width */
+    int rc2 = up_usm_apply_plane(dst2, STRIDE, src2, STRIDE, W, H, 0, ws);
+    CHECK_EQ(rc2, 1);
+
+    /* Visible region must match across both paths. */
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            CHECK_EQ(dst1[y * W + x], dst2[y * STRIDE + x]);
+        }
+    }
+    END();
+}
+
+static void test_apply_amount_zero_in_place_alias_no_copy(void)
+{
+    BEGIN("amount=0 in-place (dst==src): no work done, buffer untouched");
+    /* When dst aliases src AND strides match, the function should
+     * return without touching memory. Verify by writing a sentinel
+     * pattern and confirming it survives. */
+    enum { W = 10, H = 4 };
+    uint8_t buf[W * H], ws[W * H];
+    for (size_t i = 0; i < sizeof buf; i++) buf[i] = (uint8_t)(i + 1);
+    uint8_t saved[sizeof buf];
+    memcpy(saved, buf, sizeof buf);
+
+    int rc = up_usm_apply_plane(buf, W, buf, W, W, H, 0, ws);
+    CHECK_EQ(rc, 1);
+    CHECK_EQ(memcmp(buf, saved, sizeof buf), 0);
+    END();
+}
+
 static void test_apply_invalid_inputs(void)
 {
     BEGIN("apply_plane: invalid inputs return 0");
@@ -328,6 +451,10 @@ int main(void)
     test_apply_saturation();
     test_apply_in_place_equals_out_of_place();
     test_apply_stride_greater_than_width();
+    test_apply_amount_zero_unified_stride_fast_path();
+    test_apply_amount_zero_strided_slow_path();
+    test_apply_amount_zero_fast_and_slow_agree();
+    test_apply_amount_zero_in_place_alias_no_copy();
     test_apply_invalid_inputs();
     test_apply_1x1_plane();
     test_apply_amount_clamping();

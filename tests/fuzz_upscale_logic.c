@@ -23,13 +23,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
+#include <limits.h>
 
 /*
  * Verify the result of up_plan_upscale matches its documented contract.
  * Aborts (which the fuzzer reports as a finding) on any violation.
  */
 static void check_invariants(int src_w, int src_h, int skip_above,
-                             int preset, long cores, unsigned long mem_mb,
+                             int preset, int cores, unsigned long mem_mb,
                              int rc, const up_dims_t *out)
 {
     if (rc == 0) {
@@ -37,7 +39,7 @@ static void check_invariants(int src_w, int src_h, int skip_above,
         if (out->width != 0 || out->height != 0) {
             fprintf(stderr,
                     "INVARIANT: rc=0 but out=(%d,%d) for "
-                    "src=(%d,%d) skip=%d preset=%d cores=%ld mem=%lu\n",
+                    "src=(%d,%d) skip=%d preset=%d cores=%d mem=%lu\n",
                     out->width, out->height, src_w, src_h,
                     skip_above, preset, cores, mem_mb);
             abort();
@@ -82,7 +84,7 @@ static void check_invariants(int src_w, int src_h, int skip_above,
     if (preset == UP_TARGET_AUTO && out->height > 1080) {
         fprintf(stderr,
                 "INVARIANT: AUTO produced height=%d (must be <= 1080) for "
-                "src=(%d,%d) cores=%ld mem=%lu\n",
+                "src=(%d,%d) cores=%d mem=%lu\n",
                 out->height, src_w, src_h, cores, mem_mb);
         abort();
     }
@@ -137,9 +139,13 @@ static void run_one(const uint8_t *data, size_t size)
     memcpy(&u_mem_mb, buf + 20, 4);
 
     /* Don't artificially constrain - the whole point of a fuzzer is to feed
-     * weird values - but do clamp `cores` to something representable as a
-     * `long` argument so we're testing the contract, not C type coercion. */
-    long cores = (long)i_cores;
+     * weird values - but do clamp `cores` to int range so we're testing the
+     * contract, not C type coercion. up_plan_upscale takes int cores in the
+     * new API; up_detect_cores in production already clamps to a sane range. */
+    int cores;
+    if (i_cores > INT_MAX) cores = INT_MAX;
+    else if (i_cores < INT_MIN) cores = INT_MIN;
+    else cores = (int)i_cores;
     unsigned long mem_mb = (unsigned long)u_mem_mb;
 
     up_dims_t out = { -1, -1 };

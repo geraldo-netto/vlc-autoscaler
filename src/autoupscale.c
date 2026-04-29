@@ -103,12 +103,13 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 
 #define THREADS_TEXT    N_("Number of worker threads for the zimg scaler")
 #define THREADS_LONGTEXT N_( \
-    "0 = auto (cores - 2, clamped to [1,64]); 1..64 = explicit count. " \
+    "0 = auto (cores/2 - 2, clamped to [1,64]); 1..64 = explicit count. " \
     "The zimg backend partitions each frame into N horizontal stripes " \
     "and runs one persistent worker thread per stripe. swscale backend " \
     "runs single-threaded regardless. Higher values reduce per-frame " \
     "latency at the cost of more memory and lower per-thread cache " \
-    "locality; cores - 2 is a sensible default.")
+    "locality; the auto default reserves half the machine for the rest " \
+    "of VLC and other libraries. Override if you measured otherwise.")
 
 #define ZEROCOPY_DST_TEXT N_("Write directly to VLC's destination picture")
 #define ZEROCOPY_DST_LONGTEXT N_( \
@@ -239,10 +240,9 @@ struct filter_sys_t
  * Helpers
  *****************************************************************************/
 
-static void DetectHardware( long *cores, unsigned long *mem_mb )
+static void DetectHardware( int *cores, unsigned long *mem_mb )
 {
-    long c = sysconf( _SC_NPROCESSORS_ONLN );
-    *cores = (c > 0) ? c : 1;
+    *cores = up_detect_cores();
     *mem_mb = 0;
 #ifdef __linux__
     struct sysinfo info;
@@ -275,7 +275,7 @@ static int Open( vlc_object_t *p_this )
     const int backend_pref = var_InheritInteger( p_filter,
                                                  CFG_PREFIX "backend" );
 
-    long cores;
+    int cores;
     unsigned long mem_mb;
     DetectHardware( &cores, &mem_mb );
 
@@ -402,7 +402,7 @@ static int Open( vlc_object_t *p_this )
     msg_Info( p_filter,
               "AutoUpscale engaged: %dx%d -> %dx%d "
               "(backend=%s preset=%d algo=%d usm=%d fps_target=%d "
-              "threads=%d cores=%ld mem=%luMB)",
+              "threads=%d cores=%d mem=%luMB)",
               src_w, src_h, target.width, target.height,
               be->name, preset, algo, usm_pct, target_fps, threads_resolved,
               cores, mem_mb );
