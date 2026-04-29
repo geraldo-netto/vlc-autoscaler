@@ -122,7 +122,7 @@ static uint64_t xs(void)
 
 int main(int argc, char **argv)
 {
-    long iters = (argc > 1) ? atol(argv[1]) : 20000;
+    long iters = (argc > 1) ? atol(argv[1]) : 50000;
     uint8_t buf[16];
     long n_fail = 0;
     for (long i = 0; i < iters; i++) {

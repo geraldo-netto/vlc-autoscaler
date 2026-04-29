@@ -31,6 +31,33 @@
 #include "usm_pool.h"
 #include "usm.h"
 
+/*
+ * Multi-versioning support: when this TU is compiled with -DUSM_VARIANT=name,
+ * the public functions get suffixed (e.g. up_usm_pool_create -> up_usm_pool_create_avx2).
+ * The plugin links three copies of this file (sse2 / avx2 / avx512), each at
+ * its own -march, plus usm_pool_dispatch.c which selects one at .so load time.
+ *
+ * Without USM_VARIANT defined, the original names are used — that's the build
+ * mode for the unit tests and for MULTIVERSION=0 single-baseline plugin builds.
+ */
+#ifdef USM_VARIANT
+#  define USM_PASTE_(a, b) a##_##b
+#  define USM_PASTE(a, b)  USM_PASTE_(a, b)
+#  define up_usm_pool_create   USM_PASTE(up_usm_pool_create,   USM_VARIANT)
+#  define up_usm_pool_destroy  USM_PASTE(up_usm_pool_destroy,  USM_VARIANT)
+#  define up_usm_pool_apply    USM_PASTE(up_usm_pool_apply,    USM_VARIANT)
+#else
+   /* Single-baseline build: provide the variant_name symbol that callers
+    * (e.g. autoupscale.c's engagement log) expect. The dispatcher provides
+    * a strong definition in MULTIVERSION=1 plugin builds; here we provide
+    * it as a normal definition for tests and single-baseline plugin builds.
+    *
+    * The string is "default" because we have no information about which
+    * SIMD level was actually compiled — that's a build-time choice (MARCH)
+    * the user already knows. Unit tests don't need a real value. */
+   const char *up_usm_pool_variant_name = "default";
+#endif
+
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdbool.h>

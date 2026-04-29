@@ -19,8 +19,8 @@ fast enough for real-time playback on modest hardware.
 
 | Check                                  | Result                                  |
 |----------------------------------------|-----------------------------------------|
-| Unit tests (ASan + UBSan)              | 141/141 pass across 9 suites            |
-| Smoke fuzz (670k iters, ASan + UBSan)  | pass across 9 fuzzers                   |
+| Unit tests (ASan + UBSan)              | 174/174 pass across 11 suites           |
+| Smoke fuzz (740k iters, ASan + UBSan)  | pass across 10 fuzzers                  |
 | libFuzzer (60s × 5 in CI, seeded)      | 0 crashes; corpora accelerate discovery ~2× |
 | Concurrency stress (ASan + TSan)       | 19 configs, ~1300 frames, 0 races       |
 | `cppcheck` (warning + style)           | clean                                   |
@@ -477,8 +477,8 @@ header — there's no shadow re-implementation in the tests.
 ```sh
 make            # build the VLC plugin (libautoupscale_plugin.so)
 make plugin     # same
-make test       # unit tests under ASan + UBSan (141 tests across 9 suites)
-make fuzz-smoke # 670k deterministic random inputs across 9 fuzzers under ASan + UBSan
+make test       # unit tests under ASan + UBSan (174 tests across 11 suites)
+make fuzz-smoke # 740k deterministic random inputs across 10 fuzzers under ASan + UBSan
 make fuzz       # libFuzzer build (clang); run e.g. build/fuzz_upscale_logic tests/corpus/
 make stress     # usm_pool concurrency stress, ASan + TSan (~70s)
 make analyze    # cppcheck across the source
@@ -488,37 +488,49 @@ make clean
 make info       # show pkg-config paths and toolchain
 ```
 
-**CPU baseline:** The default Makefile passes `-march=x86-64-v3` to the
-compiler, which targets the AVX2 + BMI2 + FMA instruction set (Intel
-Haswell 2013+, AMD Zen 1 2017+). This is what makes the vectorized
-USM kernels emit **32-byte AVX2 vectors instead of 16-byte SSE2** —
-measured ~1.9× speedup on the kernel work at every output resolution
-(480p through 4K) and consistent across both gcc and clang.
+**CPU baseline:** The default Makefile builds a **multi-versioned plugin**
+that contains three SIMD code paths (SSE2 + AVX2 + AVX-512), with a
+runtime dispatcher that picks the best one for the current CPU at
+`.so` load time via `__builtin_cpu_supports()`. This means the same
+binary runs at peak performance on any x86_64 hardware:
 
-| Setting | SIMD width | Speedup vs SSE2 | Hardware |
-|---|---|---|---|
-| `MARCH=x86-64` | 16 byte (SSE2) | 1.0× (baseline) | runs anywhere x86-64 |
-| `MARCH=x86-64-v3` (**default**) | 32 byte (AVX2) | **~1.9×** | Haswell 2013+ / Zen 1 2017+ |
-| `MARCH=x86-64-v4` | 64 byte (AVX-512) | ~2.7× | Skylake-X 2017+ / Zen 4 2022+ |
-| `MARCH=native` | whatever this CPU has | varies | this build host only |
+| CPU has | Dispatcher picks | Speedup vs SSE2 baseline |
+|---|---|---:|
+| AVX-512F + AVX-512BW (Skylake-X 2017+ / Zen 4 2022+) | `avx512` | ~2.7× |
+| AVX2 (Haswell 2013+ / Zen 1 2017+) | `avx2` | ~1.9× |
+| Anything else x86_64 | `sse2` | 1.0× (baseline) |
 
-Override examples:
+The chosen variant is logged in VLC at engagement time:
+
+```
+AutoUpscale engaged: 854x480 -> 1920x1080 (… simd=avx512)
+                                                 ^^^^^^^^^
+```
+
+The dispatch happens **once** at plugin load (a constructor function,
+runs during `dlopen`); per-frame overhead is one indirect call (~1 ns).
+
+**Build options:**
 
 ```sh
-make MARCH=x86-64-v4    # AVX-512 if your CPU has it
-make MARCH=native       # tune for the build host
-make MARCH=x86-64       # legacy fallback for pre-2013 Intel / pre-2017 AMD
-make MARCH=             # no -march flag at all
+make                          # multi-versioned (default), runs everywhere
+make MULTIVERSION=0           # single-baseline build (smaller binary)
+make MULTIVERSION=0 MARCH=x86-64-v3   # single-baseline at AVX2 only
+make MULTIVERSION=0 MARCH=x86-64      # single-baseline at SSE2 only (legacy)
 ```
+
+In `MULTIVERSION=0` mode, the build emits one `usm_pool.o` at the
+`MARCH` level and skips the dispatcher. The binary is ~30 KB smaller
+but only runs on CPUs that support the chosen SIMD level. Useful for
+non-x86 ports or known-target deployments.
 
 The decoded output is **byte-identical** across all SIMD widths
 (verified by reproducible MD5) — wider vectors run the same arithmetic
 in more lanes, not different arithmetic.
 
 **Compiler choice:** Both gcc and clang produce competitive SIMD with
-the AVX2 baseline. `CC=clang make plugin` is still slightly faster on
-some kernels but the gap is now ~1.2× rather than the ~3× it was with
-SSE2. Either works.
+the AVX2/AVX-512 variants. `CC=clang make plugin` is still slightly
+faster on some kernels but the gap is now small. Either works.
 
 `make test`, `make fuzz-smoke`, `make stress`, and `make analyze` do **not** need VLC
 headers — only `make plugin` does. This is intentional so distro packagers

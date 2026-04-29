@@ -66,4 +66,14 @@ int up_usm_pool_apply(usm_pool_t *pool,
  */
 void up_usm_pool_destroy(usm_pool_t *pool);
 
+/*
+ * Name of the active SIMD variant chosen at .so load time:
+ *   "avx512" / "avx2" / "sse2" — for diagnostic logging.
+ *
+ * In MULTIVERSION=0 builds (single-baseline plugin), this symbol is
+ * provided as a weak alias for compatibility. The variant string then
+ * reflects the build-time -march level.
+ */
+extern const char *up_usm_pool_variant_name;
+
 #endif /* AUTOUPSCALE_USM_POOL_H */

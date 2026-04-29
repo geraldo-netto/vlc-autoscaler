@@ -552,27 +552,66 @@ quadruples the lanes processed per instruction:
 | -march level | SIMD width | 1080p USM time | Speedup vs baseline |
 |---|---|---|---|
 | `x86-64` (baseline) | 16 byte (SSE2) | 1709 µs | 1.0× |
-| `x86-64-v3` (**default**) | 32 byte (AVX2) | 892 µs | **1.92×** |
+| `x86-64-v3` | 32 byte (AVX2) | 892 µs | **1.92×** |
 | `x86-64-v4` | 64 byte (AVX-512) | 632 µs | **2.70×** |
 
 Numbers are median-of-5 trials of `up_usm_apply_plane` at 1080p
 single-threaded. The win is consistent across all output resolutions
 (480p through 4K all see 1.8–2.0× from AVX2, 2.4–2.9× from AVX-512).
 
-The Makefile defaults to `MARCH=x86-64-v3`. Override examples:
+**Runtime SIMD dispatch.** Rather than picking one `-march` level at
+build time and constraining the binary to one CPU class, the default
+plugin build is **multi-versioned**: `usm_pool.c` is compiled three
+times at three baselines (SSE2 / AVX2 / AVX-512) into three separate
+`.o` files with renamed public symbols. A thin dispatcher in
+`src/usm_pool_dispatch.c` runs at `.so` load time via
+`__attribute__((constructor))`, queries `__builtin_cpu_supports()`,
+and points three function pointers (`up_usm_pool_create/destroy/apply`)
+at the highest-supported variant.
 
-```sh
-make MARCH=x86-64-v4    # AVX-512 if your CPU has it
-make MARCH=native       # tune for the build host
-make MARCH=x86-64       # legacy fallback (pre-2013 Intel / pre-2017 AMD)
-make MARCH=             # no -march flag at all
+```c
+if (__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw"))
+    /* point at *_avx512 entry points */
+else if (__builtin_cpu_supports("avx2"))
+    /* point at *_avx2 entry points */
+else
+    /* point at *_sse2 entry points */
 ```
 
-Decoded MD5 is **byte-identical** across SSE2, AVX2, and AVX-512
-builds — the kernels do bytewise saturating arithmetic, and SIMD
-just runs the same arithmetic in more lanes per instruction. The
-exact pixel-level output you'd get from a scalar reference build is
-preserved across all SIMD widths.
+The dispatch happens **once** at `dlopen` (before VLC's plugin scanner
+or `vlc-cache-gen` calls into the .so), so per-frame overhead is just
+one indirect call — about 1 ns on modern x86, negligible against the
+millisecond-scale work it dispatches. The chosen variant name is
+exported as `up_usm_pool_variant_name` and printed in the engagement
+log: `AutoUpscale engaged: ... simd=avx512`.
+
+**Why three .o files instead of `__attribute__((target_clones))`?**
+`target_clones` requires non-static linkage on the cloned function,
+which would defeat the `static inline` of the hot kernels in `usm.h`.
+By compiling the entire usm_pool.c TU at three -march levels, each
+variant gets to inline its kernels at its own SIMD width — strictly
+better codegen than per-function multi-versioning. The cost is binary
+size (~30 KB more for the extra two variants) and one extra .c file
+in the build.
+
+**Safety:** the AVX-512 variant's code section contains AVX-512
+instructions. The dispatcher's selection logic prevents that code
+from being executed on a CPU that doesn't support AVX-512, so
+holding a function pointer to it on an older CPU is safe — the
+dynamic linker only does relocations, no SIMD execution.
+
+**MULTIVERSION=0 fallback.** Set `make MULTIVERSION=0` to disable
+runtime dispatch and build a single-baseline plugin at the `MARCH`
+level. The binary is ~30 KB smaller but only runs on CPUs that
+support the chosen SIMD level. Useful for non-x86 ports, embedded
+deployments, or known-target builds.
+
+Decoded MD5 is **byte-identical** across SSE2, AVX2, AVX-512 builds
+AND across MULTIVERSION=0/1 — the kernels do bytewise saturating
+arithmetic, and SIMD just runs the same arithmetic in more lanes
+per instruction. The exact pixel-level output you'd get from a
+scalar reference build is preserved across all SIMD widths and
+both build modes.
 
 The plugin ships with the highest-quality defaults available (zimg +
 Spline36 + USM 30%) and watches its own per-frame processing time so it
@@ -797,7 +836,7 @@ different class of bug:
 
 ### Unit tests — exact-value assertions
 
-126 tests across 8 suites in `tests/test_*.c`. Each test states a
+174 tests across 11 suites in `tests/test_*.c`. Each test states a
 specific, predictable expected value. They run under AddressSanitizer
 + UndefinedBehaviorSanitizer (`make test`), so memory errors and
 signed-overflow bugs are caught even when the asserted output happens
@@ -806,12 +845,16 @@ to be correct.
 | Suite                  | Count | Covers                                      |
 |------------------------|-------|---------------------------------------------|
 | `upscale_logic`        | 31    | preset dispatch (incl. all of 720p..8K), aspect math, ratio cap, AUTO ceiling, skip-above gating |
-| `usm`                  | 13    | unsharp-mask single-thread reference        |
+| `usm`                  | 17    | unsharp-mask single-thread reference        |
 | `perfmon`              | 10    | EWMA performance monitor                    |
-| `threading`            | 8     | thread-count decision                       |
+| `threading`            | 11    | thread-count decision                       |
 | `zimg_helpers`         | 23    | stripe bounds, copy-plane                   |
 | `chroma_classify`      | 14    | opaque chroma list + cross-predicate invariant |
-| `usm_pool`             | 14    | threaded USM byte-identity vs single-thread |
+| `usm_pool`             | 15    | threaded USM byte-identity vs single-thread |
+| `content_probe`        | 13    | source-content metrics (variance, gradient) |
+| `scaler_pick`          | 15    | backend selection logic                     |
+| `lifetime`             | 10    | resource lifetime / use-after-free          |
+| `usm_pool_variants`    | 15    | cross-SIMD-variant byte-equivalence (SSE2/AVX2/AVX-512) |
 
 The `upscale_logic` suite includes targeted regression tests for design
 rules that aren't otherwise verifiable from output alone:
@@ -834,23 +877,24 @@ rules that aren't otherwise verifiable from output alone:
 
 ### Smoke fuzzers — deterministic mass testing
 
-`make fuzz-smoke` runs 9 standalone harnesses (`tests/fuzz_*.c` with
-`-DFUZZ_MAIN`) totalling 670k iterations under ASan + UBSan, in
-about 7 seconds. Each fuzzer drives a single function (or a small
-combination of helpers) with deterministic xorshift32 random input
-and verifies a set of post-conditions (the "invariant checker").
+`make fuzz-smoke` runs 10 standalone harnesses (`tests/fuzz_*.c` with
+`-DFUZZ_MAIN`) totalling 740k iterations under ASan + UBSan. Each
+fuzzer drives a single function (or a small combination of helpers)
+with deterministic xorshift32 random input and verifies a set of
+post-conditions (the "invariant checker").
 
 | Fuzzer            | Iters/run | Targets                                     |
 |-------------------|-----------|---------------------------------------------|
 | `upscale_logic`   | 100k      | preset dispatch, aspect math, ratio cap     |
-| `usm`             |  50k      | unsharp-mask convolution                    |
+| `usm`             | 100k      | unsharp-mask convolution                    |
 | `perfmon`         |  50k      | EWMA tracker                                |
 | `threading`       | 100k      | thread-count decision                       |
-| `copy_plane`      |  20k      | stride-aware plane copy (memory-safety)     |
+| `copy_plane`      |  50k      | stride-aware plane copy (memory-safety)     |
 | `stripe_bounds`   | 100k      | stripe partition math                       |
 | `frame_shape`     | 100k      | chroma classification + plane geometry + stripe partition together |
 | `scaler_chroma`   | 100k      | chroma fourcc → zimg backend mapping (the VLC-touching boundary) |
-| `content_probe`   |  50k      | source-content metric reads (pointer arithmetic on bytes) — ASan |
+| `content_probe`   | 100k      | source-content metric reads (pointer arithmetic on bytes) — ASan |
+| `usm_variants`    |   5k      | cross-SIMD-variant byte-equivalence (3 pools per iter under ASan) |
 
 `fuzz_upscale_logic` and `fuzz_frame_shape` use **biased input
 selection** in their smoke mains. Without bias, raw int32 values

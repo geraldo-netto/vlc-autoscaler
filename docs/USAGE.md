@@ -10,6 +10,7 @@ at the bottom walks you through narrowing down the cause.
 
 | Situation | Recipe |
 |---|---|
+| **You want a sane default that just works** | [**Recipe 9: Quiet, stable upscaling**](#recipe-9-quiet-stable-upscaling-recommended-for-everyday-use) |
 | First time, just want it to work | [Recipe 1: Minimal](#recipe-1-minimal) |
 | You ran the recipe from the README and got recursion errors | [Recipe 2: Transcode bypass](#recipe-2-transcode-pipeline-bypassing-the-recursion-limit) |
 | You see occasional black screens | [Recipe 4: Without postproc](#recipe-4-without-postproc-recommended-default) |
@@ -17,6 +18,7 @@ at the bottom walks you through narrowing down the cause.
 | Maximum quality, you have CPU to spare | [Recipe 6: Quality-first](#recipe-6-quality-first) |
 | Low-latency live stream | [Recipe 7: Low-latency](#recipe-7-low-latency) |
 | You want to encode to a file, not display | [Recipe 8: Save to file](#recipe-8-save-to-file) |
+| Log is full of `pulse audio output warning` and dropped frames | [Reducing log noise](#reducing-log-noise-pulseaudio-clock-errors-and-frame-drops) |
 | Diagnosing a specific bug | [Diagnostic ladder](#diagnostic-ladder) |
 
 ---
@@ -482,6 +484,224 @@ that's separate from VLC's slider. The combination "VLC slider at 100%"
 + "Bluetooth sink remembered at 0% from last connection" produces silence.
 Use **Method 2** (`pactl set-sink-input-volume`) — it's the only level
 that lets you set the per-device volume directly.
+
+---
+
+## Reducing log noise: PulseAudio clock errors and frame drops
+
+If you see message floods like these in your VLC log:
+
+```
+pulse audio output warning: starting late (-111651650002536464 us)
+main audio output warning: playback way too late (...): flushing buffers
+vlcpulse audio output debug: write index corrupt
+pulse audio output debug: cannot synchronize start
+pulse audio output debug: deferring start (1365156 us)
+pulse audio output debug: underflow
+main audio output warning: playback way too early (-1160971): playing silence
+avcodec decoder warning: More than 11 late frames, dropping frame
+```
+
+…the negative trillion-microsecond values (~3540 years) are not real
+timing measurements — they're symptoms of a **broken audio clock**.
+VLC computes "lateness = expected − now" and gets nonsense, retries,
+underflows, recovers, and the video decoder drops frames trying to
+keep up with the wandering audio clock.
+
+This is a VLC / PulseAudio / source-file interaction; it's **not**
+caused by autoupscale. The plugin doesn't touch audio or timestamps.
+But there are several flags that quiet the noise and stabilize playback.
+
+> **Note on master-clock control:** VLC 4.x adds a runtime
+> `--clock-master=` option that lets you make video the canonical
+> clock (audio resamples to follow). VLC 3.x — including 3.0.20 — does
+> **not** expose this; the master is fixed to audio when audio is
+> present. If you're on VLC 4.x you can use it; on 3.x the only
+> levers are the ones below.
+
+### Approach 1: Switch audio output to ALSA (bypass PulseAudio)
+
+Most of the `pulse audio output` and `vlcpulse` messages come from
+PulseAudio's clock-sync layer. Going direct to ALSA skips that entire
+stack:
+
+```sh
+vlc --aout=alsa ...
+```
+
+Or persistently in `~/.config/vlc/vlcrc`: `aout=alsa`.
+
+Trade-off: you lose PulseAudio's per-app routing and Bluetooth
+support, but you also stop having PulseAudio's bugs reported to you.
+ALSA's clock is taken directly from the sound card, which doesn't
+suffer the same desync problems.
+
+### Approach 2: Increase caching to absorb clock jitter
+
+```sh
+vlc --file-caching=2000 --network-caching=2000 ...
+```
+
+Default file caching is ~300 ms; bumping it to 2 seconds gives the
+audio pipeline more headroom before declaring underflow. Doesn't
+fix the root cause but reduces the rate of complaints.
+
+### Approach 3: Enable audio time-stretching
+
+```sh
+vlc --audio-time-stretch ...
+```
+
+When the audio clock drifts, VLC speeds up or slows down audio
+playback (without changing pitch) to stay aligned with video. This
+is enabled by default in some VLC builds and disabled in others —
+explicitly turning it on prevents the frame-drop cascade in many
+cases. Negligible CPU cost.
+
+### Approach 4: Compensate fixed audio desync
+
+If your source file has a constant audio offset, give VLC the
+correction directly (in milliseconds):
+
+```sh
+vlc --audio-desync=50 ...    # play audio 50 ms LATER than video
+vlc --audio-desync=-100 ...  # play audio 100 ms EARLIER than video
+```
+
+This doesn't help with random clock jitter, but it does help if your
+log shows a **consistent** "way too late by N seconds" value across
+playbacks of the same file.
+
+### Approach 5: Lower verbosity (suppress messages without fixing them)
+
+Most of those messages are at warning or debug level. They show up
+when you run with `--verbose=1` or `--verbose=2`:
+
+```sh
+vlc ...                # no --verbose flag: only errors shown
+vlc --verbose=0 ...    # explicit
+vlc --quiet ...        # equivalent to --verbose=0
+```
+
+If you didn't pass `--verbose=2` but still see them, check
+`~/.config/vlc/vlcrc` for a `verbose=2` line.
+
+### Approach 6: Disable audio entirely (if you don't need it)
+
+```sh
+vlc --no-audio ...
+```
+
+Kills the audio pipeline — no audio clock to be broken, no decoder
+racing to keep up with it. Frame dropping stops because video uses
+its own clock. This is what every test command in this codebase
+uses; it's the most certain way to eliminate the entire class of
+warning.
+
+### Approach 7: Confirm autoupscale isn't contributing
+
+Quick sanity check that the filter isn't the cause:
+
+```sh
+vlc --no-video-filter your_video.mp4
+```
+
+If frame drops persist without the filter, the cause is upstream
+(decoder, demuxer, audio pipeline). If they vanish without the filter
+and reappear with it, you may be:
+
+- Targeting too high a resolution for your CPU at the source's
+  framerate. Lower `--autoupscale-target` (try `=2` for 1080p or
+  `=1` for 720p).
+- Running the SSE2 fallback variant. Check the engagement log — it
+  should show `simd=avx512` or `simd=avx2` on a modern CPU; if it
+  shows `simd=sse2` you're missing the SIMD speedup. Rebuild without
+  `MULTIVERSION=0`, or with the right `MARCH=` baseline.
+
+---
+
+## Recipe 9: Quiet, stable upscaling (recommended for everyday use)
+
+A starting-point invocation that combines autoupscale's tested defaults
+with the noise mitigations from above. This is verified to start cleanly
+in VLC 3.0.20.
+
+```sh
+vlc \
+  --aout=alsa \
+  --audio-time-stretch \
+  --file-caching=2000 \
+  --network-caching=2000 \
+  --no-stats \
+  --verbose=0 \
+  --autoupscale-target=0 \
+  --autoupscale-threads=0 \
+  --autoupscale-content-probe=1 \
+  --sout='#transcode{vcodec=h264,vb=10000,venc=x264{preset=ultrafast},vfilter=autoupscale}:display' \
+  /path/to/your/video.mp4
+```
+
+**What each flag does:**
+
+| Flag | Why |
+|---|---|
+| `--aout=alsa` | Bypass PulseAudio's clock-sync layer. Eliminates `vlcpulse` warnings entirely. Drop this if you need Bluetooth or per-app PulseAudio routing — leave it in if you're tired of the warnings and have ALSA configured. |
+| `--audio-time-stretch` | Audio adjusts to track the input PTS instead of forcing video to chase a wandering audio clock. Reduces the frame-drop cascade when timestamps drift. |
+| `--file-caching=2000` | 2-second buffer (default ~300 ms) absorbs short clock jitter without underflowing. |
+| `--network-caching=2000` | Same buffer for network sources. |
+| `--no-stats` | Suppresses end-of-playback statistics dump. |
+| `--verbose=0` | Only show actual errors; hide warnings and debug. |
+| `--autoupscale-target=0` | AUTO mode — picks 720p or 1080p based on source. Never goes above 1080p in AUTO. |
+| `--autoupscale-threads=0` | Auto: `cores/2 − 2` workers. On a 32-core box that's 14 — leaves 18 cores for decoder, encoder, audio, OS. |
+| `--autoupscale-content-probe=1` | Diagnostic only — measures source content quality and logs an advisory if upscaling looks unhelpful. ~27 µs/frame for 60 frames at startup, then off. |
+| `#transcode{...}:display` | Re-encode in a single pipeline, then display. Avoids the recursion mode that `vfilter=` directly into display sometimes hits. |
+| `vcodec=h264,vb=10000,venc=x264{preset=ultrafast}` | x264 ultrafast preset — costs ~5-8 ms/frame, well under the 16.7 ms budget for 60 fps. |
+
+**For file output instead of display**, replace `:display` with:
+
+```
+:standard{access=file,mux=mp4,dst=/path/to/output.mp4}
+```
+
+**For target other than AUTO**, replace `--autoupscale-target=0` with:
+
+| Value | Meaning |
+|---|---|
+| `1` | force 720p |
+| `2` | force 1080p |
+| `3` | force 1440p |
+| `4` | force 4K |
+| `5` | force 5K |
+| `6` | force 8K |
+
+Note that targets above 1080p require source ≥ 1/4 the target height
+(the ratio cap) and significant CPU; on a 32-core machine 4K is
+usually sustainable, but verify with the engagement log and frame-drop
+count at the end of playback.
+
+**If you need the chain-recursion fix**, apply
+`patches/vlc-3.0-raise-max-chain-level.patch` to your VLC source and
+rebuild — that's a compile-time patch that raises an internal
+`MAX_CHAIN_LEVEL` constant, not a runtime flag. See [Recipe 2](#recipe-2-transcode-pipeline-bypassing-the-recursion-limit)
+for context on when this is needed.
+
+**Verifying it's working:** the engagement log line shows up at
+`--verbose=2` (above we suppressed it). To confirm autoupscale ran:
+
+```sh
+vlc --verbose=2 [rest of args] 2>&1 | grep "AutoUpscale engaged"
+```
+
+Expected output:
+
+```
+AutoUpscale engaged: 854x480 -> 1280x720 (backend=zimg preset=0 algo=3 \
+  usm=30 fps_target=60 threads=14 cores=32 mem=...MB simd=avx512)
+```
+
+The `simd=avx512` confirms the runtime dispatcher picked the AVX-512
+variant. On Zen 1-3 you'll see `simd=avx2`; on pre-Haswell hardware
+`simd=sse2`.
 
 ---
 

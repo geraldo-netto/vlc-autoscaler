@@ -402,10 +402,10 @@ static int Open( vlc_object_t *p_this )
     msg_Info( p_filter,
               "AutoUpscale engaged: %dx%d -> %dx%d "
               "(backend=%s preset=%d algo=%d usm=%d fps_target=%d "
-              "threads=%d cores=%d mem=%luMB)",
+              "threads=%d cores=%d mem=%luMB simd=%s)",
               src_w, src_h, target.width, target.height,
               be->name, preset, algo, usm_pct, target_fps, threads_resolved,
-              cores, mem_mb );
+              cores, mem_mb, up_usm_pool_variant_name );
 
     return VLC_SUCCESS;
 }

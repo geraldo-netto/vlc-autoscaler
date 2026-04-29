@@ -215,7 +215,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 #ifdef FUZZ_MAIN
 int main(int argc, char **argv)
 {
-    long n = 50000;
+    long n = 100000;
     if (argc > 1) {
         char *end = NULL;
         long v = strtol(argv[1], &end, 10);
