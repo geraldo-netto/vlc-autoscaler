@@ -631,6 +631,7 @@ int main(void)
     test_plan_typical_sd_to_hd();
     test_plan_already_hd();
     test_plan_skip_above_lowered();
+    test_plan_skip_above_only_for_auto();
     test_plan_invalid();
     test_plan_anamorphic();
     test_plan_pathological_aspect_regression();

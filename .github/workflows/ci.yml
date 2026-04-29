@@ -11,6 +11,15 @@ jobs:
   build-and-test:
     name: Build, test, fuzz-smoke, analyze
     runs-on: ubuntu-latest
+    # GitHub Actions ubuntu-latest runners have inconsistent AVX-512
+    # availability — some have it, some don't. We pin MARCH=x86-64-v3
+    # (AVX2 baseline) for CI so the binaries run on every runner SKU.
+    # Local builds still default to MARCH=x86-64-v4 (AVX-512); the
+    # multi-versioned USM pool dispatches at runtime regardless of
+    # build baseline, so AVX-512 codegen IS exercised in CI through
+    # the variant .o files (test_usm_pool_variants gates per-CPU).
+    env:
+      MARCH: x86-64-v3
     steps:
       - uses: actions/checkout@v4
 
@@ -43,6 +52,8 @@ jobs:
   libfuzzer:
     name: libFuzzer (60s each)
     runs-on: ubuntu-latest
+    env:
+      MARCH: x86-64-v3
     steps:
       - uses: actions/checkout@v4
 
