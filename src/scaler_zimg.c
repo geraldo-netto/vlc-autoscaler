@@ -75,7 +75,16 @@ typedef struct
 /* Per-worker state. */
 typedef struct
 {
-    pthread_t          thread;
+    /* _Alignas(64) on the first member promotes the whole struct's
+     * alignment to 64 and forces sizeof to a 64-byte multiple, so an
+     * aligned-allocated array keeps each worker on its own cache line(s).
+     * Per dispatch the main thread writes per-worker fields (sem_t.go
+     * atomics; in zerocopy-dst mode also w->dst.{y,u,v,pitch_*}) and the
+     * worker writes w->result; without padding, two adjacent workers'
+     * writes invalidate each other's lines on every frame. Same fix as
+     * usm_worker_t in usm_pool.c. C11 disallows _Alignas on a typedef
+     * name, hence on the first member. */
+    _Alignas(64) pthread_t  thread;
     sem_t              go;
     sem_t             *done;          /* shared with parent */
     int                should_exit;
@@ -576,8 +585,18 @@ static int zimg_lazy_init(zimg_priv_t *p)
 {
     if (alloc_scratch_buffers(p) != 0) return -1;
 
-    p->workers = calloc((size_t)p->n_threads, sizeof(*p->workers));
-    if (!p->workers) return -1;
+    /* aligned_alloc not calloc: stripe_worker_t carries _Alignas(64) so
+     * each element sits on its own cache line; calloc returns malloc-
+     * default (16) alignment which would defeat the layout. sizeof is
+     * already a multiple of 64 thanks to _Alignas, satisfying
+     * aligned_alloc's C11 size constraint. Manual memset replaces
+     * calloc's zero-init. */
+    {
+        size_t total = (size_t)p->n_threads * sizeof(*p->workers);
+        p->workers = aligned_alloc(64, total);
+        if (!p->workers) return -1;
+        memset(p->workers, 0, total);
+    }
 
     if (sem_init(&p->done, 0, 0) != 0) return -1;
     p->done_inited = true;
