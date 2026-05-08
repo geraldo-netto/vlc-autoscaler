@@ -39,29 +39,28 @@ VLC_PLUGIN_DIR  := $(VLC_PLUGIN_BASE)/video_filter
 # --------- common flags ---------
 WARN := -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes
 
-# CPU baseline. Defaults to x86-64-v4 (AVX-512F + AVX-512BW + everything
-# from earlier levels — Intel Skylake-X 2017+, AMD Zen 4 2022+). This makes
-# the surrounding plugin code (autoupscale.c, scaler*.c) also emit AVX-512
-# codegen, on top of the multi-versioned USM pool which selects AVX-512
-# automatically at runtime when supported.
+# CPU baseline. Defaults to `native` because this plugin is a source
+# distribution: every user builds it on the same machine they run it on,
+# so producing a binary tuned for the local CPU costs nothing and gains
+# 5-20% on the per-frame hot path (znver4 / Skylake-X scheduling +
+# extra ISA bits like VBMI2, BF16, GFNI, VAES). The .so loads only on
+# the CPU it was built for; that's the right default for a build-and-run
+# workflow. For a portable binary, override:
 #
-# IMPORTANT: with MARCH=x86-64-v4, the .so will fail to load on CPUs without
-# AVX-512. Override for older hardware:
-#
+#   make MARCH=x86-64-v4    # AVX-512F + BW + CD + DQ + VL
+#                           # — Skylake-X 2017+, AMD Zen 4 2022+
 #   make MARCH=x86-64-v3    # AVX2 baseline (Haswell 2013+, Zen 1 2017+)
 #                           # — broadly compatible modern default
 #   make MARCH=x86-64       # legacy SSE2 only — runs anywhere x86-64
-#   make MARCH=native       # tune for the build host
 #
-# When MULTIVERSION=1 (default), the USM pool ships THREE variants
-# (SSE2/AVX2/AVX-512) regardless of MARCH; the runtime dispatcher always
-# picks the best one supported by the CPU. MARCH only affects the rest of
-# the plugin's codegen.
+# Combine with MULTIVERSION=1 to produce a portable binary that still
+# picks the best SIMD path at runtime — see the multi-versioned section
+# below.
 #
-# Decoded MD5 is byte-identical across SSE2/AVX2/AVX-512 because the
+# Decoded MD5 is byte-identical across all SIMD widths because the
 # kernels do bytewise saturating arithmetic; SIMD just runs more lanes
 # in parallel.
-MARCH        ?= x86-64-v4
+MARCH        ?= native
 ifneq ($(MARCH),)
   MARCH_FLAG := -march=$(MARCH)
 endif
@@ -93,16 +92,22 @@ endif
 PLUGIN_OBJS := $(patsubst src/%.c,$(BUILD)/%.o,$(PLUGIN_SRCS))
 
 # --------- multi-versioned USM pool ---------
-# When MULTIVERSION=1 (default), the plugin links three copies of usm_pool.c
-# compiled at three different x86_64 baselines (SSE2 / AVX2 / AVX-512), plus
-# a thin runtime dispatcher (usm_pool_dispatch.c) that picks the best variant
-# at .so load time via __builtin_cpu_supports(). The user gets peak SIMD on
-# any x86_64 CPU without rebuilding.
+# Defaults to MULTIVERSION=0 because the build-time MARCH default is
+# `native`: the binary is already tuned for the local CPU, so the runtime
+# dispatcher and the two non-selected SIMD variants would just add ~30 KB
+# of dead code. Pair this default with MARCH=native (default) for a build
+# that maximizes performance on the build host.
 #
-# Set MULTIVERSION=0 to fall back to a single-baseline build (uses MARCH).
-# This is useful for non-x86 targets, smaller binaries, or when targeting
-# a known CPU.
-MULTIVERSION ?= 1
+# Set MULTIVERSION=1 to produce a portable binary that ships THREE copies
+# of usm_pool.c (SSE2 / AVX2 / AVX-512) plus a thin runtime dispatcher
+# (usm_pool_dispatch.c) that picks the best variant at .so load time via
+# __builtin_cpu_supports(). Pair this with a portable MARCH (e.g.
+# x86-64-v3 or x86-64) so the rest of the plugin also runs on older CPUs:
+#
+#   make MARCH=x86-64-v3 MULTIVERSION=1   # portable down to Haswell/Zen 1,
+#                                          # USM hot path picks best at load
+#   make MARCH=x86-64    MULTIVERSION=1   # portable down to original x86_64
+MULTIVERSION ?= 0
 
 ifeq ($(MULTIVERSION),1)
 USM_OBJS := \

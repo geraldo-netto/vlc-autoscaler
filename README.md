@@ -496,45 +496,55 @@ make clean
 make info       # show pkg-config paths and toolchain
 ```
 
-**CPU baseline:** The default Makefile builds a **multi-versioned plugin**
-that contains three SIMD code paths (SSE2 + AVX2 + AVX-512), with a
-runtime dispatcher that picks the best one for the current CPU at
-`.so` load time via `__builtin_cpu_supports()`. This means the same
-binary runs at peak performance on any x86_64 hardware:
+**CPU baseline (defaults).** This plugin is a source distribution —
+every user builds it on the same machine they run it on — so the
+defaults target the **build host** rather than a portable lowest
+common denominator:
 
-| CPU has | Dispatcher picks | Speedup vs SSE2 baseline |
-|---|---|---:|
-| AVX-512F + AVX-512BW (Skylake-X 2017+ / Zen 4 2022+) | `avx512` | ~2.7× |
-| AVX2 (Haswell 2013+ / Zen 1 2017+) | `avx2` | ~1.9× |
-| Anything else x86_64 | `sse2` | 1.0× (baseline) |
+| Variable | Default | Why |
+|---|---|---|
+| `MARCH` | `native` | Tunes for the local CPU (znver4 / Skylake-X scheduling + extra ISA: VBMI2, BF16, GFNI, VAES). 5–20 % faster than `x86-64-v4` on the per-frame hot path. |
+| `MULTIVERSION` | `0` | With `MARCH=native` the runtime SIMD dispatcher and the two unselected variants (SSE2 / AVX2) would just be dead code. Disabling it shaves ~30 KB and removes one indirect call per frame. |
 
-The chosen variant is logged in VLC at engagement time:
+The chosen SIMD level is logged in VLC at engagement time. Default
+build on a Zen 4 box prints `simd=default` (single-baseline, the
+compiler emitted whatever `-march=native` allows). A multi-versioned
+build prints `simd=avx512` / `avx2` / `sse2` to identify which runtime
+variant was picked:
 
 ```
-AutoUpscale engaged: 854x480 -> 1920x1080 (… simd=avx512)
-                                                 ^^^^^^^^^
+AutoUpscale engaged: 854x480 -> 1920x1080 (… simd=default)
 ```
 
-The dispatch happens **once** at plugin load (a constructor function,
-runs during `dlopen`); per-frame overhead is one indirect call (~1 ns).
-
-**Build options:**
+**Build presets.** Pick whichever fits your distribution model:
 
 ```sh
-make                          # multi-versioned (default), runs everywhere
-make MULTIVERSION=0           # single-baseline build (smaller binary)
-make MULTIVERSION=0 MARCH=x86-64-v3   # single-baseline at AVX2 only
-make MULTIVERSION=0 MARCH=x86-64      # single-baseline at SSE2 only (legacy)
+# Default — fastest on the build host. Will NOT load on other CPUs.
+make
+
+# Portable AVX-512 binary (Skylake-X 2017+ / Zen 4 2022+).
+make MARCH=x86-64-v4
+
+# Portable AVX2 binary (Haswell 2013+ / Zen 1 2017+) with runtime
+# SIMD dispatch — picks AVX-512 at load time when supported.
+make MARCH=x86-64-v3 MULTIVERSION=1
+
+# Universal binary: runs anywhere x86_64. Hot path still dispatches
+# to AVX-512 / AVX2 / SSE2 at runtime. ~30 KB larger than the
+# single-baseline build because of the three variants.
+make MARCH=x86-64 MULTIVERSION=1
 ```
 
-In `MULTIVERSION=0` mode, the build emits one `usm_pool.o` at the
-`MARCH` level and skips the dispatcher. The binary is ~30 KB smaller
-but only runs on CPUs that support the chosen SIMD level. Useful for
-non-x86 ports or known-target deployments.
+When `MULTIVERSION=1` the plugin links three copies of `usm_pool.c`
+compiled at SSE2 / AVX2 / AVX-512 baselines, plus a thin runtime
+dispatcher (`usm_pool_dispatch.c`) that picks the best one at `.so`
+load time via `__builtin_cpu_supports()`. Per-frame overhead is one
+indirect call (~1 ns).
 
-The decoded output is **byte-identical** across all SIMD widths
-(verified by reproducible MD5) — wider vectors run the same arithmetic
-in more lanes, not different arithmetic.
+The decoded output is **byte-identical** across all SIMD widths and
+across `MULTIVERSION=0` / `=1` (verified by reproducible MD5 and the
+cross-variant byte-equivalence test) — wider vectors run the same
+arithmetic in more lanes, not different arithmetic.
 
 **Compiler choice:** Both gcc and clang produce competitive SIMD with
 the AVX2/AVX-512 variants. `CC=clang make plugin` is still slightly

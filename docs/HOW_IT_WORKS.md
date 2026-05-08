@@ -568,15 +568,28 @@ Numbers are median-of-5 trials of `up_usm_apply_plane` at 1080p
 single-threaded. The win is consistent across all output resolutions
 (480p through 4K all see 1.8–2.0× from AVX2, 2.4–2.9× from AVX-512).
 
-**Runtime SIMD dispatch.** Rather than picking one `-march` level at
-build time and constraining the binary to one CPU class, the default
-plugin build is **multi-versioned**: `usm_pool.c` is compiled three
-times at three baselines (SSE2 / AVX2 / AVX-512) into three separate
-`.o` files with renamed public symbols. A thin dispatcher in
-`src/usm_pool_dispatch.c` runs at `.so` load time via
-`__attribute__((constructor))`, queries `__builtin_cpu_supports()`,
-and points three function pointers (`up_usm_pool_create/destroy/apply`)
-at the highest-supported variant.
+**Default build: single-baseline at `-march=native`.** The plugin
+ships as a source distribution — every user builds it on the same
+machine they run it on — so `MARCH=native` and `MULTIVERSION=0` are
+the right defaults. The compiler tunes for the local CPU (znver4 or
+Skylake-X scheduling, plus extra ISA bits like VBMI2 / BF16 / GFNI /
+VAES on top of the v4 baseline) and the binary contains exactly one
+copy of `usm_pool.c`. No runtime dispatcher, no dead-code variants.
+The engagement log prints `simd=default` to indicate the
+single-baseline build:
+
+```
+AutoUpscale engaged: 854x480 -> 1920x1080 (... simd=default)
+```
+
+**Portable build: `make MULTIVERSION=1`.** When you need a single
+binary that runs across CPU classes (e.g. distro packaging),
+`MULTIVERSION=1` compiles `usm_pool.c` three times at three baselines
+(SSE2 / AVX2 / AVX-512) into three separate `.o` files with renamed
+public symbols. A thin dispatcher in `src/usm_pool_dispatch.c` runs at
+`.so` load time via `__attribute__((constructor))`, queries
+`__builtin_cpu_supports()`, and points three function pointers
+(`up_usm_pool_create/destroy/apply`) at the highest-supported variant:
 
 ```c
 if (__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw"))
@@ -587,12 +600,15 @@ else
     /* point at *_sse2 entry points */
 ```
 
-The dispatch happens **once** at `dlopen` (before VLC's plugin scanner
-or `vlc-cache-gen` calls into the .so), so per-frame overhead is just
-one indirect call — about 1 ns on modern x86, negligible against the
-millisecond-scale work it dispatches. The chosen variant name is
-exported as `up_usm_pool_variant_name` and printed in the engagement
-log: `AutoUpscale engaged: ... simd=avx512`.
+Combine `MULTIVERSION=1` with a portable `MARCH` level (e.g.
+`x86-64-v3` for AVX2 baseline or `x86-64` for universal) so the rest
+of the plugin (autoupscale.c, scaler*.c) also runs on the older CPUs
+the dispatcher targets. The dispatch happens **once** at `dlopen`
+(before VLC's plugin scanner or `vlc-cache-gen` calls into the .so),
+so per-frame overhead is just one indirect call — about 1 ns on modern
+x86, negligible against the millisecond-scale work it dispatches. The
+chosen variant name is exported as `up_usm_pool_variant_name` and
+printed in the engagement log: `AutoUpscale engaged: ... simd=avx512`.
 
 **Why three .o files instead of `__attribute__((target_clones))`?**
 `target_clones` requires non-static linkage on the cloned function,
@@ -608,12 +624,6 @@ instructions. The dispatcher's selection logic prevents that code
 from being executed on a CPU that doesn't support AVX-512, so
 holding a function pointer to it on an older CPU is safe — the
 dynamic linker only does relocations, no SIMD execution.
-
-**MULTIVERSION=0 fallback.** Set `make MULTIVERSION=0` to disable
-runtime dispatch and build a single-baseline plugin at the `MARCH`
-level. The binary is ~30 KB smaller but only runs on CPUs that
-support the chosen SIMD level. Useful for non-x86 ports, embedded
-deployments, or known-target builds.
 
 Decoded MD5 is **byte-identical** across SSE2, AVX2, AVX-512 builds
 AND across MULTIVERSION=0/1 — the kernels do bytewise saturating
