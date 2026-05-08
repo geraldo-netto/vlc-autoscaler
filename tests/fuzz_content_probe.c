@@ -111,7 +111,13 @@ static void run_one(const uint8_t *data, size_t size)
      * real work. */
     size_t alloc = (size_t)(stride > 0 ? stride : 1) * (size_t)(h > 0 ? h : 1);
     if (alloc > 256 * 1024) return;  /* skip pathological; keep iters fast */
-    uint8_t *plane = (uint8_t *)malloc(alloc);
+    /* calloc not malloc: zero-init guarantees every byte is defined even
+     * along paths the static analyzer cannot follow through the partial
+     * memcpy + xorshift fill below (CSA flagged "garbage value" reads in
+     * up_block_edge_strength because it could not prove the trailing
+     * fill loop covered every byte). The xs() loop still overwrites the
+     * tail; the zero prefill is just a CSA-friendly initial state. */
+    uint8_t *plane = (uint8_t *)calloc(1, alloc);
     if (!plane) return;
     /* Pattern: pull from fuzz input where possible, fill rest with xorshift. */
     size_t fill_from_input = (size > off) ? (size - off) : 0;

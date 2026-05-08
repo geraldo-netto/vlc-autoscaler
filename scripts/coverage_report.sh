@@ -28,7 +28,7 @@ TRACKED=(
     usm_pool.c
 )
 
-if [ ! -d "$COV_DIR" ]; then
+if [[ ! -d "$COV_DIR" ]]; then
     echo "ERROR: $COV_DIR does not exist. Run 'make coverage' first." >&2
     exit 2
 fi
@@ -43,9 +43,9 @@ for f in "$COV_DIR"/*.gcov; do
     base=$(basename "$f" .gcov)
     keep=0
     for t in "${TRACKED[@]}"; do
-        if [ "$base" = "$t" ]; then keep=1; break; fi
+        if [[ "$base" == "$t" ]]; then keep=1; break; fi
     done
-    [ $keep -eq 1 ] || continue
+    [[ $keep -eq 1 ]] || continue
 
     # gcov line format: "<count>:<lineno>:<source>"
     # count=='-' means non-executable (decl/comment/blank)
@@ -72,20 +72,20 @@ for t in "${TRACKED[@]}"; do
     covered=${FILE_COVERED[$t]:-0}
     total_lines=$(( total_lines + runnable ))
     total_covered=$(( total_covered + covered ))
-    if [ "$runnable" -gt 0 ]; then
+    if [[ "$runnable" -gt 0 ]]; then
         pct=$(awk "BEGIN{printf \"%.1f\", $covered*100.0/$runnable}")
     else
         pct="-"
     fi
     flag=""
-    if [ "$runnable" -gt 0 ]; then
+    if [[ "$runnable" -gt 0 ]]; then
         below=$(awk "BEGIN{print ($covered*100.0/$runnable < $THRESHOLD)?1:0}")
-        if [ "$below" = "1" ]; then flag=" <-- BELOW $THRESHOLD%"; fail=1; fi
+        if [[ "$below" == "1" ]]; then flag=" <-- BELOW $THRESHOLD%"; fail=1; fi
     fi
     printf "%-30s %8d %8d %7s%%%s\n" "$t" "$runnable" "$covered" "$pct" "$flag"
 done
 
-if [ "$total_lines" -gt 0 ]; then
+if [[ "$total_lines" -gt 0 ]]; then
     overall=$(awk "BEGIN{printf \"%.1f\", $total_covered*100.0/$total_lines}")
 else
     overall="-"
@@ -93,7 +93,7 @@ fi
 printf "%-30s %8s %8s %8s\n" "------------------------------" "--------" "--------" "--------"
 printf "%-30s %8d %8d %7s%%\n" "TOTAL (tracked)" "$total_lines" "$total_covered" "$overall"
 
-if [ "$fail" -eq 1 ]; then
+if [[ "$fail" -eq 1 ]]; then
     echo
     echo "FAIL: at least one tracked file is below ${THRESHOLD}% coverage."
     exit 1

@@ -614,6 +614,29 @@ static void test_plan_pathological_aspect_regression(void)
 
 /* ---------- ratio invariants for many random-ish inputs ---------- */
 
+/* Returns 1 if the (src_w, src_h) -> (out_w, out_h) mapping preserves
+ * aspect within rounding slack, 0 otherwise. On violation prints a one-line
+ * diagnostic when verbosity is requested. Cross-multiplication slack is
+ * bounded by 2 * src_h (1 from floor div, 1 from even-round). */
+static int aspect_within_slack(int src_w, int src_h,
+                               int out_w, int out_h,
+                               int verbose)
+{
+    int64_t lhs = (int64_t)src_w * (int64_t)out_h;
+    int64_t rhs = (int64_t)out_w  * (int64_t)src_h;
+    int64_t diff = lhs - rhs;
+    if (diff < 0) diff = -diff;
+    int64_t slack = 2LL * src_h + 4LL;
+    if (diff <= slack) return 1;
+    if (verbose) {
+        printf("    aspect violation: %dx%d -> %dx%d "
+               "(diff=%lld, slack=%lld)\n",
+               src_w, src_h, out_w, out_h,
+               (long long)diff, (long long)slack);
+    }
+    return 0;
+}
+
 static void test_aspect_invariant_smoke(void)
 {
     BEGIN("plan_upscale: aspect ratio preserved within rounding (smoke)");
@@ -627,27 +650,9 @@ static void test_aspect_invariant_smoke(void)
         int h = 16 + (int)(s % 1060);
 
         up_dims_t d = {0};
-        if (up_plan_upscale(w, h, 720, UP_TARGET_AUTO, 4, 4096, &d)) {
-            /* Compare aspect ratios using cross multiplication.
-             * After even-rounding target_w = src_w * target_h / src_h,
-             * the rounding error in the cross product
-             *   |src_w * out.height - out.width * src_h|
-             * is bounded by 2 * src_h (1 from floor div, 1 from even-round). */
-            int64_t lhs = (int64_t)w * (int64_t)d.height;
-            int64_t rhs = (int64_t)d.width * (int64_t)h;
-            int64_t diff = lhs - rhs;
-            if (diff < 0) diff = -diff;
-            int64_t slack = 2LL * h + 4LL;
-            if (diff > slack) {
-                violations++;
-                if (violations < 5) {
-                    printf("    aspect violation: %dx%d -> %dx%d "
-                           "(diff=%lld, slack=%lld)\n",
-                           w, h, d.width, d.height,
-                           (long long)diff, (long long)slack);
-                }
-            }
-        }
+        if (!up_plan_upscale(w, h, 720, UP_TARGET_AUTO, 4, 4096, &d)) continue;
+        if (aspect_within_slack(w, h, d.width, d.height, violations < 5)) continue;
+        violations++;
     }
     CHECK_EQ_INT(violations, 0);
     END();

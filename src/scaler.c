@@ -32,8 +32,14 @@ const scaler_backend_t *scaler_pick( int pref,
     zimg = &scaler_backend_zimg_impl;
 #endif
 
+    /* swscale is unconditionally linked, so its supports() is always live.
+     * zimg is conditionally NULL when HAVE_ZIMG is undefined; cppcheck sees
+     * only one config and flags the ternary as always-true OR always-false
+     * depending on which it analyses — both are spurious. */
     return (const scaler_backend_t *)up_scaler_pick_with(
-        zimg,    zimg    ? zimg->supports    : NULL,
-        swscale, swscale ? swscale->supports : NULL,
+        zimg,
+        // cppcheck-suppress knownConditionTrueFalse
+        zimg ? zimg->supports : NULL,
+        swscale, swscale->supports,
         pref, (uint32_t)chroma, algo);
 }

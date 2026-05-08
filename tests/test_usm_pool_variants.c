@@ -116,6 +116,41 @@ static int run_avx512(uint8_t *dst, const uint8_t *src,
     return rc;
 }
 
+/* Print the offset and bytes of the first divergence between two buffers.
+ * `label` names the variant under test (e.g. "avx2", "avx512"). */
+static void report_first_diff(const char *label,
+                              const uint8_t *baseline,
+                              const uint8_t *candidate,
+                              size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        if (baseline[i] == candidate[i]) continue;
+        printf("    first diff at offset %zu: sse2=0x%02x %s=0x%02x\n",
+               i, baseline[i], label, candidate[i]);
+        return;
+    }
+}
+
+/* Run one SIMD variant and verify byte-identical to the SSE2 baseline.
+ * `runner` is the variant's apply entry point. */
+typedef int (*variant_runner_t)(uint8_t *, const uint8_t *,
+                                int, int, int, int);
+
+static void compare_variant(const char *label,
+                            variant_runner_t runner,
+                            const uint8_t *src,
+                            uint8_t *dst, size_t n,
+                            int n_workers, int w, int h, int amount_q8,
+                            const uint8_t *baseline)
+{
+    memset(dst, 0xCC, n);
+    CHECK(runner(dst, src, n_workers, w, h, amount_q8) >= 0);
+    if (memcmp(baseline, dst, n) == 0) return;
+    /* variant diverges from SSE2 baseline */
+    CHECK(0);
+    report_first_diff(label, baseline, dst, n);
+}
+
 /* Compare all three variants for one (size, amount, workers, seed) tuple. */
 static void check_one(int n_workers, int w, int h, int amount_q8, uint32_t seed)
 {
@@ -137,32 +172,12 @@ static void check_one(int n_workers, int w, int h, int amount_q8, uint32_t seed)
     memset(dst_sse2, 0xCC, n);
     CHECK(run_sse2(dst_sse2, src, n_workers, w, h, amount_q8) >= 0);
 
-    if (has_avx2) {
-        memset(dst_avx2, 0xCC, n);
-        CHECK(run_avx2(dst_avx2, src, n_workers, w, h, amount_q8) >= 0);
-        if (memcmp(dst_sse2, dst_avx2, n) != 0) {
-            /* AVX2 variant differs from SSE2 */ CHECK(0);
-            /* Find first differing byte for diagnostic. */
-            for (size_t i = 0; i < n; i++) if (dst_sse2[i] != dst_avx2[i]) {
-                printf("    first diff at offset %zu: sse2=0x%02x avx2=0x%02x\n",
-                       i, dst_sse2[i], dst_avx2[i]);
-                break;
-            }
-        }
-    }
-
-    if (has_avx512) {
-        memset(dst_avx512, 0xCC, n);
-        CHECK(run_avx512(dst_avx512, src, n_workers, w, h, amount_q8) >= 0);
-        if (memcmp(dst_sse2, dst_avx512, n) != 0) {
-            /* AVX-512 variant differs from SSE2 */ CHECK(0);
-            for (size_t i = 0; i < n; i++) if (dst_sse2[i] != dst_avx512[i]) {
-                printf("    first diff at offset %zu: sse2=0x%02x avx512=0x%02x\n",
-                       i, dst_sse2[i], dst_avx512[i]);
-                break;
-            }
-        }
-    }
+    if (has_avx2)
+        compare_variant("avx2", run_avx2, src, dst_avx2, n,
+                        n_workers, w, h, amount_q8, dst_sse2);
+    if (has_avx512)
+        compare_variant("avx512", run_avx512, src, dst_avx512, n,
+                        n_workers, w, h, amount_q8, dst_sse2);
 
     free(src); free(dst_sse2); free(dst_avx2); free(dst_avx512);
 }
