@@ -11,6 +11,7 @@
 #ifndef AUTOUPSCALE_ZIMG_HELPERS_H
 #define AUTOUPSCALE_ZIMG_HELPERS_H
 
+#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -41,6 +42,10 @@
 static inline int up_round_up_pitch(int w)
 {
     if (w <= 0) return 0;
+    /* Reject inputs that would overflow `w + (UP_PITCH_ALIGN - 1)` as a
+     * signed int. With UP_PITCH_ALIGN == 64 the cap is INT_MAX - 63;
+     * any plane wider than that is far past anything VLC will hand us. */
+    if (w > INT_MAX - (UP_PITCH_ALIGN - 1)) return 0;
     return (w + (UP_PITCH_ALIGN - 1)) & ~(UP_PITCH_ALIGN - 1);
 }
 

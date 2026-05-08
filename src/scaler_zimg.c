@@ -62,6 +62,16 @@
 
 #define ALIGN_DOWN_2(x) UP_ALIGN_DOWN_2(x)
 
+/* Bundled plane pointers + pitch + line counts for one side (src or dst).
+ * Used both by the per-worker view (where lines_* are unused but cheap to
+ * carry) and the priv-level scratch buffer geometry. */
+typedef struct
+{
+    uint8_t *y, *u, *v;
+    int      pitch_y, pitch_c;
+    int      lines_y, lines_c;
+} plane_set_t;
+
 /* Per-worker state. */
 typedef struct
 {
@@ -79,13 +89,12 @@ typedef struct
     int                src_y_start;   /* in luma rows */
     int                dst_y_start;
     int                worker_id;
-
-    /* Pointers into the parent's scratch buffers (set at Open). */
-    uint8_t           *sy, *su, *sv;  /* src luma/U/V */
-    uint8_t           *dy, *du, *dv;  /* dst luma/U/V */
-    int                src_pitch_y, src_pitch_c;
-    int                dst_pitch_y, dst_pitch_c;
     unsigned           sub_h;
+
+    /* Pointers into the parent's scratch buffers (set at Open).
+     * .lines_y / .lines_c are unused at the worker level. */
+    plane_set_t        src;
+    plane_set_t        dst;
 
     int                result;        /* 0 OK, -1 fail */
 } stripe_worker_t;
@@ -100,17 +109,13 @@ typedef struct
     int               yv12_swap_uv;
     unsigned          sub_w, sub_h;
 
-    /* Scratch buffers. Sized + allocated on first Filter() call (lazy
-     * init), pinned for the plugin lifetime after that. Open() is kept
-     * cheap so VLC's chain solver can probe us without paying for 30
+    /* Scratch buffers + geometry. Sized + allocated on first Filter() call
+     * (lazy init), pinned for the plugin lifetime after that. Open() is
+     * kept cheap so VLC's chain solver can probe us without paying for 30
      * worker thread spawns and 6 MB of scratch per probe. */
-    uint8_t          *sy, *su, *sv;
-    uint8_t          *dy, *du, *dv;
+    plane_set_t       src;
+    plane_set_t       dst;
     int               src_w, src_h, dst_w, dst_h;
-    int               src_pitch_y, src_pitch_c;
-    int               dst_pitch_y, dst_pitch_c;
-    int               src_lines_y,  src_lines_c;
-    int               dst_lines_y,  dst_lines_c;
 
     /* Lazy-init state. lazy_init_done is set by zimg_lazy_init() after
      * the worker pool, scratch, and per-stripe graphs are constructed
@@ -162,25 +167,18 @@ static zimg_resample_filter_e AlgoToZimg(int algo)
 /* ---------- worker thread ---------- */
 
 /*
- * Internal: fill one plane of a const (read) zimg image buffer.
- * data + offset_rows*stride is the row-0 pointer for this stripe; the
- * mask covers the full graph height (BUFFER_MAX = no wraparound). CCN 1.
+ * Internal: fill one plane of a zimg image buffer (writable). The const
+ * variant aliases the same layout (plane.data is `void *` in both, so
+ * casting through here is safe). data + offset_rows*stride is the row-0
+ * pointer for this stripe; the mask covers the full graph height
+ * (BUFFER_MAX = no wraparound). CCN 1.
  */
-static inline void set_src_plane(zimg_image_buffer_const *b, int idx,
-                                 const uint8_t *data, int stride,
+static inline void set_buf_plane(zimg_image_buffer *b, int idx,
+                                 const void *data, int stride,
                                  int offset_rows)
 {
-    b->plane[idx].data   = data + (size_t)offset_rows * (size_t)stride;
-    b->plane[idx].stride = stride;
-    b->plane[idx].mask   = ZIMG_BUFFER_MAX;
-}
-
-/* Same, for the writable destination buffer. CCN 1. */
-static inline void set_dst_plane(zimg_image_buffer *b, int idx,
-                                 uint8_t *data, int stride,
-                                 int offset_rows)
-{
-    b->plane[idx].data   = data + (size_t)offset_rows * (size_t)stride;
+    b->plane[idx].data   = (uint8_t *)(uintptr_t)data
+                         + (size_t)offset_rows * (size_t)stride;
     b->plane[idx].stride = stride;
     b->plane[idx].mask   = ZIMG_BUFFER_MAX;
 }
@@ -216,12 +214,18 @@ static void *worker_main(void *arg)
         const int src_off_c = w->src_y_start >> w->sub_h;
         const int dst_off_c = w->dst_y_start >> w->sub_h;
 
-        set_src_plane(&sb, 0, w->sy, w->src_pitch_y, src_off_y);
-        set_src_plane(&sb, 1, w->su, w->src_pitch_c, src_off_c);
-        set_src_plane(&sb, 2, w->sv, w->src_pitch_c, src_off_c);
-        set_dst_plane(&db, 0, w->dy, w->dst_pitch_y, dst_off_y);
-        set_dst_plane(&db, 1, w->du, w->dst_pitch_c, dst_off_c);
-        set_dst_plane(&db, 2, w->dv, w->dst_pitch_c, dst_off_c);
+        const uint8_t *src_planes[3] = { w->src.y, w->src.u, w->src.v };
+        uint8_t       *dst_planes[3] = { w->dst.y, w->dst.u, w->dst.v };
+        const int src_strides[3] = { w->src.pitch_y, w->src.pitch_c, w->src.pitch_c };
+        const int dst_strides[3] = { w->dst.pitch_y, w->dst.pitch_c, w->dst.pitch_c };
+        const int src_offs[3]    = { src_off_y, src_off_c, src_off_c };
+        const int dst_offs[3]    = { dst_off_y, dst_off_c, dst_off_c };
+        for (int p = 0; p < 3; p++) {
+            set_buf_plane((zimg_image_buffer *)&sb, p,
+                          src_planes[p], src_strides[p], src_offs[p]);
+            set_buf_plane(&db, p,
+                          dst_planes[p], dst_strides[p], dst_offs[p]);
+        }
 
         zimg_error_code_e rc = zimg_filter_graph_process(
             w->graph, &sb, &db, w->tmp, NULL, NULL, NULL, NULL);
@@ -287,29 +291,45 @@ static void zimg_close(scaler_ctx_t *ctx);
  * the dst scratch is unused.
  *
  * Returns 0 on success, -1 on any allocation failure. Partial state is
- * freed by zimg_close via priv->sy etc. CCN 4.
+ * freed by zimg_close via priv->src.* / priv->dst.*. CCN 4.
  */
+/*
+ * Compute `lines * pitch` as size_t with overflow check. Returns 0 if
+ * either input is non-positive or if the multiplication would wrap.
+ * In practice both come from up_plane_lines / up_plane_pitch which
+ * already cap inputs, but we double-check at the alloc seam so a
+ * malformed dimension reaching this code can never produce an
+ * undersized buffer that downstream copies write past.
+ */
+static inline size_t plane_alloc_bytes(int lines, int pitch)
+{
+    if (lines <= 0 || pitch <= 0) return 0;
+    size_t l = (size_t)lines, pp = (size_t)pitch;
+    if (l > SIZE_MAX / pp) return 0;
+    return l * pp;
+}
+
+/* Allocate one plane_set_t's three plane buffers. Returns 0 on success,
+ * -1 if any size computation overflows or any aligned_alloc fails. CCN 4. */
+static int alloc_one_plane_set(plane_set_t *ps)
+{
+    const size_t y_bytes = plane_alloc_bytes(ps->lines_y, ps->pitch_y);
+    const size_t c_bytes = plane_alloc_bytes(ps->lines_c, ps->pitch_c);
+    if (y_bytes == 0 || c_bytes == 0) return -1;
+
+    ps->y = aligned_alloc(UP_PITCH_ALIGN, y_bytes);
+    ps->u = aligned_alloc(UP_PITCH_ALIGN, c_bytes);
+    ps->v = aligned_alloc(UP_PITCH_ALIGN, c_bytes);
+    if (!ps->y || !ps->u || !ps->v) return -1;
+    return 0;
+}
+
 static int alloc_scratch_buffers(zimg_priv_t *p)
 {
-    p->sy = aligned_alloc(UP_PITCH_ALIGN,
-                          (size_t)p->src_lines_y * p->src_pitch_y);
-    p->su = aligned_alloc(UP_PITCH_ALIGN,
-                          (size_t)p->src_lines_c * p->src_pitch_c);
-    p->sv = aligned_alloc(UP_PITCH_ALIGN,
-                          (size_t)p->src_lines_c * p->src_pitch_c);
-    if (!p->sy || !p->su || !p->sv) return -1;
-
+    if (alloc_one_plane_set(&p->src) != 0) return -1;
     if (p->dst_zerocopy)
-        return 0;  /* dy/du/dv stay NULL, set per-frame from VLC dst */
-
-    p->dy = aligned_alloc(UP_PITCH_ALIGN,
-                          (size_t)p->dst_lines_y * p->dst_pitch_y);
-    p->du = aligned_alloc(UP_PITCH_ALIGN,
-                          (size_t)p->dst_lines_c * p->dst_pitch_c);
-    p->dv = aligned_alloc(UP_PITCH_ALIGN,
-                          (size_t)p->dst_lines_c * p->dst_pitch_c);
-    if (!p->dy || !p->du || !p->dv) return -1;
-    return 0;
+        return 0;  /* dst.{y,u,v} stay NULL, set per-frame from VLC dst */
+    return alloc_one_plane_set(&p->dst);
 }
 
 /*
@@ -325,14 +345,14 @@ static void init_priv_geometry(zimg_priv_t *p, const scaler_ctx_t *ctx,
     p->src_w = ctx->src_w; p->src_h = ctx->src_h;
     p->dst_w = ctx->dst_w; p->dst_h = ctx->dst_h;
 
-    p->src_pitch_y = up_plane_pitch(ctx->src_w, 0);
-    p->src_pitch_c = up_plane_pitch(ctx->src_w, sub_w);
-    p->dst_pitch_y = up_plane_pitch(ctx->dst_w, 0);
-    p->dst_pitch_c = up_plane_pitch(ctx->dst_w, sub_w);
-    p->src_lines_y = up_plane_lines(ctx->src_h, 0);
-    p->src_lines_c = up_plane_lines(ctx->src_h, sub_h);
-    p->dst_lines_y = up_plane_lines(ctx->dst_h, 0);
-    p->dst_lines_c = up_plane_lines(ctx->dst_h, sub_h);
+    p->src.pitch_y = up_plane_pitch(ctx->src_w, 0);
+    p->src.pitch_c = up_plane_pitch(ctx->src_w, sub_w);
+    p->dst.pitch_y = up_plane_pitch(ctx->dst_w, 0);
+    p->dst.pitch_c = up_plane_pitch(ctx->dst_w, sub_w);
+    p->src.lines_y = up_plane_lines(ctx->src_h, 0);
+    p->src.lines_c = up_plane_lines(ctx->src_h, sub_h);
+    p->dst.lines_y = up_plane_lines(ctx->dst_h, 0);
+    p->dst.lines_c = up_plane_lines(ctx->dst_h, sub_h);
 }
 
 /*
@@ -353,10 +373,8 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
     w->sub_h        = sub_h;
     w->done         = &p->done;
     w->worker_id    = worker_id;
-    w->sy = p->sy; w->su = p->su; w->sv = p->sv;
-    w->dy = p->dy; w->du = p->du; w->dv = p->dv;
-    w->src_pitch_y = p->src_pitch_y; w->src_pitch_c = p->src_pitch_c;
-    w->dst_pitch_y = p->dst_pitch_y; w->dst_pitch_c = p->dst_pitch_c;
+    w->src = p->src;
+    w->dst = p->dst;
 
     w->graph = build_stripe_graph(
         ctx->src_w, src_y_end - src_y_start,
@@ -493,8 +511,9 @@ static void construct_workers(zimg_priv_t *p, const scaler_ctx_t *ctx,
 
     while (n > 0) {
         constructed = try_construct_workers(p, ctx, n, sub_w, sub_h, filt);
-        if (constructed == n) break;          /* fully covered, done */
-        if (constructed == 0) break;          /* total failure, give up */
+        /* Done either way: fully covered (constructed == n), or total
+         * failure (constructed == 0) — nothing left to retry with. */
+        if (constructed == n || constructed == 0) break;
 
         /* Partial build: the realized count is smaller than n, so
          * the last stripe doesn't extend to dst_h. Tear down and
@@ -513,11 +532,11 @@ static void construct_workers(zimg_priv_t *p, const scaler_ctx_t *ctx,
 static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
 {
     if (!log_obj) return;
-    size_t src_mb = ((size_t)p->src_lines_y * p->src_pitch_y
-                   + 2 * (size_t)p->src_lines_c * p->src_pitch_c) >> 20;
+    size_t src_mb = ((size_t)p->src.lines_y * p->src.pitch_y
+                   + 2 * (size_t)p->src.lines_c * p->src.pitch_c) >> 20;
     size_t dst_mb = p->dst_zerocopy ? 0
-        : (((size_t)p->dst_lines_y * p->dst_pitch_y
-          + 2 * (size_t)p->dst_lines_c * p->dst_pitch_c) >> 20);
+        : (((size_t)p->dst.lines_y * p->dst.pitch_y
+          + 2 * (size_t)p->dst.lines_c * p->dst.pitch_c) >> 20);
     msg_Info(log_obj,
              "zimg: %d worker thread%s, %dx%d -> %dx%d, "
              "scratch %zu MB (%s)",
@@ -617,27 +636,48 @@ static int zimg_open(scaler_ctx_t *ctx)
 }
 
 /*
+ * Internal: copy 3 YUV planes between a VLC picture and our scratch
+ * plane_set_t, in either direction. Plane 0 is luma at (w,h); planes
+ * 1/2 are chroma at (w>>sub_w, h>>sub_h). The ps planes alternate role
+ * (src or dst) depending on `dir`: when dir==0 ps is the destination
+ * (copy IN to scratch); when dir==1 ps is the source (copy OUT to pic).
+ */
+static void copy_yuv_planes(const plane_set_t *ps, picture_t *pic, int swap,
+                            int w, int h, unsigned sub_w, unsigned sub_h,
+                            int dir)
+{
+    const int idx[3] = { 0, up_zimg_plane_idx(1, swap),
+                            up_zimg_plane_idx(2, swap) };
+    uint8_t   *ps_data[3]   = { ps->y, ps->u, ps->v };
+    const int  ps_pitch[3]  = { ps->pitch_y, ps->pitch_c, ps->pitch_c };
+    const int cw = (w + (1 << sub_w) - 1) >> sub_w;
+    const int ch = (h + (1 << sub_h) - 1) >> sub_h;
+    const int pw[3] = { w, cw, cw };
+    const int ph[3] = { h, ch, ch };
+
+    for (int k = 0; k < 3; k++) {
+        uint8_t *pic_data  = pic->p[idx[k]].p_pixels;
+        int      pic_pitch = pic->p[idx[k]].i_pitch;
+        if (dir == 0)
+            up_copy_plane(ps_data[k], ps_pitch[k],
+                          pic_data, pic_pitch, pw[k], ph[k]);
+        else
+            up_copy_plane(pic_data, pic_pitch,
+                          ps_data[k], ps_pitch[k], pw[k], ph[k]);
+    }
+}
+
+/*
  * Phase 1: Copy IN. VLC's source picture (which we cannot read from
  * worker threads — pool-managed buffers segfault) is copied to our
  * scratch source buffers. Workers then read from the scratch.
- *
- * Extracted from zimg_process to keep its cognitive complexity low.
  */
 static void zimg_copy_in(zimg_priv_t *p, const picture_t *src)
 {
-    const int swap = p->yv12_swap_uv;
-    int s_y = 0;
-    int s_u = up_zimg_plane_idx(1, swap);
-    int s_v = up_zimg_plane_idx(2, swap);
-    up_copy_plane(p->sy, p->src_pitch_y,
-                  src->p[s_y].p_pixels, src->p[s_y].i_pitch,
-                  p->src_w, p->src_h);
-    const int cw = (p->src_w + (1 << p->sub_w) - 1) >> p->sub_w;
-    const int ch = (p->src_h + (1 << p->sub_h) - 1) >> p->sub_h;
-    up_copy_plane(p->su, p->src_pitch_c,
-                  src->p[s_u].p_pixels, src->p[s_u].i_pitch, cw, ch);
-    up_copy_plane(p->sv, p->src_pitch_c,
-                  src->p[s_v].p_pixels, src->p[s_v].i_pitch, cw, ch);
+    /* picture_t is read-only here, but copy_yuv_planes also serves the
+     * write path; cast away const at the seam. */
+    copy_yuv_planes(&p->src, (picture_t *)src, p->yv12_swap_uv,
+                    p->src_w, p->src_h, p->sub_w, p->sub_h, 0);
 }
 
 /*
@@ -648,7 +688,7 @@ static void zimg_copy_in(zimg_priv_t *p, const picture_t *src)
  * bake in dst stride — that goes into the per-call zimg_image_buffer
  * inside worker_main.
  */
-static void zimg_zerocopy_point_workers(zimg_priv_t *p, picture_t *dst)
+static void zimg_zerocopy_point_workers(zimg_priv_t *p, const picture_t *dst)
 {
     const int swap = p->yv12_swap_uv;
     int d_y = 0;
@@ -656,11 +696,11 @@ static void zimg_zerocopy_point_workers(zimg_priv_t *p, picture_t *dst)
     int d_v = up_zimg_plane_idx(2, swap);
     for (int i = 0; i < p->n_threads; i++) {
         stripe_worker_t *w = &p->workers[i];
-        w->dy           = dst->p[d_y].p_pixels;
-        w->du           = dst->p[d_u].p_pixels;
-        w->dv           = dst->p[d_v].p_pixels;
-        w->dst_pitch_y  = dst->p[d_y].i_pitch;
-        w->dst_pitch_c  = dst->p[d_u].i_pitch;
+        w->dst.y       = dst->p[d_y].p_pixels;
+        w->dst.u       = dst->p[d_u].p_pixels;
+        w->dst.v       = dst->p[d_v].p_pixels;
+        w->dst.pitch_y = dst->p[d_y].i_pitch;
+        w->dst.pitch_c = dst->p[d_u].i_pitch;
     }
 }
 
@@ -689,18 +729,8 @@ static int zimg_dispatch_and_wait(zimg_priv_t *p)
  */
 static void zimg_copy_out(zimg_priv_t *p, picture_t *dst)
 {
-    const int swap = p->yv12_swap_uv;
-    int d_y = 0;
-    int d_u = up_zimg_plane_idx(1, swap);
-    int d_v = up_zimg_plane_idx(2, swap);
-    up_copy_plane(dst->p[d_y].p_pixels, dst->p[d_y].i_pitch,
-                  p->dy, p->dst_pitch_y, p->dst_w, p->dst_h);
-    const int cw = (p->dst_w + (1 << p->sub_w) - 1) >> p->sub_w;
-    const int ch = (p->dst_h + (1 << p->sub_h) - 1) >> p->sub_h;
-    up_copy_plane(dst->p[d_u].p_pixels, dst->p[d_u].i_pitch,
-                  p->du, p->dst_pitch_c, cw, ch);
-    up_copy_plane(dst->p[d_v].p_pixels, dst->p[d_v].i_pitch,
-                  p->dv, p->dst_pitch_c, cw, ch);
+    copy_yuv_planes(&p->dst, dst, p->yv12_swap_uv,
+                    p->dst_w, p->dst_h, p->sub_w, p->sub_h, 1);
 }
 
 static int zimg_process(scaler_ctx_t *ctx,
@@ -766,8 +796,8 @@ static void zimg_close(scaler_ctx_t *ctx)
     }
     if (p->done_inited) sem_destroy(&p->done);
 
-    free(p->sy); free(p->su); free(p->sv);
-    free(p->dy); free(p->du); free(p->dv);
+    free(p->src.y); free(p->src.u); free(p->src.v);
+    free(p->dst.y); free(p->dst.u); free(p->dst.v);
     free(p);
     ctx->priv = NULL;
 }
