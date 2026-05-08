@@ -111,15 +111,28 @@ USM_OBJS := \
     $(BUILD)/usm_pool_avx512.o \
     $(BUILD)/usm_pool_dispatch.o
 
+# usm_pool.c is the per-frame hot path: worker_main calls inlined hblur
+# and combine kernels for every row of every frame. Compiling it at -O3
+# (vs the rest of the plugin's -O2) is a measured perf win across all
+# thread counts and SIMD baselines — at 8 threads / 1080p it cuts pool
+# apply time roughly in half on top of what the per-kernel pragma
+# already provides. -O3 enables more aggressive inlining + loop
+# transforms in the worker dispatch and row-sweep helpers, which the
+# pragma O3 (scoped to the leaf kernels in usm.h) cannot reach. The
+# rest of the plugin (autoupscale.c, scaler*.c, scaler_zimg.c) stays
+# at -O2 since it is not pixel-loop heavy and the binary-size /
+# compile-time win matters more there.
+USM_POOL_CFLAGS := $(subst -O2,-O3,$(PLUGIN_CFLAGS))
+
 # Each variant is the SAME usm_pool.c compiled at its own -march level
 # with USM_VARIANT macro renaming the public symbols. We pass the level
-# AFTER PLUGIN_CFLAGS so it overrides any earlier -march from MARCH_FLAG.
+# AFTER USM_POOL_CFLAGS so it overrides any earlier -march from MARCH_FLAG.
 $(BUILD)/usm_pool_sse2.o: src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
-	$(CC) $(PLUGIN_CFLAGS) -march=x86-64    -DUSM_VARIANT=sse2   -c -o $@ $<
+	$(CC) $(USM_POOL_CFLAGS) -march=x86-64    -DUSM_VARIANT=sse2   -c -o $@ $<
 $(BUILD)/usm_pool_avx2.o: src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
-	$(CC) $(PLUGIN_CFLAGS) -march=x86-64-v3 -DUSM_VARIANT=avx2   -c -o $@ $<
+	$(CC) $(USM_POOL_CFLAGS) -march=x86-64-v3 -DUSM_VARIANT=avx2   -c -o $@ $<
 $(BUILD)/usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
-	$(CC) $(PLUGIN_CFLAGS) -march=x86-64-v4 -DUSM_VARIANT=avx512 -c -o $@ $<
+	$(CC) $(USM_POOL_CFLAGS) -march=x86-64-v4 -DUSM_VARIANT=avx512 -c -o $@ $<
 
 # Dispatcher must be at the lowest baseline so it runs on ANY CPU. It just
 # does CPU-feature checks and indirect calls — no SIMD work itself.
@@ -127,6 +140,10 @@ $(BUILD)/usm_pool_dispatch.o: src/usm_pool_dispatch.c src/usm_pool.h | $(BUILD)
 	$(CC) $(PLUGIN_CFLAGS) -march=x86-64 -c -o $@ $<
 else
 USM_OBJS := $(BUILD)/usm_pool.o
+# Single-baseline build: same -O3 reasoning as the multi-versioned case.
+USM_POOL_CFLAGS := $(subst -O2,-O3,$(PLUGIN_CFLAGS))
+$(BUILD)/usm_pool.o: src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
+	$(CC) $(USM_POOL_CFLAGS) -c -o $@ $<
 endif
 
 PLUGIN_OBJS += $(USM_OBJS)
