@@ -71,8 +71,22 @@
 /* Workspace alignment - matches the rest of the plugin. */
 #define USM_POOL_ALIGN 64
 
+/*
+ * Cache-line-aligned to prevent false sharing between adjacent workers.
+ * Each worker writes to its own `phase` and `sem_t.go.value` on every
+ * dispatch; without padding, two workers whose structs share a 64-byte
+ * cache line would invalidate each other's lines on every frame, costing
+ * ~10s of ns/frame per worker pair. _Alignas(64) both aligns each instance
+ * AND rounds sizeof up to a 64-byte multiple so an aligned_alloc'd array
+ * keeps the per-element alignment.
+ */
 typedef struct usm_worker_s {
-    pthread_t  thread;
+    /* _Alignas on the first member promotes the whole struct's alignment
+     * to 64 and forces sizeof to be a 64-byte multiple, so an aligned
+     * array (one element per cache line) keeps every per-worker write
+     * off neighboring workers' cache lines. C11 disallows _Alignas on a
+     * typedef name itself, hence placing it here. */
+    _Alignas(64) pthread_t  thread;
     sem_t      go;
     sem_t     *done;          /* shared, owned by pool */
     bool       thread_started;
@@ -198,8 +212,17 @@ static int usm_pool_lazy_init(usm_pool_t *p)
     p->workspace = aligned_alloc(USM_POOL_ALIGN, aligned_bytes);
     if (!p->workspace) return -1;
 
-    p->workers = calloc((size_t)p->n_threads_pref, sizeof(*p->workers));
-    if (!p->workers) return -1;
+    /* aligned_alloc not calloc: usm_worker_t carries _Alignas(64) so each
+     * element sits on its own cache line; calloc returns malloc-default
+     * (16) alignment which would defeat the layout. sizeof is already a
+     * multiple of 64 thanks to _Alignas, satisfying aligned_alloc's C11
+     * size constraint. Manual memset replaces calloc's zero-init. */
+    {
+        size_t total = (size_t)p->n_threads_pref * sizeof(*p->workers);
+        p->workers = aligned_alloc(64, total);
+        if (!p->workers) return -1;
+        memset(p->workers, 0, total);
+    }
 
     if (usm_pool_init_done_sem(p) != 0) return -1;
 
