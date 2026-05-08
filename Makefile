@@ -171,8 +171,14 @@ $(BUILD)/$(PLUGIN).so: $(PLUGIN_OBJS) | $(BUILD)
 		echo "Install libswscale-dev / libavutil-dev."; \
 		exit 1; \
 	fi
-	@if [ -n "$(HAVE_ZIMG)" ]; then echo "  zimg backend: ENABLED"; \
-	 else echo "  zimg backend: disabled (libzimg-dev not found)"; fi
+	@echo "  CPU baseline:    -march=$(MARCH)$(if $(filter native,$(MARCH)), (build host CPU; binary not portable),$(if $(filter x86-64-v4,$(MARCH)), (Intel Skylake-X 2017+ / AMD Zen 4 2022+),$(if $(filter x86-64-v3,$(MARCH)), (Intel Haswell 2013+ / AMD Zen 1 2017+),$(if $(filter x86-64,$(MARCH)), (universal x86_64 / SSE2 only),))))"
+	@if [ "$(MULTIVERSION)" = "1" ]; then \
+	    echo "  USM SIMD:        multi-versioned (SSE2 + AVX2 + AVX-512, runtime dispatch)"; \
+	 else \
+	    echo "  USM SIMD:        single-baseline at -march=$(MARCH) (no runtime dispatcher)"; \
+	 fi
+	@if [ -n "$(HAVE_ZIMG)" ]; then echo "  zimg backend:    ENABLED"; \
+	 else echo "  zimg backend:    disabled (libzimg-dev not found)"; fi
 	$(CC) $(PLUGIN_LDFLAGS) -o $@ $(PLUGIN_OBJS) $(PLUGIN_LIBS)
 
 $(BUILD)/%.o: src/%.c src/scaler.h src/upscale_logic.h src/usm.h src/perfmon.h src/threading.h | $(BUILD)
