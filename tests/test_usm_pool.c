@@ -135,7 +135,7 @@ static void test_identity_pool_strided_slow_path(void)
     if (!pool) { END(); return; }
 
     int rc = up_usm_pool_apply(pool, dst, STRIDE, src, STRIDE, 0);
-    CHECK(rc == 1);
+    CHECK(rc == 0);
 
     /* Visible region: must equal src. */
     for (int y = 0; y < H; y++) {
@@ -296,23 +296,23 @@ static void test_destroy_unused_pool(void)
 
 static void test_apply_null_pool(void)
 {
-    BEGIN("apply(NULL, ...) returns 0 cleanly");
+    BEGIN("apply(NULL, ...) returns -1 cleanly");
     uint8_t buf[100];
-    CHECK(up_usm_pool_apply(NULL, buf, 10, buf, 10, 64) == 0);
+    CHECK(up_usm_pool_apply(NULL, buf, 10, buf, 10, 64) == -1);
     END();
 }
 
 static void test_apply_invalid_strides(void)
 {
-    BEGIN("apply with stride < width returns 0");
+    BEGIN("apply with stride < width returns -1");
     usm_pool_t *pool = up_usm_pool_create(2, 100, 50);
     CHECK(pool != NULL);
     const uint8_t src[100*50] = {0};
     uint8_t dst[100*50];
     /* dst_stride too small */
-    CHECK(up_usm_pool_apply(pool, dst, 50, src, 100, 64) == 0);
+    CHECK(up_usm_pool_apply(pool, dst, 50, src, 100, 64) == -1);
     /* src_stride too small */
-    CHECK(up_usm_pool_apply(pool, dst, 100, src, 50, 64) == 0);
+    CHECK(up_usm_pool_apply(pool, dst, 100, src, 50, 64) == -1);
     up_usm_pool_destroy(pool);
     END();
 }

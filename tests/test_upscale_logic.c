@@ -124,6 +124,65 @@ static void test_decide_invalid_input(void)
     END();
 }
 
+/* Regression: cores <= 0 must be coerced to 1 (defensive — should never
+ * happen in practice since up_detect_cores() returns >= 1, but the guard
+ * is part of the contract). Hits the cores=1 fallback line that the
+ * other tests don't exercise. */
+static void test_decide_zero_cores(void)
+{
+    BEGIN("decide_target_height: cores<=0 coerced to 1 (AUTO falls back)");
+    /* AUTO with 0 cores: the AUTO branch needs cores >= 4 for 1080p, so
+     * with 1 (post-coercion) we get 720p. */
+    CHECK_EQ_INT(up_decide_target_height(540, UP_TARGET_AUTO, 0, 8192), 720);
+    CHECK_EQ_INT(up_decide_target_height(540, UP_TARGET_AUTO, -5, 8192), 720);
+    /* Forced presets ignore cores entirely — same result regardless. */
+    CHECK_EQ_INT(up_decide_target_height(540, UP_TARGET_1080P, 0, 8192), 1080);
+    CHECK_EQ_INT(up_decide_target_height(720, UP_TARGET_4K, -1, 65536), 2160);
+    END();
+}
+
+/* Pure table-driven dispatch: an out-of-range preset must fall through
+ * to the AUTO branch instead of indexing past the array. Adds branch
+ * coverage for the `preset >= UP_TARGET_720P && preset <= UP_TARGET_MAX`
+ * guard introduced by the table refactor. */
+static void test_decide_invalid_preset_falls_through(void)
+{
+    BEGIN("decide_target_height: out-of-range preset falls through to AUTO");
+    /* preset = -1: below UP_TARGET_AUTO. AUTO path with strong HW -> 1080. */
+    CHECK_EQ_INT(up_decide_target_height(540, -1, 8, 16384), 1080);
+    /* preset = UP_TARGET_MAX + 1: just past the table. Same AUTO behavior. */
+    CHECK_EQ_INT(up_decide_target_height(540, UP_TARGET_MAX + 1, 8, 16384), 1080);
+    /* Very large preset value — must not segfault by indexing the table. */
+    CHECK_EQ_INT(up_decide_target_height(540, 999999, 8, 16384), 1080);
+    /* INT_MIN — bottom-of-range pathological preset. */
+    CHECK_EQ_INT(up_decide_target_height(540, INT_MIN, 8, 16384), 1080);
+    END();
+}
+
+/* Verify each preset returns exactly its tabled height for a source small
+ * enough that the ratio cap is irrelevant (1080p source so up to 4320
+ * (=4*1080) is allowed). Locks down the table contents. */
+static void test_decide_table_exact_values(void)
+{
+    BEGIN("decide_target_height: table maps presets 1..6 to fixed heights");
+    int big_src = 1080;
+    CHECK_EQ_INT(up_decide_target_height(big_src, UP_TARGET_720P,  8, 16384), 1080);  /* clamped: never downscale */
+    CHECK_EQ_INT(up_decide_target_height(big_src, UP_TARGET_1080P, 8, 16384), 1080);
+    CHECK_EQ_INT(up_decide_target_height(big_src, UP_TARGET_1440P, 8, 16384), 1440);
+    CHECK_EQ_INT(up_decide_target_height(big_src, UP_TARGET_4K,    8, 16384), 2160);
+    CHECK_EQ_INT(up_decide_target_height(big_src, UP_TARGET_5K,    8, 16384), 2880);
+    CHECK_EQ_INT(up_decide_target_height(big_src, UP_TARGET_8K,    8, 16384), 4320);
+    /* The table itself is part of the API surface. */
+    CHECK_EQ_INT(UP_PRESET_HEIGHTS[UP_TARGET_AUTO],   0);
+    CHECK_EQ_INT(UP_PRESET_HEIGHTS[UP_TARGET_720P],   720);
+    CHECK_EQ_INT(UP_PRESET_HEIGHTS[UP_TARGET_1080P], 1080);
+    CHECK_EQ_INT(UP_PRESET_HEIGHTS[UP_TARGET_1440P], 1440);
+    CHECK_EQ_INT(UP_PRESET_HEIGHTS[UP_TARGET_4K],    2160);
+    CHECK_EQ_INT(UP_PRESET_HEIGHTS[UP_TARGET_5K],    2880);
+    CHECK_EQ_INT(UP_PRESET_HEIGHTS[UP_TARGET_8K],    4320);
+    END();
+}
+
 static void test_decide_no_downscale(void)
 {
     BEGIN("decide_target_height: never downscales");
@@ -606,6 +665,9 @@ int main(void)
     test_decide_auto_weak_hw();
     test_decide_auto_tiny_source();
     test_decide_invalid_input();
+    test_decide_zero_cores();
+    test_decide_invalid_preset_falls_through();
+    test_decide_table_exact_values();
     test_decide_no_downscale();
 
     test_decide_1440p();

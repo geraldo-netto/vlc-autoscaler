@@ -131,8 +131,8 @@ static int run_config(const stress_config_t *cfg)
 
         /* Multi-threaded: same input, must produce identical output. */
         memset(dst_mt, 0xAA, plane_size);  /* poison: catch unwritten regions */
-        if (!up_usm_pool_apply(pool, dst_mt, cfg->width, src, cfg->width,
-                               amount)) {
+        if (up_usm_pool_apply(pool, dst_mt, cfg->width, src, cfg->width,
+                              amount) != 0) {
             printf("APPLY FAILED at frame %d\n", frame);
             rc = -1;
             break;

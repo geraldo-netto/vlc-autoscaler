@@ -164,6 +164,24 @@ static void run_one(const uint8_t *data, size_t size)
         if (dh != 0) abort();
     }
 
+    /* Table-bounds invariant: any preset OUTSIDE the documented range
+     * [UP_TARGET_AUTO, UP_TARGET_MAX] must produce identical output to
+     * UP_TARGET_AUTO. The table-driven dispatch added 2026-05 must not
+     * silently index past UP_PRESET_HEIGHTS. ASan would catch the OOB
+     * read directly; this check catches a logic regression where the
+     * guard is dropped. */
+    if (i_src_h > 0 && (i_preset < UP_TARGET_AUTO || i_preset > UP_TARGET_MAX)) {
+        int dh_auto = up_decide_target_height(i_src_h, UP_TARGET_AUTO,
+                                              cores, mem_mb);
+        if (dh != dh_auto) {
+            fprintf(stderr,
+                    "INVARIANT: out-of-range preset=%d gave dh=%d but "
+                    "AUTO gave %d (src_h=%d cores=%d mem=%lu)\n",
+                    i_preset, dh, dh_auto, i_src_h, cores, mem_mb);
+            abort();
+        }
+    }
+
     up_dims_t d2 = { -1, -1 };
     int rc2 = up_compute_target_dims(i_src_w, i_src_h, i_skip, &d2);
     if (rc2 == 0) {

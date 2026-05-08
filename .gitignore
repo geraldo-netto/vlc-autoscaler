@@ -1,8 +1,12 @@
 # Build artifacts
 build/
+build_dev/
 *.o
 *.so
 *.a
+*.gcda
+*.gcno
+*.gcov
 
 # libFuzzer artifacts
 crash-*

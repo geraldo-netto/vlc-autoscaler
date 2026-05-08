@@ -311,9 +311,9 @@ int up_usm_pool_apply(usm_pool_t *p,
                       const uint8_t *src, int src_stride,
                       int amount_q8)
 {
-    if (!p) return 0;
-    if (!dst || !src) return 0;
-    if (dst_stride < p->width || src_stride < p->width) return 0;
+    if (!p) return -1;
+    if (!dst || !src) return -1;
+    if (dst_stride < p->width || src_stride < p->width) return -1;
 
     /* Clamp amount, matching up_usm_apply_plane. */
     if (amount_q8 < 0) amount_q8 = 0;
@@ -323,15 +323,15 @@ int up_usm_pool_apply(usm_pool_t *p,
     if (amount_q8 == 0) {
         usm_pool_identity(dst, dst_stride, src, src_stride,
                           p->width, p->height);
-        return 1;
+        return 0;
     }
 
     /* Lazy init on first real call. */
     if (!p->lazy_init_done) {
-        if (p->lazy_init_failed) return 0;
+        if (p->lazy_init_failed) return -1;
         if (usm_pool_lazy_init(p) != 0) {
             p->lazy_init_failed = true;
-            return 0;
+            return -1;
         }
         p->lazy_init_done = true;
     }
@@ -339,7 +339,7 @@ int up_usm_pool_apply(usm_pool_t *p,
     usm_pool_set_per_frame(p, dst, dst_stride, src, src_stride, amount_q8);
     usm_pool_run_phase(p, 0);  /* pass 1: hblur into workspace */
     usm_pool_run_phase(p, 1);  /* pass 2: combine workspace + src -> dst */
-    return 1;
+    return 0;
 }
 
 void up_usm_pool_destroy(usm_pool_t *p)

@@ -106,7 +106,7 @@ static void test_create_apply_destroy(void)
         fill_deterministic(src, n, 0xD00Du + trial);
         memset(dst, 0xAA, n);
         int rc = up_usm_pool_apply(p, dst, width, src, width, amount);
-        CHECK(rc == 1);
+        CHECK(rc == 0);
         up_usm_pool_destroy(p);
     }
     free(src); free(dst);
@@ -241,7 +241,7 @@ static void test_input_buffer_can_be_freed(void)
         fill_deterministic(src, n, 0xA1B2u + i);
         memset(dst, 0xCC, n);
         int rc = up_usm_pool_apply(p, dst, width, src, width, amount);
-        CHECK(rc == 1);
+        CHECK(rc == 0);
         free(src);  /* src is now freed; pool must not retain it */
     }
 
@@ -276,7 +276,7 @@ static void test_dst_buffer_swappable(void)
         if (!dst) continue;
         memset(dst, 0xDD, n);
         int rc = up_usm_pool_apply(p, dst, width, src, width, amount);
-        CHECK(rc == 1);
+        CHECK(rc == 0);
         /* If pool held a pointer to a previously-passed dst, that dst is
          * now freed below; the next iter's apply or the destroy might
          * touch it. */
@@ -347,7 +347,7 @@ static void test_many_pools_alive_simultaneously(void)
         memset(dst, 0xAA, n);
         int rc = up_usm_pool_apply(pools[i], dst, width, src, width,
                                    up_usm_amount_pct_to_q8(30));
-        CHECK(rc == 1);
+        CHECK(rc == 0);
     }
     /* Destroy in REVERSE order to catch any "last pool owns shared
      * state" bug */

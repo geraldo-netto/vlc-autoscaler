@@ -379,26 +379,73 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
 }
 
 /*
- * Tear down all workers that have been constructed (graph, tmp, sem, thread).
- * Used to clean up after a partial construction so we can retry with a
- * smaller stripe count. Sets fields back to zeros so the worker slots
- * can be re-initialized cleanly.
+ * Per-worker teardown primitive: release the graph, tmp buffer, semaphore,
+ * and joined thread held by ONE worker slot. Idempotent — safe on a
+ * fully-constructed worker, a partially-constructed one, or a zeroed slot.
+ *
+ * `had_thread` lets the caller indicate whether the thread field is a
+ * valid pthread handle that needs joining (true) or a stub left over from
+ * a failed pthread_create (false). We can't tell from `w->thread` alone
+ * because pthread_t is opaque.
+ *
+ * After return, all dynamic resources owned by `w` are released; the
+ * struct itself is NOT zeroed (caller decides whether to reuse the slot).
+ */
+static void release_worker_resources(stripe_worker_t *w, bool had_thread)
+{
+    if (had_thread) {
+        w->should_exit = true;
+        sem_post(&w->go);
+        pthread_join(w->thread, NULL);
+        sem_destroy(&w->go);
+    }
+    if (w->graph) { zimg_filter_graph_free(w->graph); w->graph = NULL; }
+    free(w->tmp); w->tmp = NULL;
+}
+
+/*
+ * Tear down all `n` constructed workers and zero their slots so they can
+ * be re-initialized cleanly on retry. Used after a partial construction.
+ * CCN 2 (was CCN 5).
  */
 static void teardown_constructed_workers(zimg_priv_t *p, int n)
 {
     for (int i = 0; i < n; i++) {
         stripe_worker_t *w = &p->workers[i];
-        if (w->thread) {
-            w->should_exit = true;
-            sem_post(&w->go);
-            pthread_join(w->thread, NULL);
-            w->thread = 0;
-        }
-        if (w->graph) { zimg_filter_graph_free(w->graph); w->graph = NULL; }
-        free(w->tmp); w->tmp = NULL;
-        sem_destroy(&w->go);
+        bool had_thread = (w->thread != 0);
+        release_worker_resources(w, had_thread);
+        w->thread = 0;
         memset(w, 0, sizeof *w);
     }
+}
+
+/*
+ * Try to spawn one stripe worker at index `i` covering its share of
+ * [0, dst_h) when partitioned into `n` stripes. Returns 0 on success,
+ * -1 on degenerate stripe geometry or worker init failure. On failure
+ * any partially-allocated graph/tmp inside `w` is released.
+ */
+static int try_spawn_one_worker(zimg_priv_t *p, const scaler_ctx_t *ctx,
+                                int i, int n,
+                                unsigned sub_w, unsigned sub_h,
+                                zimg_resample_filter_e filt)
+{
+    stripe_worker_t *w = &p->workers[i];
+
+    int sys, sye, dys, dye;
+    if (!up_compute_stripe_bounds(i, n, ctx->src_h, ctx->dst_h,
+                                  &sys, &sye, &dys, &dye))
+        return -1;
+
+    if (init_stripe_worker(w, p, ctx, i, sys, sye, dys, dye,
+                           sub_w, sub_h, filt) != 0) {
+        /* init_stripe_worker may have allocated graph or tmp before
+         * failing. Release those without touching thread/sem (no thread
+         * was started since pthread_create is the last step). */
+        release_worker_resources(w, false);
+        return -1;
+    }
+    return 0;
 }
 
 /*
@@ -407,8 +454,6 @@ static void teardown_constructed_workers(zimg_priv_t *p, int n)
  * (a stripe degenerated or worker init failed), the partial set is
  * left in p->workers — caller may use it directly, OR tear it down
  * and retry with a smaller n.
- *
- * The internal loop is the original construct_workers logic.
  */
 static int try_construct_workers(zimg_priv_t *p, const scaler_ctx_t *ctx,
                                  int n, unsigned sub_w, unsigned sub_h,
@@ -416,19 +461,8 @@ static int try_construct_workers(zimg_priv_t *p, const scaler_ctx_t *ctx,
 {
     int constructed = 0;
     for (int i = 0; i < n; i++) {
-        stripe_worker_t *w = &p->workers[i];
-
-        int sys, sye, dys, dye;
-        if (!up_compute_stripe_bounds(i, n, ctx->src_h, ctx->dst_h,
-                                   &sys, &sye, &dys, &dye))
+        if (try_spawn_one_worker(p, ctx, i, n, sub_w, sub_h, filt) != 0)
             break;
-
-        if (init_stripe_worker(w, p, ctx, i, sys, sye, dys, dye,
-                               sub_w, sub_h, filt) != 0) {
-            if (w->graph) { zimg_filter_graph_free(w->graph); w->graph = NULL; }
-            free(w->tmp); w->tmp = NULL;
-            break;
-        }
         constructed++;
     }
     return constructed;
@@ -701,27 +735,32 @@ static int zimg_process(scaler_ctx_t *ctx,
     return 0;
 }
 
+/*
+ * Signal every started worker to exit, in a separate pass before joining,
+ * so all sem_posts go out before we block on the first join. Joining one
+ * thread at a time would serialize the wakeups; this batches them.
+ */
+static void zimg_signal_all_workers_exit(zimg_priv_t *p)
+{
+    for (int i = 0; i < p->n_threads; i++) {
+        stripe_worker_t *w = &p->workers[i];
+        if (w->thread) {
+            w->should_exit = 1;
+            sem_post(&w->go);
+        }
+    }
+}
+
 static void zimg_close(scaler_ctx_t *ctx)
 {
     zimg_priv_t *p = ctx->priv;
     if (!p) return;
 
     if (p->workers) {
+        zimg_signal_all_workers_exit(p);
         for (int i = 0; i < p->n_threads; i++) {
             stripe_worker_t *w = &p->workers[i];
-            if (w->thread) {
-                w->should_exit = 1;
-                sem_post(&w->go);
-            }
-        }
-        for (int i = 0; i < p->n_threads; i++) {
-            stripe_worker_t *w = &p->workers[i];
-            if (w->thread) {
-                pthread_join(w->thread, NULL);
-                sem_destroy(&w->go);
-            }
-            if (w->graph) zimg_filter_graph_free(w->graph);
-            free(w->tmp);
+            release_worker_resources(w, w->thread != 0);
         }
         free(p->workers);
     }

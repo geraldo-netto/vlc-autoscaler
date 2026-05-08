@@ -84,6 +84,20 @@ static inline int up__auto_target_height(int src_h, int cores,
 
 /* ---------------------- Public API ---------------------- */
 
+/* Table mapping UP_TARGET_* preset → forced output height. Index 0 is the
+ * AUTO sentinel (height resolved at runtime via up__auto_target_height); all
+ * other indices encode the user-visible preset numbers. Keep in sync with
+ * UP_TARGET_* macros above. */
+static const int UP_PRESET_HEIGHTS[UP_TARGET_MAX + 1] = {
+    [UP_TARGET_AUTO]   = 0,
+    [UP_TARGET_720P]   =  720,
+    [UP_TARGET_1080P]  = 1080,
+    [UP_TARGET_1440P]  = 1440,
+    [UP_TARGET_4K]     = 2160,
+    [UP_TARGET_5K]     = 2880,
+    [UP_TARGET_8K]     = 4320,
+};
+
 /*
  * Pick a target height given source height, user preset, and detected
  * hardware capacity.
@@ -106,18 +120,9 @@ static inline int up_decide_target_height(int src_h, int preset,
     if (cores <= 0)
         cores = 1;
 
-    int target_h;
-    switch (preset) {
-        case UP_TARGET_720P:   target_h =  720; break;
-        case UP_TARGET_1080P:  target_h = 1080; break;
-        case UP_TARGET_1440P:  target_h = 1440; break;
-        case UP_TARGET_4K:     target_h = 2160; break;
-        case UP_TARGET_5K:     target_h = 2880; break;
-        case UP_TARGET_8K:     target_h = 4320; break;
-        default:
-            target_h = up__auto_target_height(src_h, cores, mem_mb);
-            break;
-    }
+    int target_h = (preset >= UP_TARGET_720P && preset <= UP_TARGET_MAX)
+                 ? UP_PRESET_HEIGHTS[preset]
+                 : up__auto_target_height(src_h, cores, mem_mb);
 
     /* Clamp to UP_MAX_RATIO * src_h, watching for overflow. */
     if (src_h <= INT_MAX / UP_MAX_RATIO) {

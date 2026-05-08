@@ -22,6 +22,25 @@
  * free at runtime when USM is off.
  *****************************************************************************/
 
+/*
+ * !!! IF YOU ADD OR REMOVE A PUBLIC FUNCTION HERE !!!
+ *
+ * src/usm_pool_dispatch.c hand-forwards every public symbol to one of
+ * three SIMD-baseline-compiled variants (sse2/avx2/avx512). It does NOT
+ * use IFUNC/target_clones, so adding a new public function here without
+ * also adding a forwarding shim and three extern decls in
+ * usm_pool_dispatch.c will produce an unresolved symbol at .so load.
+ *
+ * Conversely, deleting a function here without deleting it from the
+ * dispatcher will produce three orphaned symbols and a linker error.
+ *
+ * The SAME applies when changing the prototype: keep the three extern
+ * decls in usm_pool_dispatch.c in sync.
+ *
+ * tests/test_usm_pool_variants.c and tests/fuzz_usm_variants.c also
+ * declare extern prototypes for the variant suffixes; update those too.
+ */
+
 #ifndef AUTOUPSCALE_USM_POOL_H
 #define AUTOUPSCALE_USM_POOL_H
 
@@ -44,9 +63,12 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height);
 
 /*
  * Apply USM to one frame. dst and src may alias if dst_stride ==
- * src_stride (the identity/amount=0 case). Returns 1 on success, 0
- * if the pool is NULL, the strides are too small, or lazy thread
+ * src_stride (the identity/amount=0 case). Returns 0 on success,
+ * -1 if the pool is NULL, the strides are too small, or lazy thread
  * spawn fails.
+ *
+ * (Convention matches the rest of the project: 0 = success, negative
+ * = failure. Was inverted in earlier versions; flipped 2026-05.)
  *
  * Output is bit-identical to up_usm_apply_plane(dst, dst_stride, src,
  * src_stride, width, height, amount_q8, workspace) for any inputs.

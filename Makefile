@@ -377,6 +377,71 @@ stress: $(BUILD)/stress_usm_pool $(BUILD)/stress_usm_pool_tsan
 	@echo "=== usm_pool stress (ThreadSanitizer) ==="
 	@$(BUILD)/stress_usm_pool_tsan
 
+# --------- coverage ---------
+# Build the unit tests with gcov instrumentation, run them, then report
+# per-file line coverage. ASan is dropped here because it conflicts with
+# --coverage on some toolchains and we already test under ASan elsewhere.
+#
+# Coverage is meaningful for the testable header/.c surface only. The VLC-
+# typed translation units (autoupscale.c, scaler_zimg.c) are NOT covered
+# by direct unit tests — their pure logic was extracted into header
+# modules (upscale_logic.h, content_probe.h, etc.) precisely so it CAN be
+# unit-tested. See `make coverage-summary` for the per-module % numbers.
+COV_BUILD := $(BUILD)/cov
+COV_CFLAGS  := -O0 -g $(MARCH_FLAG) $(WARN) --coverage -fprofile-arcs -ftest-coverage
+COV_LDFLAGS := --coverage
+
+COV_TESTS := \
+    $(COV_BUILD)/test_upscale_logic \
+    $(COV_BUILD)/test_usm \
+    $(COV_BUILD)/test_perfmon \
+    $(COV_BUILD)/test_threading \
+    $(COV_BUILD)/test_zimg_helpers \
+    $(COV_BUILD)/test_chroma_classify \
+    $(COV_BUILD)/test_usm_pool \
+    $(COV_BUILD)/test_content_probe \
+    $(COV_BUILD)/test_scaler_pick \
+    $(COV_BUILD)/test_lifetime
+
+$(COV_BUILD):
+	mkdir -p $(COV_BUILD)
+
+$(COV_BUILD)/test_upscale_logic: tests/test_upscale_logic.c src/upscale_logic.h | $(COV_BUILD)
+	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/test_usm: tests/test_usm.c src/usm.h | $(COV_BUILD)
+	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/test_perfmon: tests/test_perfmon.c src/perfmon.h | $(COV_BUILD)
+	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/test_threading: tests/test_threading.c src/threading.h | $(COV_BUILD)
+	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $(COV_BUILD)
+	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.h | $(COV_BUILD)
+	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/test_usm_pool: tests/test_usm_pool.c src/usm_pool.c src/usm_pool.h src/usm.h | $(COV_BUILD)
+	$(CC) $(COV_CFLAGS) -o $@ $< src/usm_pool.c $(COV_LDFLAGS) -lpthread
+$(COV_BUILD)/test_content_probe: tests/test_content_probe.c src/content_probe.h | $(COV_BUILD)
+	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h | $(COV_BUILD)
+	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/test_lifetime: tests/test_lifetime.c src/usm_pool.c src/usm_pool.h src/usm.h | $(COV_BUILD)
+	$(CC) $(COV_CFLAGS) -o $@ $< src/usm_pool.c $(COV_LDFLAGS) -lpthread
+
+.PHONY: coverage coverage-summary
+coverage: $(COV_TESTS)
+	@for t in $(COV_TESTS); do $$t > /dev/null 2>&1 || true; done
+	@# Invoke gcov from the project root so embedded relative source
+	@# paths resolve correctly (e.g. "tests/../src/upscale_logic.h").
+	@# Output the .gcov files into the cov build dir.
+	@for gcda in $(COV_BUILD)/*.gcda; do \
+	    gcov -r -m -o $(COV_BUILD) "$$gcda" > /dev/null 2>&1 || true; \
+	done
+	@# gcov emits .gcov in the CWD; move them into the build dir.
+	@mv ./*.gcov $(COV_BUILD)/ 2>/dev/null || true
+	@COV_DIR=$(COV_BUILD) THRESHOLD=80 ./scripts/coverage_report.sh
+
+coverage-summary: coverage
+
 # --------- static analysis ---------
 analyze:
 	@command -v cppcheck >/dev/null 2>&1 || { \

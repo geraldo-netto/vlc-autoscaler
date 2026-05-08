@@ -254,44 +254,37 @@ static void DetectHardware( int *cores, unsigned long *mem_mb )
 
 /*****************************************************************************
  * Open: probe input format, decide whether to engage, set up scaler + USM
+ *****************************************************************************
+ * Open() is split into focused phase helpers (each at CCN <= 5):
+ *   ResolveInputDims      — picks visible-or-physical src dims
+ *   PickBackendOrReject   — opaque-chroma + null-backend gate
+ *   ConfigureScaler       — fills scaler_ctx_t from VLC vars
+ *   InitUsmPool           — optional USM post-pass setup
+ *   InitProbeAndPerfmon   — perfmon + content-probe bookkeeping
+ *   SetOutputFormat       — fmt_out wiring
+ * Open() itself is a linear orchestrator at CCN ~5.
  *****************************************************************************/
-static int Open( vlc_object_t *p_this )
+
+/* Pick the visible (cropped) dimension when present, otherwise the
+ * physical one. Encapsulates the two ?: that previously inflated Open's
+ * branch count. */
+static void ResolveInputDims( const filter_t *p_filter,
+                              int *src_w, int *src_h )
 {
-    filter_t *p_filter = (filter_t *)p_this;
+    *src_w = p_filter->fmt_in.video.i_visible_width
+                ? p_filter->fmt_in.video.i_visible_width
+                : p_filter->fmt_in.video.i_width;
+    *src_h = p_filter->fmt_in.video.i_visible_height
+                ? p_filter->fmt_in.video.i_visible_height
+                : p_filter->fmt_in.video.i_height;
+}
 
-    const int src_w = p_filter->fmt_in.video.i_visible_width
-                        ? p_filter->fmt_in.video.i_visible_width
-                        : p_filter->fmt_in.video.i_width;
-    const int src_h = p_filter->fmt_in.video.i_visible_height
-                        ? p_filter->fmt_in.video.i_visible_height
-                        : p_filter->fmt_in.video.i_height;
-
-    const int skip_above = var_InheritInteger( p_filter,
-                                               CFG_PREFIX "skip-above" );
-    const int preset     = var_InheritInteger( p_filter,
-                                               CFG_PREFIX "target" );
-    const int algo       = var_InheritInteger( p_filter,
-                                               CFG_PREFIX "algo" );
-    const int backend_pref = var_InheritInteger( p_filter,
-                                                 CFG_PREFIX "backend" );
-
-    int cores;
-    unsigned long mem_mb;
-    DetectHardware( &cores, &mem_mb );
-
-    up_dims_t target = { 0, 0 };
-    if( !up_plan_upscale( src_w, src_h, skip_above, preset,
-                          cores, mem_mb, &target ) )
-    {
-        msg_Dbg( p_filter,
-                 "AutoUpscale: bypassing %dx%d (skip>=%d, preset=%d)",
-                 src_w, src_h, skip_above, preset );
-        return VLC_EGENERIC;
-    }
-
-    /* Pick a scaler backend. */
-    const vlc_fourcc_t chroma = p_filter->fmt_in.video.i_chroma;
-
+/* Opaque-chroma rejection + backend selection. Logs the reason and returns
+ * NULL when this filter cannot run on the input — Open() turns NULL into
+ * VLC_EGENERIC. CCN 4. */
+static const scaler_backend_t *PickBackendOrReject(
+    filter_t *p_filter, vlc_fourcc_t chroma, int algo, int backend_pref )
+{
     /* Reject hardware/opaque formats up front. We cannot read pixel data
      * from a VAAPI/VDPAU/D3D/MMAL/CVPX surface; VLC must insert a hw->sw
      * download converter before us. Failing here cleanly (instead of
@@ -304,7 +297,7 @@ static int Open( vlc_object_t *p_this )
                  "AutoUpscale: declining opaque chroma 0x%08x; "
                  "VLC will insert a hw->sw converter and re-probe",
                  (unsigned)chroma );
-        return VLC_EGENERIC;
+        return NULL;
     }
 
     const scaler_backend_t *be = scaler_pick( backend_pref, chroma, algo );
@@ -313,58 +306,61 @@ static int Open( vlc_object_t *p_this )
         msg_Warn( p_filter,
                   "AutoUpscale: no backend supports chroma 0x%08x with algo %d",
                   (unsigned)chroma, algo );
-        return VLC_EGENERIC;
+        return NULL;
     }
+    return be;
+}
 
-    filter_sys_t *p_sys = calloc( 1, sizeof(*p_sys) );
-    if( !p_sys ) return VLC_ENOMEM;
+/* Populate the scaler_ctx_t from filter parameters and VLC vars. CCN 2. */
+static void ConfigureScaler( scaler_ctx_t *sc,
+                             const scaler_backend_t *be,
+                             filter_t *p_filter, vlc_object_t *p_this,
+                             vlc_fourcc_t chroma, int algo,
+                             int src_w, int src_h, up_dims_t target )
+{
+    sc->backend      = be;
+    sc->src_w        = src_w;
+    sc->src_h        = src_h;
+    sc->dst_w        = target.width;
+    sc->dst_h        = target.height;
+    sc->algo         = algo;
+    sc->threads_pref = var_InheritInteger( p_filter, CFG_PREFIX "threads" );
+    sc->dst_zerocopy = var_InheritInteger( p_filter, CFG_PREFIX "zerocopy-dst" );
+    sc->chroma       = chroma;
+    sc->log_obj      = p_this;
 
-    p_sys->scaler.backend      = be;
-    p_sys->scaler.src_w        = src_w;
-    p_sys->scaler.src_h        = src_h;
-    p_sys->scaler.dst_w        = target.width;
-    p_sys->scaler.dst_h        = target.height;
-    p_sys->scaler.algo         = algo;
-    p_sys->scaler.threads_pref = var_InheritInteger( p_filter,
-                                                     CFG_PREFIX "threads" );
-    p_sys->scaler.dst_zerocopy = var_InheritInteger( p_filter,
-                                                     CFG_PREFIX "zerocopy-dst" );
-    p_sys->scaler.chroma       = chroma;
-    p_sys->scaler.log_obj      = p_this;
-
-    if( !p_sys->scaler.dst_zerocopy )
+    if( !sc->dst_zerocopy )
         msg_Info( p_filter,
                   "AutoUpscale: dst zero-copy DISABLED via "
                   "--autoupscale-zerocopy-dst=0 (using copy-out path)" );
+}
 
-    if( be->open( &p_sys->scaler ) != 0 )
-    {
-        msg_Err( p_filter, "AutoUpscale: %s backend open failed", be->name );
-        free( p_sys );
-        return VLC_EGENERIC;
-    }
+/* Lazily create the USM pool when the user asked for sharpening AND the
+ * chroma has a Y plane. On allocation failure we log and continue with
+ * USM disabled — the upscale itself doesn't depend on it. CCN 4. */
+static void InitUsmPool( filter_sys_t *p_sys, filter_t *p_filter,
+                         vlc_fourcc_t chroma, up_dims_t target,
+                         int cores, int usm_pct )
+{
+    if( usm_pct <= 0 || !ChromaHasYPlane( chroma ) )
+        return;
 
-    /* USM post-pass. Uses a worker pool with the same thread count
-     * as the scaler. The pool is lazy: workers and workspace are not
-     * spawned until the first apply() call, so probing-only Open/Close
-     * cycles cost nothing. */
-    const int usm_pct = var_InheritInteger( p_filter, CFG_PREFIX "usm" );
-    if( usm_pct > 0 && ChromaHasYPlane( chroma ) )
-    {
-        int n_threads = up_threads_decide( p_sys->scaler.threads_pref,
-                                           cores );
-        p_sys->usm_pool = up_usm_pool_create( n_threads,
-                                              target.width, target.height );
-        if( p_sys->usm_pool )
-            p_sys->usm_amount_q8 = up_usm_amount_pct_to_q8( usm_pct );
-        else
-            msg_Warn( p_filter,
-                      "USM pool create failed (%dx%d, %d threads); "
-                      "sharpening disabled",
-                      target.width, target.height, n_threads );
-    }
+    int n_threads = up_threads_decide( p_sys->scaler.threads_pref, cores );
+    p_sys->usm_pool = up_usm_pool_create( n_threads,
+                                          target.width, target.height );
+    if( p_sys->usm_pool )
+        p_sys->usm_amount_q8 = up_usm_amount_pct_to_q8( usm_pct );
+    else
+        msg_Warn( p_filter,
+                  "USM pool create failed (%dx%d, %d threads); "
+                  "sharpening disabled",
+                  target.width, target.height, n_threads );
+}
 
-    /* Performance monitor. */
+/* Initialize the perfmon and the content probe bookkeeping fields. CCN 1. */
+static void InitProbeAndPerfmon( filter_sys_t *p_sys, filter_t *p_filter,
+                                 vlc_fourcc_t chroma, int algo, int usm_pct )
+{
     const int target_fps = var_InheritInteger( p_filter,
                                                CFG_PREFIX "target-fps" );
     up_perfmon_init( &p_sys->perfmon, target_fps );
@@ -382,8 +378,12 @@ static int Open( vlc_object_t *p_this )
                        && ChromaHasYPlane( chroma );
     p_sys->probe_active  = p_sys->probe_enabled;
     p_sys->advice_logged = 0;
+}
 
-    /* Output format: same chroma, new dimensions. */
+/* Wire fmt_out to the upscale target. Same chroma, new dimensions. CCN 1. */
+static void SetOutputFormat( filter_t *p_filter, vlc_fourcc_t chroma,
+                             up_dims_t target )
+{
     p_filter->fmt_out.video.i_chroma         = chroma;
     p_filter->fmt_out.video.i_width          = target.width;
     p_filter->fmt_out.video.i_visible_width  = target.width;
@@ -391,11 +391,66 @@ static int Open( vlc_object_t *p_this )
     p_filter->fmt_out.video.i_visible_height = target.height;
     p_filter->fmt_out.video.i_x_offset       = 0;
     p_filter->fmt_out.video.i_y_offset       = 0;
+}
+
+static int Open( vlc_object_t *p_this )
+{
+    filter_t *p_filter = (filter_t *)p_this;
+
+    int src_w, src_h;
+    ResolveInputDims( p_filter, &src_w, &src_h );
+
+    const int skip_above   = var_InheritInteger( p_filter,
+                                                 CFG_PREFIX "skip-above" );
+    const int preset       = var_InheritInteger( p_filter,
+                                                 CFG_PREFIX "target" );
+    const int algo         = var_InheritInteger( p_filter,
+                                                 CFG_PREFIX "algo" );
+    const int backend_pref = var_InheritInteger( p_filter,
+                                                 CFG_PREFIX "backend" );
+    const int usm_pct      = var_InheritInteger( p_filter,
+                                                 CFG_PREFIX "usm" );
+
+    int cores;
+    unsigned long mem_mb;
+    DetectHardware( &cores, &mem_mb );
+
+    up_dims_t target = { 0, 0 };
+    if( !up_plan_upscale( src_w, src_h, skip_above, preset,
+                          cores, mem_mb, &target ) )
+    {
+        msg_Dbg( p_filter,
+                 "AutoUpscale: bypassing %dx%d (skip>=%d, preset=%d)",
+                 src_w, src_h, skip_above, preset );
+        return VLC_EGENERIC;
+    }
+
+    const vlc_fourcc_t chroma = p_filter->fmt_in.video.i_chroma;
+    const scaler_backend_t *be = PickBackendOrReject( p_filter, chroma,
+                                                     algo, backend_pref );
+    if( !be )
+        return VLC_EGENERIC;
+
+    filter_sys_t *p_sys = calloc( 1, sizeof(*p_sys) );
+    if( !p_sys ) return VLC_ENOMEM;
+
+    ConfigureScaler( &p_sys->scaler, be, p_filter, p_this,
+                     chroma, algo, src_w, src_h, target );
+
+    if( be->open( &p_sys->scaler ) != 0 )
+    {
+        msg_Err( p_filter, "AutoUpscale: %s backend open failed", be->name );
+        free( p_sys );
+        return VLC_EGENERIC;
+    }
+
+    InitUsmPool( p_sys, p_filter, chroma, target, cores, usm_pct );
+    InitProbeAndPerfmon( p_sys, p_filter, chroma, algo, usm_pct );
+    SetOutputFormat( p_filter, chroma, target );
 
     p_filter->p_sys           = p_sys;
     p_filter->pf_video_filter = Filter;
 
-    /* Resolve the user's thread preference for the engagement log. */
     int threads_resolved = up_threads_decide(
         p_sys->scaler.threads_pref, cores );
 
@@ -404,8 +459,8 @@ static int Open( vlc_object_t *p_this )
               "(backend=%s preset=%d algo=%d usm=%d fps_target=%d "
               "threads=%d cores=%d mem=%luMB simd=%s)",
               src_w, src_h, target.width, target.height,
-              be->name, preset, algo, usm_pct, target_fps, threads_resolved,
-              cores, mem_mb, up_usm_pool_variant_name );
+              be->name, preset, algo, usm_pct, p_sys->target_fps,
+              threads_resolved, cores, mem_mb, up_usm_pool_variant_name );
 
     return VLC_SUCCESS;
 }
@@ -529,6 +584,32 @@ static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
     }
 }
 
+/* Apply the post-pass USM in-place on the luma plane, when enabled.
+ * No-op when amount==0, no pool allocated, or no luma plane. CCN 2. */
+static void ApplyUsmIfEnabled( filter_sys_t *p_sys, picture_t *p_out )
+{
+    if( p_sys->usm_amount_q8 <= 0 || !p_sys->usm_pool
+        || p_out->i_planes < 1 )
+        return;
+
+    plane_t *y = &p_out->p[0];
+    up_usm_pool_apply(
+        p_sys->usm_pool,
+        y->p_pixels, y->i_pitch,
+        y->p_pixels, y->i_pitch,        /* in-place */
+        p_sys->usm_amount_q8 );
+}
+
+/* Record one frame's elapsed work into the perfmon and emit the one-time
+ * advisory if perfmon decides the budget has been blown. CCN 2. */
+static void RecordPerf( filter_t *p_filter, filter_sys_t *p_sys,
+                        int64_t t_start, int64_t t_end )
+{
+    int64_t elapsed_ns = (t_start > 0 && t_end > t_start) ? t_end - t_start : 0;
+    if( up_perfmon_record_ns( &p_sys->perfmon, elapsed_ns ) )
+        EmitPerfAdvisory( p_filter, p_sys );
+}
+
 static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
 {
     filter_sys_t *p_sys = p_filter->p_sys;
@@ -553,22 +634,8 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
         return NULL;
     }
 
-    if( p_sys->usm_amount_q8 > 0 && p_sys->usm_pool
-        && p_out->i_planes >= 1 )
-    {
-        plane_t *y = &p_out->p[0];
-        up_usm_pool_apply(
-            p_sys->usm_pool,
-            y->p_pixels, y->i_pitch,
-            y->p_pixels, y->i_pitch,        /* in-place */
-            p_sys->usm_amount_q8 );
-    }
-
-    int64_t t_end = monotonic_ns();
-    int64_t elapsed_ns = (t_start > 0 && t_end > t_start) ? t_end - t_start : 0;
-
-    if( up_perfmon_record_ns( &p_sys->perfmon, elapsed_ns ) )
-        EmitPerfAdvisory( p_filter, p_sys );
+    ApplyUsmIfEnabled( p_sys, p_out );
+    RecordPerf( p_filter, p_sys, t_start, monotonic_ns() );
 
     picture_CopyProperties( p_out, p_in );
     picture_Release( p_in );
