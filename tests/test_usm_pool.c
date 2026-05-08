@@ -297,7 +297,8 @@ static void test_destroy_unused_pool(void)
 static void test_apply_null_pool(void)
 {
     BEGIN("apply(NULL, ...) returns -1 cleanly");
-    uint8_t buf[100];
+    /* Zero-init silences -Wmaybe-uninitialized in non-ASan builds. */
+    uint8_t buf[100] = {0};
     CHECK(up_usm_pool_apply(NULL, buf, 10, buf, 10, 64) == -1);
     END();
 }

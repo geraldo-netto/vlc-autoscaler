@@ -383,7 +383,10 @@ static void test_apply_amount_zero_in_place_alias_no_copy(void)
 static void test_apply_invalid_inputs(void)
 {
     BEGIN("apply_plane: invalid inputs return 0");
-    uint8_t buf[16], ws[16];
+    /* Zero-init silences -Wmaybe-uninitialized in non-ASan builds. The
+     * function rejects these inputs before reading the buffers, so the
+     * contents don't matter — the compiler just can't prove that. */
+    uint8_t buf[16] = {0}, ws[16] = {0};
 
     /* NULL pointers. */
     CHECK_EQ(up_usm_apply_plane(NULL, 4, buf, 4, 4, 4, 256, ws), 0);
