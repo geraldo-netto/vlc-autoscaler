@@ -87,9 +87,11 @@ Even with the opaque-chroma reject in place, VLC's filter-chain solver
 may still instantiate us multiple times during chain setup when other
 filters in the chain (notably `postproc`) also reject the hardware
 chroma. Each instantiation is a complete `Open()` / `Close()` round
-trip. If `Open()` were to spawn 30 worker threads and allocate 6 MB of
-scratch on every call, four chain-solver probes would cost 120 wasted
-thread spawns and 24 MB of churned allocations.
+trip. If `Open()` were to spawn the full worker pool and allocate
+several MB of scratch on every call, four chain-solver probes would
+cost N×4 wasted thread spawns and tens of MB of churned allocations
+(N is `cores/2 − 2` from `threading.h`, e.g. 14 on a 32-core box, 30
+on a 64-core box).
 
 To avoid this, `zimg_open()` does only the cheap work — chroma
 validation, geometry computation, thread-count decision, priv struct
@@ -97,9 +99,8 @@ allocation — and returns. The actual worker pool, scratch buffers, and
 per-stripe filter graphs are constructed lazily on the first `Filter()`
 call (`zimg_lazy_init()`). Probes that don't produce a frame cost
 essentially nothing. The first frame after a successful chain
-construction pays a one-time setup cost (~5-10 ms for 30 threads on a
-32-core box, dominated by `pthread_create`); subsequent frames are
-unaffected.
+construction pays a one-time setup cost (a few ms per worker, dominated
+by `pthread_create`); subsequent frames are unaffected.
 
 A `lazy_init_failed` sticky flag prevents retry-allocating every frame
 if the first lazy init fails (e.g. because of memory pressure).
@@ -254,9 +255,13 @@ produce identical output`) that checks this against a fresh-buffer
 reference for a 17×13 plane with random fill.
 
 **Performance.** Two memory-bound passes over the Y plane. On a modern
-x86 core with `-O2`, roughly 2 ns/pixel, so a 1080p Y plane (≈ 2.07 MP)
-costs ~4 ms per frame single-threaded. The threaded variant (see next
-section) brings this down to ~0.5 ms with 8 workers.
+x86 core with the AVX-512 multi-versioned variant, the kernel runs
+about 0.6 ns/pixel scalar-equivalent; a 1080p Y plane (≈ 2.07 MP)
+costs ~1.17 ms per frame single-threaded through `up_usm_pool_apply`
+(median of 5 trials, 800 iters each). The threaded pool brings this
+down to ~0.23 ms with 8 stripes — about 1.4 % of a 60 fps budget.
+Numbers are for amount=76 (the default 30 % USM); identity
+(`amount==0`) takes a memcpy fast path with no thread activity.
 
 ### Threaded USM (`src/usm_pool.h`, `src/usm_pool.c`)
 
@@ -366,17 +371,22 @@ falls back to swscale on a `supports()` miss.
 | Rounding          | accurate via `SWS_ACCURATE_RND` flag | accurate by default                           |
 | NV12 / NV21       | yes                                  | no — needs depack/repack stage we don't add   |
 | Packed RGB        | yes                                  | no                                            |
-| Threading         | single-threaded per frame            | single-threaded (caller-driven slicing is a planned follow-up) |
+| Threading         | single-threaded per frame            | slice-threaded across N stripes via a persistent worker pool |
 | Build dependency  | always present (VLC links it)        | optional — `pkg-config zimg`                  |
 
-zimg's main near-term win is **Spline36**: noticeably sharper edges
-than Lanczos with less ringing on text and high-contrast detail.
-That alone is worth the abstraction. The threading story is the longer
-game — zimg's image-buffer model with row masks is designed for parallel
-slice processing, where the caller splits the destination into N
-horizontal stripes and runs `zimg_filter_graph_process` on each in
-parallel with its own scratch buffer. For 24 cores upscaling 480p →
-1080p, that should give close to linear speedup. Not implemented yet.
+zimg's two wins versus swscale:
+
+1. **Spline36** — noticeably sharper edges than Lanczos with less
+   ringing on text and high-contrast detail. The recommended filter
+   for upscaling and the plugin's default.
+2. **Slice threading.** zimg's image-buffer model with row masks is
+   built for parallel slice processing: the caller splits the
+   destination into N horizontal stripes and runs
+   `zimg_filter_graph_process` on each in parallel with its own
+   scratch buffer. The plugin's zimg backend implements exactly this
+   with a persistent worker pool — see the "Threading" section
+   below for the architecture, partition rule, and the per-stripe
+   independence caveat.
 
 ### Why not just always use zimg
 
@@ -410,9 +420,8 @@ The two non-options for shipping in this plugin:
   and your filter would be a different project. mpv with the Anime4K
   user-shaders is a better fit if that's your goal.
 
-So zimg with Spline36 is the realistic ceiling for this plugin's
-architecture. The follow-up that's worth doing is parallel slicing
-inside zimg's `process()` to actually use the cores.
+So zimg with Spline36 (slice-threaded across N stripes) is the
+realistic ceiling for this plugin's architecture.
 
 ## Content-aware quality probe
 
@@ -784,13 +793,14 @@ entirely:
 In sandbox testing the byte-identical decoded MD5 matches between
 zerocopy-dst=0 and zerocopy-dst=1 on both single-threaded and
 multi-threaded runs, which is strong evidence that the zero-copy is
-correct at the pixel level. We can't fully verify the path under every
-VLC build (especially the hardware-decode + chain-converter
-configurations the user reported), so the option is opt-in and
-conservatively defaulted off. The failure mode if it doesn't work on
-some VLC build is garbled output or a crash, not a soft fallback —
-which is why it's documented as experimental and the option's longtext
-tells users to fall back to =0 if playback misbehaves.
+correct at the pixel level. With that confidence the option **defaults
+to 1 (on)**: workers write directly into VLC's destination picture
+and the final memcpy is skipped, saving ~125 µs per 1080p frame
+(~0.8 % of a 60 fps budget). The failure mode if zero-copy
+misbehaves on some VLC build is garbled output or a crash, not a soft
+fallback, so the option's longtext (and the troubleshooting recipes in
+[USAGE.md](USAGE.md)) tell users to set `--autoupscale-zerocopy-dst=0`
+to fall back to the copy-out path if playback looks wrong.
 
 The savings are modest: about 125 µs per 1080p frame (~0.8% of a 60 fps
 budget) on this hardware. Worth shipping because some users have
@@ -836,7 +846,7 @@ different class of bug:
 
 ### Unit tests — exact-value assertions
 
-174 tests across 11 suites in `tests/test_*.c`. Each test states a
+178 tests across 11 suites in `tests/test_*.c`. Each test states a
 specific, predictable expected value. They run under AddressSanitizer
 + UndefinedBehaviorSanitizer (`make test`), so memory errors and
 signed-overflow bugs are caught even when the asserted output happens
@@ -844,7 +854,7 @@ to be correct.
 
 | Suite                  | Count | Covers                                      |
 |------------------------|-------|---------------------------------------------|
-| `upscale_logic`        | 31    | preset dispatch (incl. all of 720p..8K), aspect math, ratio cap, AUTO ceiling, skip-above gating |
+| `upscale_logic`        | 35    | preset dispatch (incl. all of 720p..8K), aspect math, ratio cap, AUTO ceiling, skip-above gating |
 | `usm`                  | 17    | unsharp-mask single-thread reference        |
 | `perfmon`              | 10    | EWMA performance monitor                    |
 | `threading`            | 11    | thread-count decision                       |
@@ -878,7 +888,7 @@ rules that aren't otherwise verifiable from output alone:
 ### Smoke fuzzers — deterministic mass testing
 
 `make fuzz-smoke` runs 10 standalone harnesses (`tests/fuzz_*.c` with
-`-DFUZZ_MAIN`) totalling 740k iterations under ASan + UBSan. Each
+`-DFUZZ_MAIN`) totalling 805k iterations under ASan + UBSan. Each
 fuzzer drives a single function (or a small combination of helpers)
 with deterministic xorshift32 random input and verifies a set of
 post-conditions (the "invariant checker").
@@ -909,12 +919,13 @@ fill the remaining iterations to keep the chaos.
 `make fuzz` builds clang-libfuzzer targets that explore the input
 space using coverage-guided mutation. CI runs five targets for 60
 seconds each on every push (5 minutes total libFuzzer time):
-`fuzz_upscale_logic`, `fuzz_usm`, `fuzz_frame_shape`, and
-`fuzz_scaler_chroma`. The harnesses share their invariant checker
-with the smoke fuzzers, so any bug found by libFuzzer is also a
-violation of an explicit, named property — not just a crash.
+`fuzz_upscale_logic`, `fuzz_usm`, `fuzz_frame_shape`,
+`fuzz_scaler_chroma`, and `fuzz_content_probe`. The harnesses share
+their invariant checker with the smoke fuzzers, so any bug found by
+libFuzzer is also a violation of an explicit, named property — not
+just a crash.
 
-**Corpora.** Three structured corpora ship with the repo:
+**Corpora.** Four structured corpora ship with the repo:
 
 - `tests/corpus/` — 16 seeds for `fuzz_upscale_logic`, 32 bytes each
   in the format `<iiiiII>` (src_w, src_h, skip_above, preset, cores,
@@ -933,6 +944,14 @@ violation of an explicit, named property — not just a crash.
   (I420/YV12/I422/I444), 9 known-rejected chromas (NV12, NV21, YUY2,
   UYVY, RV32, BGRA, VAOP, VDV0, DX11), 4 NULL-pointer combinations,
   and 3 garbage/edge fourccs (zero, all-FF, lowercase).
+
+- `tests/corpus_usm_variants/` — 15 seeds for `fuzz_usm_variants`,
+  8 bytes each in the format `<HHhBB>` (width, height, amount,
+  workers, seed). Targets the cross-SIMD-variant byte-equivalence
+  invariant: SIMD width boundaries (widths around 64 / 128), small
+  frames, amount extremes (negative, zero, max), and worker-count
+  edge cases. CI runs the smoke build (5k iters); manual libFuzzer
+  runs use this corpus as the seed.
 
 Empirically, the seeded corpora accelerate discovery roughly 2×: in
 30-second runs, libFuzzer adds ~120 new corpus entries from seeds vs
@@ -977,8 +996,8 @@ ThreadSanitizer instrumentation tracks every memory access and
 synchronization event. If there were a race on the workspace buffer
 (phase-1 writes vs phase-2 reads), or on the per-frame pointers, or
 on the worker's `result` field, TSan would flag it even when the
-output happens to be correct on this run. **Total: ~1300 frames
-across 19 configs, zero TSan reports, zero divergence.**
+output happens to be correct on this run. **Total: ~935 frames
+across 19 configs (`frame_mult=1`), zero TSan reports, zero divergence.**
 
 The CI job runs both builds end-to-end on every push. ASan+UBSan
 takes ~12 seconds, TSan ~52 seconds, so the full stress step adds

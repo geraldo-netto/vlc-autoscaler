@@ -19,10 +19,10 @@ fast enough for real-time playback on modest hardware.
 
 | Check                                  | Result                                  |
 |----------------------------------------|-----------------------------------------|
-| Unit tests (ASan + UBSan)              | 174/174 pass across 11 suites           |
-| Smoke fuzz (740k iters, ASan + UBSan)  | pass across 10 fuzzers                  |
+| Unit tests (ASan + UBSan)              | 178/178 pass across 11 suites           |
+| Smoke fuzz (805k iters, ASan + UBSan)  | pass across 10 fuzzers                  |
 | libFuzzer (60s × 5 in CI, seeded)      | 0 crashes; corpora accelerate discovery ~2× |
-| Concurrency stress (ASan + TSan)       | 19 configs, ~1300 frames, 0 races       |
+| Concurrency stress (ASan + TSan)       | 19 configs, ~935 frames, 0 races        |
 | `cppcheck` (warning + style)           | clean                                   |
 | Plugin compiles against VLC 3.0.20     | clean, no warnings                      |
 | Live transcode (zimg + swscale)        | verified end-to-end up to 8K            |
@@ -220,11 +220,16 @@ workspace is fully populated, and finally each worker combines
 (pass 2). The pool is lazy: workers and workspace spawn on the first
 frame, not in `Open()`. When `--autoupscale-usm=0` the pool's identity
 fast path skips all thread activity, so disabling USM truly costs
-nothing. At 1080p luma this drops USM from ~2-3 ms/frame
-single-threaded to ~0.5 ms with 8 stripes — roughly 12% of a 60 fps
-budget. Output is bit-identical to the single-threaded path; that's
-verified end-to-end by the unit tests (`test_usm_pool.c` runs both
-implementations on synthetic data and asserts byte-for-byte match).
+nothing. Each `usm_worker_t` is `_Alignas(64)` and the worker array
+is `aligned_alloc`'d so adjacent workers don't share a cache line —
+without this padding, two workers writing their `phase` and embedded
+`sem_t.go` on every dispatch invalidate each other's lines. At 1080p
+luma on a modern x86 with AVX-512 this brings USM down to ~1.17 ms
+single-threaded and ~0.23 ms with 8 stripes — roughly 1.4% of a 60
+fps budget at 8 stripes. Output is bit-identical to the single-threaded
+path; that's verified end-to-end by the unit tests (`test_usm_pool.c`
+runs both implementations on synthetic data and asserts byte-for-byte
+match).
 
 ### Hardware-accelerated decode
 
@@ -245,7 +250,8 @@ every frame.
 
 **Lazy worker init.** Open() is intentionally cheap: it validates
 chroma compatibility, computes geometry, allocates a small priv struct,
-and returns. The 30-worker-thread pool and 6 MB of scratch are
+and returns. The worker pool (default `cores/2 − 2`, e.g. 14 workers
+on a 32-core box, 30 on a 64-core box) and several MB of scratch are
 allocated on the first `Filter()` call. This way, when VLC's chain
 solver instantiates us 3-4 times during chain probing (which happens
 when combined with other filters that reject hardware chromas), the
@@ -383,12 +389,13 @@ quality.** The workaround below addresses both problems.
    at it.
 
 **What we did fix from the plugin side:** lazy worker init means each
-of those 3-4 chain-solver probes used to cost 30 thread spawns and
-~24 MB of scratch allocations (90+ wasted thread spawns and ~72 MB
-churn per playback start). With lazy init the failed probes spawn
-nothing — verified end-to-end in user logs: 4 `AutoUpscale engaged`
-messages but only 1 `zimg: 30 worker threads` message, meaning only
-the chain that actually plays paid for the worker pool.
+of those 3-4 chain-solver probes used to cost N thread spawns and
+several MB of scratch allocations (e.g. on a 64-core box: 30 thread
+spawns × 4 probes = 120 wasted threads + tens of MB of churn per
+playback start). With lazy init the failed probes spawn nothing —
+verified end-to-end in user logs: 4 `AutoUpscale engaged` messages but
+only 1 `zimg: N worker threads` message, meaning only the chain that
+actually plays paid for the worker pool.
 
 ## Better quality: chain with VLC's postproc filter
 
@@ -459,6 +466,7 @@ tests/
   corpus/                 binary seeds for fuzz_upscale_logic (16 files, 32 bytes each)
   corpus_frame_shape/     binary seeds for fuzz_frame_shape (22 files, 24 bytes each)
   corpus_scaler_chroma/   binary seeds for fuzz_scaler_chroma (21 files, 8 bytes each)
+  corpus_usm_variants/    binary seeds for fuzz_usm_variants (15 files, 8 bytes each)
 
 docs/HOW_IT_WORKS.md      design notes
 docs/USAGE.md             command-line recipes + diagnostic ladder
@@ -477,8 +485,8 @@ header — there's no shadow re-implementation in the tests.
 ```sh
 make            # build the VLC plugin (libautoupscale_plugin.so)
 make plugin     # same
-make test       # unit tests under ASan + UBSan (174 tests across 11 suites)
-make fuzz-smoke # 740k deterministic random inputs across 10 fuzzers under ASan + UBSan
+make test       # unit tests under ASan + UBSan (178 tests across 11 suites)
+make fuzz-smoke # 805k deterministic random inputs across 10 fuzzers under ASan + UBSan
 make fuzz       # libFuzzer build (clang); run e.g. build/fuzz_upscale_logic tests/corpus/
 make stress     # usm_pool concurrency stress, ASan + TSan (~70s)
 make analyze    # cppcheck across the source
