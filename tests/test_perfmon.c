@@ -5,6 +5,7 @@
 
 #include "../src/perfmon.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,6 +64,43 @@ static void test_init_60fps_budget(void)
 
     up_perfmon_init(&pm, 240);
     CHECK_EQ(pm.budget_ns, 4166666LL);
+    END();
+}
+
+/*
+ * VLC declares the option range as 0..240. Defensive coverage: values
+ * above the VLC max must still produce a sensible budget without
+ * overflow / divide-by-zero. up_perfmon_init computes
+ * `1e9 / target_fps`, so any positive int yields a valid budget.
+ */
+static void test_init_target_fps_oob_boundaries(void)
+{
+    BEGIN("init: target_fps boundaries beyond VLC range "
+          "(241, 1000, INT_MAX) and INT_MIN/-1");
+    up_perfmon_t pm;
+
+    /* VLC max + 1: enabled, budget shrinks. */
+    up_perfmon_init(&pm, 241);
+    CHECK_EQ(pm.enabled, 1);
+    CHECK_EQ(pm.budget_ns, 1000000000LL / 241);
+
+    /* Pathologically large positive: still enabled, tiny budget. */
+    up_perfmon_init(&pm, 1000);
+    CHECK_EQ(pm.enabled, 1);
+    CHECK_EQ(pm.budget_ns, 1000000LL);
+
+    up_perfmon_init(&pm, INT_MAX);
+    CHECK_EQ(pm.enabled, 1);
+    CHECK(pm.budget_ns >= 0);
+
+    /* Negative + INT_MIN: disabled (the documented sentinel). */
+    up_perfmon_init(&pm, -1);
+    CHECK_EQ(pm.enabled, 0);
+    CHECK_EQ(pm.budget_ns, 0);
+
+    up_perfmon_init(&pm, INT_MIN);
+    CHECK_EQ(pm.enabled, 0);
+    CHECK_EQ(pm.budget_ns, 0);
     END();
 }
 
@@ -211,6 +249,7 @@ int main(void)
 
     test_init_disabled_for_zero_fps();
     test_init_60fps_budget();
+    test_init_target_fps_oob_boundaries();
     test_warmup_drops_first_samples();
     test_warns_after_sustained_overrun();
     test_no_warn_below_budget();

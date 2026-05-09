@@ -607,10 +607,8 @@ static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
         return;
 
     p_sys->probe_active = 0;
-    if( p_sys->usm_sharp_threshold > 0
-        && p_sys->probe_accum.lap_samples > 0
-        && (p_sys->probe_accum.lap_sum / p_sys->probe_accum.lap_samples)
-           > (uint64_t)p_sys->usm_sharp_threshold )
+    if( up_should_skip_usm_for_sharpness( &p_sys->probe_accum,
+                                          p_sys->usm_sharp_threshold ) )
     {
         p_sys->usm_skip_sharp = 1;
         msg_Info( p_filter,

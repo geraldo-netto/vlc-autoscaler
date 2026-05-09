@@ -20,6 +20,8 @@
 #include "../src/usm.h"
 #include "../src/usm_pool.h"
 
+#include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -326,6 +328,68 @@ static void test_apply_invalid_strides(void)
     END();
 }
 
+/*
+ * Boundary coverage for the stripe_min_rows constructor argument
+ * (`--autoupscale-usm-stripe-min-rows`, VLC range 0..256).
+ *
+ * Contract:
+ *   stripe_min_rows <=  0   -> compile-time default (USM_STRIPE_MIN_ROWS=8)
+ *   stripe_min_rows  >= 1   -> used as-is to clamp n_threads to height/value
+ *
+ * Test: for each boundary value, create the pool and verify apply()
+ * produces byte-identical output to the single-threaded reference.
+ * Out-of-VLC-range values (negative, > 256) are exercised defensively
+ * — VLC clamps before us, but the API must not crash if a direct
+ * caller passes them.
+ */
+static void test_create_stripe_min_rows_boundaries(void)
+{
+    BEGIN("create stripe_min_rows: -1/0/1/8/256 boundaries + INT_MIN/INT_MAX");
+    enum { W = 64, H = 64, N = 4 };
+    int amount = up_usm_amount_pct_to_q8(30);
+
+    uint8_t *src = malloc((size_t)W * H);
+    uint8_t *dst = malloc((size_t)W * H);
+    uint8_t *ref = malloc((size_t)W * H);
+    uint8_t *ws  = malloc((size_t)W * H);
+    if (!src || !dst || !ref || !ws) {
+        printf("    malloc failed\n"); g_cur_fail++;
+        free(src); free(dst); free(ref); free(ws); END(); return;
+    }
+    fill_pseudorandom(src, (size_t)W * H, 0xB0BABEEFu);
+    up_usm_apply_plane(ref, W, src, W, W, H, amount, ws);
+
+    int boundaries[] = {
+        INT_MIN, -1, 0,            /* sentinels: all map to default 8 */
+        1, 4, 8,                   /* near and at compile-time default */
+        16, 32, 256,               /* mid range and VLC max */
+        257,                       /* one above VLC max */
+        1000000, INT_MAX           /* pathologically large */
+    };
+
+    for (size_t i = 0; i < sizeof(boundaries) / sizeof(boundaries[0]); i++) {
+        usm_pool_t *p = up_usm_pool_create(N, W, H, boundaries[i]);
+        CHECK(p != NULL);
+        if (!p) continue;
+        memset(dst, 0xAB, (size_t)W * H);
+        CHECK(up_usm_pool_apply(p, dst, W, src, W, amount) == 0);
+        /* Output must match the single-threaded reference regardless
+         * of how stripe_min_rows shrinks the worker count. */
+        for (int j = 0; j < W * H; j++) {
+            if (dst[j] != ref[j]) {
+                printf("    stripe_min_rows=%d: byte %d differs "
+                       "(dst=0x%02x ref=0x%02x)\n",
+                       boundaries[i], j, dst[j], ref[j]);
+                g_cur_fail++;
+                break;
+            }
+        }
+        up_usm_pool_destroy(p);
+    }
+    free(src); free(dst); free(ref); free(ws);
+    END();
+}
+
 int main(void)
 {
     printf("Running usm_pool tests...\n");
@@ -346,6 +410,7 @@ int main(void)
 
     /* API safety */
     test_create_invalid_args();
+    test_create_stripe_min_rows_boundaries();
     test_destroy_null_safe();
     test_destroy_unused_pool();
     test_apply_null_pool();

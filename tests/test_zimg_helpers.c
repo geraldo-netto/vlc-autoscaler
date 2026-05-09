@@ -5,6 +5,7 @@
 
 #include "../src/zimg_helpers.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -331,6 +332,28 @@ static void test_stripe_bounds_invalid_inputs(void)
     END();
 }
 
+/* ---------- up_zimg_stripe_min_lines ---------- */
+
+static void test_zimg_stripe_min_lines_boundaries(void)
+{
+    BEGIN("up_zimg_stripe_min_lines: 0/negative -> default 16; "
+          "positive returns as-is incl VLC range edges");
+    /* 0 + negatives: sentinel -> default. */
+    CHECK_EQ(up_zimg_stripe_min_lines(0),       UP_STRIPE_MIN_DST_LINES);
+    CHECK_EQ(up_zimg_stripe_min_lines(-1),      UP_STRIPE_MIN_DST_LINES);
+    CHECK_EQ(up_zimg_stripe_min_lines(INT_MIN), UP_STRIPE_MIN_DST_LINES);
+    /* Positive values returned verbatim across the VLC-declared range
+     * (1..128), the documented compile-time default (16), and the upper
+     * out-of-range value (would be clamped by VLC; tested defensively). */
+    CHECK_EQ(up_zimg_stripe_min_lines(1),       1);
+    CHECK_EQ(up_zimg_stripe_min_lines(4),       4);    /* lower nominal */
+    CHECK_EQ(up_zimg_stripe_min_lines(16),      16);   /* default */
+    CHECK_EQ(up_zimg_stripe_min_lines(128),     128);  /* VLC max */
+    CHECK_EQ(up_zimg_stripe_min_lines(129),     129);  /* VLC max + 1 */
+    CHECK_EQ(up_zimg_stripe_min_lines(INT_MAX), INT_MAX);
+    END();
+}
+
 static void test_stripe_bounds_ratio_preservation(void)
 {
     BEGIN("stripe_bounds: per-stripe ratio close to global ratio");
@@ -386,6 +409,8 @@ int main(void)
     test_stripe_bounds_full_coverage_n_arbitrary();
     test_stripe_bounds_invalid_inputs();
     test_stripe_bounds_ratio_preservation();
+
+    test_zimg_stripe_min_lines_boundaries();
 
     printf("\n%d tests run, %d failed\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;

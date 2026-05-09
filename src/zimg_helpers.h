@@ -34,6 +34,20 @@
 #define UP_STRIPE_MIN_DST_LINES 16
 
 /*
+ * Resolve the user-tunable zimg stripe-min-lines value. Pass 0 (or any
+ * non-positive sentinel) to fall back to the compile-time default
+ * UP_STRIPE_MIN_DST_LINES; any positive value is returned as-is.
+ *
+ * Pulled out to a helper so both the production zimg backend and the
+ * unit tests share the same lookup: any change to the sentinel
+ * convention only needs to update one place.
+ */
+static inline int up_zimg_stripe_min_lines(int user_value)
+{
+    return user_value > 0 ? user_value : UP_STRIPE_MIN_DST_LINES;
+}
+
+/*
  * round_up_pitch(w): smallest multiple of UP_PITCH_ALIGN >= w. Used to
  * size scratch buffer rows so each row begins on an aligned boundary
  * (helps SIMD loads and matches zimg's preferred alignment). Caller

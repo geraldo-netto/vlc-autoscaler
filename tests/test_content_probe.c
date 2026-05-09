@@ -10,6 +10,7 @@
 
 #include "../src/content_probe.h"
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -261,6 +262,86 @@ static void test_bypass_null_input(void)
     END();
 }
 
+/* Helper: build a probe_accum populated with `samples` luma samples
+ * whose mean equals `lap_mean` (i.e. lap_sum = samples * lap_mean). */
+static up_probe_accum_t make_accum_with_lap_mean(uint64_t lap_mean,
+                                                  uint64_t samples)
+{
+    up_probe_accum_t a = {0};
+    a.frames = 60;
+    a.lap_samples = samples;
+    a.lap_sum     = lap_mean * samples;
+    return a;
+}
+
+static void test_skip_usm_threshold_disabled_sentinel(void)
+{
+    BEGIN("skip-usm: threshold <= 0 disables feature regardless of "
+          "lap_mean (0/-1/INT_MIN never trip)");
+    up_probe_accum_t hot = make_accum_with_lap_mean(
+        100000ULL, UP_PROBE_MIN_SAMPLES_PER_KIND * 4);
+    /* Even with a wildly textured source, a non-positive threshold
+     * means feature off → never skip. */
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&hot, 0),       0);
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&hot, -1),      0);
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&hot, INT_MIN), 0);
+    END();
+}
+
+static void test_skip_usm_threshold_strict_greater(void)
+{
+    BEGIN("skip-usm: lap_mean > threshold trips; lap_mean == threshold "
+          "does NOT (strict comparison)");
+    up_probe_accum_t a = make_accum_with_lap_mean(
+        3500ULL, UP_PROBE_MIN_SAMPLES_PER_KIND * 4);
+    /* lap_mean = 3500 exactly */
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&a, 3499), 1); /* strict greater */
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&a, 3500), 0); /* equal: no */
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&a, 3501), 0); /* below: no */
+    END();
+}
+
+static void test_skip_usm_threshold_vlc_range_edges(void)
+{
+    BEGIN("skip-usm: threshold spans VLC range 1..20000 plus default; "
+          "INT_MAX never trips on realistic content");
+    /* Realistic clean-grainy lap_mean = 1500 (within the 800-2000
+     * comment band). Trips at low threshold, doesn't trip at default
+     * 3500 or any higher cutoff. */
+    up_probe_accum_t clean = make_accum_with_lap_mean(
+        1500ULL, UP_PROBE_MIN_SAMPLES_PER_KIND * 4);
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&clean, 1),     1);
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&clean, 1499),  1);
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&clean, 1500),  0);  /* equal */
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&clean,
+        UP_PROBE_THRESH_SHARP_LAP_MEAN), 0);                       /* default */
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&clean, 20000), 0);  /* VLC max */
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&clean, INT_MAX), 0);
+
+    /* Pathologically textured: lap_mean = 50000 trips at default 3500
+     * but not at INT_MAX. */
+    up_probe_accum_t hot = make_accum_with_lap_mean(
+        50000ULL, UP_PROBE_MIN_SAMPLES_PER_KIND * 4);
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&hot,
+        UP_PROBE_THRESH_SHARP_LAP_MEAN), 1);
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&hot, 49999), 1);
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&hot, 50000), 0);  /* equal */
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&hot, INT_MAX), 0);
+    END();
+}
+
+static void test_skip_usm_safe_defaults(void)
+{
+    BEGIN("skip-usm: NULL accum + zero-sample accum -> never trip "
+          "regardless of threshold");
+    CHECK_EQ(up_should_skip_usm_for_sharpness(NULL, 3500), 0);
+    CHECK_EQ(up_should_skip_usm_for_sharpness(NULL, 0),    0);
+    up_probe_accum_t empty = {0};
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&empty, 3500), 0);
+    CHECK_EQ(up_should_skip_usm_for_sharpness(&empty, 1),    0);
+    END();
+}
+
 static void test_observe_accumulates(void)
 {
     BEGIN("observe: accumulates across frames");
@@ -296,6 +377,12 @@ int main(void)
     test_bypass_blocky_only_no_bypass();
     test_bypass_soft_and_blocky_yes_bypass();
     test_bypass_null_input();
+
+    test_skip_usm_threshold_disabled_sentinel();
+    test_skip_usm_threshold_strict_greater();
+    test_skip_usm_threshold_vlc_range_edges();
+    test_skip_usm_safe_defaults();
+
     test_observe_accumulates();
 
     printf("\n%d tests run, %d failed\n", g_tests_run, g_tests_failed);

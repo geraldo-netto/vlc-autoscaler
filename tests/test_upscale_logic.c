@@ -553,6 +553,68 @@ static void test_plan_skip_above_lowered(void)
     END();
 }
 
+/*
+ * Boundary coverage for `--autoupscale-skip-above` (VLC range 1..8192).
+ *
+ * Gate logic in upscale_logic.h: `preset == AUTO && skip_above > 0 &&
+ * src_h >= skip_above` triggers bypass. Therefore non-positive
+ * skip_above values (out of VLC range) are interpreted as "no skip",
+ * letting AUTO engage on any source. Out-of-range positive values
+ * past the VLC max must not overflow the comparison.
+ */
+static void test_plan_skip_above_boundaries(void)
+{
+    BEGIN("plan_upscale: skip_above min/max + OOB boundaries "
+          "(0/1/8192/INT_MAX/-1/INT_MIN) all produce sensible output");
+    up_dims_t d;
+    int rc;
+
+    /* skip_above = 0 (one below VLC min): treated as "no skip"; AUTO
+     * engages on 480p source. */
+    memset(&d, 0xab, sizeof d);
+    rc = up_plan_upscale(854, 480, 0, UP_TARGET_AUTO, 8, 8192, &d);
+    CHECK_EQ_INT(rc, 1);
+    CHECK(d.width > 0 && d.height > 0);
+
+    /* skip_above = 1 (VLC min): src_h=480 >= 1 → bypass. */
+    memset(&d, 0xab, sizeof d);
+    rc = up_plan_upscale(854, 480, 1, UP_TARGET_AUTO, 8, 8192, &d);
+    CHECK_EQ_INT(rc, 0);
+    CHECK_EQ_INT(d.width,  0);
+    CHECK_EQ_INT(d.height, 0);
+
+    /* skip_above = 8192 (VLC max): 480 < 8192 → engage. */
+    memset(&d, 0xab, sizeof d);
+    rc = up_plan_upscale(854, 480, 8192, UP_TARGET_AUTO, 8, 8192, &d);
+    CHECK_EQ_INT(rc, 1);
+    CHECK(d.width > 0 && d.height > 0);
+
+    /* skip_above = 8193 (VLC max + 1): same — engage, no overflow. */
+    memset(&d, 0xab, sizeof d);
+    rc = up_plan_upscale(854, 480, 8193, UP_TARGET_AUTO, 8, 8192, &d);
+    CHECK_EQ_INT(rc, 1);
+    CHECK(d.width > 0 && d.height > 0);
+
+    /* skip_above = INT_MAX: comparison still well-defined. */
+    memset(&d, 0xab, sizeof d);
+    rc = up_plan_upscale(854, 480, INT_MAX, UP_TARGET_AUTO, 8, 8192, &d);
+    CHECK_EQ_INT(rc, 1);
+    CHECK(d.width > 0 && d.height > 0);
+
+    /* skip_above < 0 / INT_MIN: gated off by `skip_above > 0`, so AUTO
+     * still engages. Just verify no crash + sensible output. */
+    memset(&d, 0xab, sizeof d);
+    rc = up_plan_upscale(854, 480, -1, UP_TARGET_AUTO, 8, 8192, &d);
+    CHECK_EQ_INT(rc, 1);
+    CHECK(d.width > 0 && d.height > 0);
+
+    memset(&d, 0xab, sizeof d);
+    rc = up_plan_upscale(854, 480, INT_MIN, UP_TARGET_AUTO, 8, 8192, &d);
+    CHECK_EQ_INT(rc, 1);
+    CHECK(d.width > 0 && d.height > 0);
+    END();
+}
+
 static void test_plan_invalid(void)
 {
     BEGIN("plan_upscale: invalid input -> bypass with zeroed out");
@@ -698,6 +760,7 @@ int main(void)
     test_plan_typical_sd_to_hd();
     test_plan_already_hd();
     test_plan_skip_above_lowered();
+    test_plan_skip_above_boundaries();
     test_plan_skip_above_only_for_auto();
     test_plan_invalid();
     test_plan_anamorphic();

@@ -13,6 +13,7 @@
 
 #include "../src/scaler_pick_logic.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -201,6 +202,32 @@ static void test_unknown_pref_falls_through_to_auto(void)
     END();
 }
 
+/*
+ * Boundary coverage for `--autoupscale-backend` (VLC range 0..2 =
+ * AUTO/ZIMG/SWSCALE). Out-of-range values must not crash and must
+ * fall through to AUTO. Includes one-below-min, one-above-max,
+ * INT_MIN, INT_MAX.
+ */
+static void test_backend_pref_oob_boundaries(void)
+{
+    BEGIN("backend pref OOB (-1, 3, INT_MIN, INT_MAX) all fall through to AUTO");
+    /* SCALER_PICK_SWSCALE is the highest valid pref (= 2). One past
+     * it (3) plus assorted other OOB ints must all fall through to
+     * AUTO and pick zimg (since both mocks support everything). */
+    int oob[] = { -1, SCALER_PICK_SWSCALE + 1, 99, 1000, INT_MIN, INT_MAX };
+    for (size_t i = 0; i < sizeof(oob) / sizeof(oob[0]); i++) {
+        const void *r = PICK(ZIMG_TAG, mock_zimg_supports_all,
+                             SWSCALE_TAG, mock_sws_supports_all,
+                             oob[i], 0, 0);
+        if (r != ZIMG_TAG) {
+            printf("    pref=%d expected AUTO->zimg, got %p\n",
+                   oob[i], r);
+            g_failed_in_test = 1;
+        }
+    }
+    END();
+}
+
 /* ---- Defensive: NULL handles / callbacks ---- */
 
 static void test_null_swscale_returns_null(void)
@@ -252,6 +279,7 @@ int main(void)
 
     test_chroma_passed_to_supports();
     test_unknown_pref_falls_through_to_auto();
+    test_backend_pref_oob_boundaries();
 
     test_null_swscale_returns_null();
     test_null_swscale_supports_returns_null();

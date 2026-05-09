@@ -635,11 +635,9 @@ static int zimg_open(scaler_ctx_t *ctx)
     int n_threads = up_threads_decide(ctx->threads_pref, up_detect_cores());
 
     /* Each stripe at least stripe_min_lines dst rows tall so kernel
-     * context is meaningful. ctx->zimg_stripe_min_lines == 0 falls
-     * back to the compile-time default (UP_STRIPE_MIN_DST_LINES). */
-    int stripe_min_lines = ctx->zimg_stripe_min_lines > 0
-        ? ctx->zimg_stripe_min_lines
-        : UP_STRIPE_MIN_DST_LINES;
+     * context is meaningful. Helper resolves the 0-sentinel to the
+     * compile-time default; see src/zimg_helpers.h. */
+    int stripe_min_lines = up_zimg_stripe_min_lines(ctx->zimg_stripe_min_lines);
     int max_threads_by_size = ctx->dst_h / stripe_min_lines;
     if (max_threads_by_size < 1) max_threads_by_size = 1;
     if (n_threads > max_threads_by_size) n_threads = max_threads_by_size;
