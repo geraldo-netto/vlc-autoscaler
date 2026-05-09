@@ -241,6 +241,23 @@ static inline void up_probe_observe(up_probe_accum_t *a,
 #define UP_PROBE_MIN_FRAMES               10   /* need this many frames */
 #define UP_PROBE_MIN_SAMPLES_PER_KIND  20000   /* need this many samples */
 
+/* Above this lap_mean (sum-of-squared-laplacians per sample), the source
+ * is heavily textured/grainy. USM on such content mostly amplifies noise
+ * without adding perceived sharpness. We skip USM after probe close.
+ * Comment in this file notes clean grainy 480p yields ~800-2000;
+ * 3500 is above that band so we trigger only on actively over-detailed
+ * sources (film grain, high-noise sensors, etc.). */
+#define UP_PROBE_THRESH_SHARP_LAP_MEAN  3500
+
+static inline int up_should_skip_usm_for_sharpness(const up_probe_accum_t *a)
+{
+    if (a == NULL) return 0;
+    if (a->frames < UP_PROBE_MIN_FRAMES) return 0;
+    if (a->lap_samples < UP_PROBE_MIN_SAMPLES_PER_KIND) return 0;
+    uint64_t lap_mean = a->lap_sum / a->lap_samples;
+    return (lap_mean > (uint64_t)UP_PROBE_THRESH_SHARP_LAP_MEAN) ? 1 : 0;
+}
+
 static inline int up_should_bypass_for_content(const up_probe_accum_t *a)
 {
     if (a == NULL) return 0;

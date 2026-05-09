@@ -253,12 +253,16 @@ static int usm_pool_lazy_init(usm_pool_t *p)
  * Public API
  * =========================================================================*/
 
-usm_pool_t *up_usm_pool_create(int n_threads, int width, int height)
+usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
+                               int stripe_min_rows)
 {
     if (n_threads < 1 || width <= 0 || height <= 0) return NULL;
 
-    /* Each stripe at least USM_STRIPE_MIN_ROWS rows tall. */
-    int max_by_size = height / USM_STRIPE_MIN_ROWS;
+    /* stripe_min_rows <= 0 → use compile-time default. */
+    if (stripe_min_rows <= 0) stripe_min_rows = USM_STRIPE_MIN_ROWS;
+
+    /* Each stripe at least stripe_min_rows rows tall. */
+    int max_by_size = height / stripe_min_rows;
     if (max_by_size < 1) max_by_size = 1;
     if (n_threads > max_by_size) n_threads = max_by_size;
 

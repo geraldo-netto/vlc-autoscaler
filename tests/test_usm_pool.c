@@ -79,7 +79,7 @@ static size_t run_compare(int n_threads, int width, int height,
                        workspace);
 
     /* Threaded pool */
-    usm_pool_t *pool = up_usm_pool_create(n_threads, width, height);
+    usm_pool_t *pool = up_usm_pool_create(n_threads, width, height, 0);
     if (!pool) {
         printf("    pool create failed\n");
         free(src); free(dst_st); free(dst_mt); free(workspace);
@@ -130,7 +130,7 @@ static void test_identity_pool_strided_slow_path(void)
     }
     memset(dst, 0xAB, sizeof dst);
 
-    usm_pool_t *pool = up_usm_pool_create(4, W, H);
+    usm_pool_t *pool = up_usm_pool_create(4, W, H, 0);
     CHECK(pool != NULL);
     if (!pool) { END(); return; }
 
@@ -237,7 +237,15 @@ static void test_repeat_same_pool(void)
     uint8_t *dst_mt = malloc(n);
     uint8_t *ws = malloc(n);
 
-    usm_pool_t *pool = up_usm_pool_create(4, width, height);
+    if (!src || !dst_st || !dst_mt || !ws) {
+        printf("    malloc failed\n");
+        free(src); free(dst_st); free(dst_mt); free(ws);
+        g_cur_fail = 1;
+        END();
+        return;
+    }
+
+    usm_pool_t *pool = up_usm_pool_create(4, width, height, 0);
     CHECK(pool != NULL);
 
     /* Hammer 5 frames, each with different src data. Pool spawns
@@ -265,12 +273,12 @@ static void test_repeat_same_pool(void)
 static void test_create_invalid_args(void)
 {
     BEGIN("create with invalid args returns NULL");
-    CHECK(up_usm_pool_create( 0, 100, 100) == NULL);
-    CHECK(up_usm_pool_create(-1, 100, 100) == NULL);
-    CHECK(up_usm_pool_create( 4,   0, 100) == NULL);
-    CHECK(up_usm_pool_create( 4, 100,   0) == NULL);
-    CHECK(up_usm_pool_create( 4,  -1, 100) == NULL);
-    CHECK(up_usm_pool_create( 4, 100,  -1) == NULL);
+    CHECK(up_usm_pool_create( 0, 100, 100, 0) == NULL);
+    CHECK(up_usm_pool_create(-1, 100, 100, 0) == NULL);
+    CHECK(up_usm_pool_create( 4,   0, 100, 0) == NULL);
+    CHECK(up_usm_pool_create( 4, 100,   0, 0) == NULL);
+    CHECK(up_usm_pool_create( 4,  -1, 100, 0) == NULL);
+    CHECK(up_usm_pool_create( 4, 100,  -1, 0) == NULL);
     END();
 }
 
@@ -287,7 +295,7 @@ static void test_destroy_unused_pool(void)
     /* The pool spawns threads lazily on apply(). If we destroy without
      * calling apply, no threads were spawned and destroy must still be
      * clean (no pthread_join on uninitialized state). */
-    usm_pool_t *pool = up_usm_pool_create(8, 1920, 1080);
+    usm_pool_t *pool = up_usm_pool_create(8, 1920, 1080, 0);
     CHECK(pool != NULL);
     up_usm_pool_destroy(pool);
     /* If this leaked or crashed, the test framework would catch it. */
@@ -306,7 +314,7 @@ static void test_apply_null_pool(void)
 static void test_apply_invalid_strides(void)
 {
     BEGIN("apply with stride < width returns -1");
-    usm_pool_t *pool = up_usm_pool_create(2, 100, 50);
+    usm_pool_t *pool = up_usm_pool_create(2, 100, 50, 0);
     CHECK(pool != NULL);
     const uint8_t src[100*50] = {0};
     uint8_t dst[100*50];

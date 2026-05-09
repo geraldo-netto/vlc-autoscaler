@@ -27,10 +27,10 @@
 
 /* User-facing amount range: 0..200 (percent of "1.0" sharpening).
  * 0  = off
- * 30 = subtle (default)
+ * 20 = subtle (default)
  * 100 = strong
  * 200 = very strong */
-#define UP_USM_AMOUNT_DEFAULT  30
+#define UP_USM_AMOUNT_DEFAULT  20
 #define UP_USM_AMOUNT_MAX      200
 
 /* Internal Q8 range: 0..512. Anything above 4096 is rejected by

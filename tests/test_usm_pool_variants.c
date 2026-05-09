@@ -35,21 +35,24 @@
 
 /* Forward declarations for the variant entry points.
  * These live in the per-variant .o files (built with -DUSM_VARIANT=...). */
-extern usm_pool_t *up_usm_pool_create_sse2(int n_threads, int width, int height);
+extern usm_pool_t *up_usm_pool_create_sse2(int n_threads, int width, int height,
+                                           int stripe_min_rows);
 extern void        up_usm_pool_destroy_sse2(usm_pool_t *pool);
 extern int         up_usm_pool_apply_sse2(usm_pool_t *pool,
                                           uint8_t *dst, int dst_stride,
                                           const uint8_t *src, int src_stride,
                                           int amount_q8);
 
-extern usm_pool_t *up_usm_pool_create_avx2(int n_threads, int width, int height);
+extern usm_pool_t *up_usm_pool_create_avx2(int n_threads, int width, int height,
+                                           int stripe_min_rows);
 extern void        up_usm_pool_destroy_avx2(usm_pool_t *pool);
 extern int         up_usm_pool_apply_avx2(usm_pool_t *pool,
                                           uint8_t *dst, int dst_stride,
                                           const uint8_t *src, int src_stride,
                                           int amount_q8);
 
-extern usm_pool_t *up_usm_pool_create_avx512(int n_threads, int width, int height);
+extern usm_pool_t *up_usm_pool_create_avx512(int n_threads, int width, int height,
+                                             int stripe_min_rows);
 extern void        up_usm_pool_destroy_avx512(usm_pool_t *pool);
 extern int         up_usm_pool_apply_avx512(usm_pool_t *pool,
                                             uint8_t *dst, int dst_stride,
@@ -89,7 +92,7 @@ static void fill_pattern(uint8_t *buf, size_t n, uint32_t seed)
 static int run_sse2(uint8_t *dst, const uint8_t *src,
                     int n_workers, int w, int h, int amount_q8)
 {
-    usm_pool_t *p = up_usm_pool_create_sse2(n_workers, w, h);
+    usm_pool_t *p = up_usm_pool_create_sse2(n_workers, w, h, 0);
     if (!p) return -1;
     int rc = up_usm_pool_apply_sse2(p, dst, w, src, w, amount_q8);
     up_usm_pool_destroy_sse2(p);
@@ -99,7 +102,7 @@ static int run_sse2(uint8_t *dst, const uint8_t *src,
 static int run_avx2(uint8_t *dst, const uint8_t *src,
                     int n_workers, int w, int h, int amount_q8)
 {
-    usm_pool_t *p = up_usm_pool_create_avx2(n_workers, w, h);
+    usm_pool_t *p = up_usm_pool_create_avx2(n_workers, w, h, 0);
     if (!p) return -1;
     int rc = up_usm_pool_apply_avx2(p, dst, w, src, w, amount_q8);
     up_usm_pool_destroy_avx2(p);
@@ -109,7 +112,7 @@ static int run_avx2(uint8_t *dst, const uint8_t *src,
 static int run_avx512(uint8_t *dst, const uint8_t *src,
                       int n_workers, int w, int h, int amount_q8)
 {
-    usm_pool_t *p = up_usm_pool_create_avx512(n_workers, w, h);
+    usm_pool_t *p = up_usm_pool_create_avx512(n_workers, w, h, 0);
     if (!p) return -1;
     int rc = up_usm_pool_apply_avx512(p, dst, w, src, w, amount_q8);
     up_usm_pool_destroy_avx512(p);

@@ -74,7 +74,7 @@ static void test_create_then_destroy_no_apply(void)
 {
     BEGIN("create + destroy without apply (cold pool teardown)");
     for (int trial = 0; trial < 50; trial++) {
-        usm_pool_t *p = up_usm_pool_create(8, 320, 240);
+        usm_pool_t *p = up_usm_pool_create(8, 320, 240, 0);
         CHECK(p != NULL);
         up_usm_pool_destroy(p);
         /* If a UAF happens HERE, ASan flags it on this iter. If a leak
@@ -101,7 +101,7 @@ static void test_create_apply_destroy(void)
 
     int amount = up_usm_amount_pct_to_q8(30);
     for (int trial = 0; trial < 30; trial++) {
-        usm_pool_t *p = up_usm_pool_create(4, width, height);
+        usm_pool_t *p = up_usm_pool_create(4, width, height, 0);
         CHECK(p != NULL);
         fill_deterministic(src, n, 0xD00Du + trial);
         memset(dst, 0xAA, n);
@@ -130,7 +130,7 @@ static void test_many_cycles(void)
         int n_threads = (i % 16) + 1;     /* 1..16 */
         int width  = 64 + (i % 64) * 4;   /* 64..316 */
         int height = 48 + (i % 32) * 2;   /* 48..110 */
-        usm_pool_t *p = up_usm_pool_create(n_threads, width, height);
+        usm_pool_t *p = up_usm_pool_create(n_threads, width, height, 0);
         CHECK(p != NULL);
         up_usm_pool_destroy(p);
     }
@@ -156,7 +156,7 @@ static void test_alternating_cold_warm(void)
 
     int amount = up_usm_amount_pct_to_q8(50);
     for (int i = 0; i < 50; i++) {
-        usm_pool_t *p = up_usm_pool_create(4, width, height);
+        usm_pool_t *p = up_usm_pool_create(4, width, height, 0);
         CHECK(p != NULL);
         if (i % 2 == 0) {
             /* Warm: apply once before destroy */
@@ -193,13 +193,13 @@ static void test_destroy_null_repeatedly(void)
 static void test_create_invalid_no_leak(void)
 {
     BEGIN("create with invalid args allocates nothing");
-    const usm_pool_t *p1 = up_usm_pool_create(0, 100, 100);   /* zero threads */
+    const usm_pool_t *p1 = up_usm_pool_create(0, 100, 100, 0);   /* zero threads */
     CHECK(p1 == NULL);
-    const usm_pool_t *p2 = up_usm_pool_create(4, 0, 100);     /* zero width */
+    const usm_pool_t *p2 = up_usm_pool_create(4, 0, 100, 0);     /* zero width */
     CHECK(p2 == NULL);
-    const usm_pool_t *p3 = up_usm_pool_create(4, 100, 0);     /* zero height */
+    const usm_pool_t *p3 = up_usm_pool_create(4, 100, 0, 0);     /* zero height */
     CHECK(p3 == NULL);
-    const usm_pool_t *p4 = up_usm_pool_create(-1, 100, 100);  /* negative */
+    const usm_pool_t *p4 = up_usm_pool_create(-1, 100, 100, 0);  /* negative */
     CHECK(p4 == NULL);
     /* If any of those leaked workers/workspace, ASan reports at exit. */
     END();
@@ -227,7 +227,7 @@ static void test_input_buffer_can_be_freed(void)
     uint8_t *dst = malloc(n);
     CHECK(dst);
 
-    usm_pool_t *p = up_usm_pool_create(4, width, height);
+    usm_pool_t *p = up_usm_pool_create(4, width, height, 0);
     CHECK(p != NULL);
 
     int amount = up_usm_amount_pct_to_q8(30);
@@ -266,7 +266,7 @@ static void test_dst_buffer_swappable(void)
     CHECK(src);
     fill_deterministic(src, n, 7);
 
-    usm_pool_t *p = up_usm_pool_create(2, width, height);
+    usm_pool_t *p = up_usm_pool_create(2, width, height, 0);
     CHECK(p != NULL);
 
     int amount = up_usm_amount_pct_to_q8(30);
@@ -304,7 +304,7 @@ static void test_variable_sizes_in_succession(void)
     int n_sizes = (int)(sizeof sizes / sizeof *sizes);
 
     for (int i = 0; i < n_sizes; i++) {
-        usm_pool_t *p = up_usm_pool_create(8, sizes[i][0], sizes[i][1]);
+        usm_pool_t *p = up_usm_pool_create(8, sizes[i][0], sizes[i][1], 0);
         CHECK(p != NULL);
         size_t n = (size_t)sizes[i][0] * sizes[i][1];
         uint8_t *src = malloc(n);
@@ -339,7 +339,7 @@ static void test_many_pools_alive_simultaneously(void)
     fill_deterministic(src, n, 0xBEEF);
 
     for (int i = 0; i < NPOOLS; i++) {
-        pools[i] = up_usm_pool_create(2 + i, width, height);
+        pools[i] = up_usm_pool_create(2 + i, width, height, 0);
         CHECK(pools[i] != NULL);
     }
     /* Apply on each (in order) */

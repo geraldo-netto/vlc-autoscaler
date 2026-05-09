@@ -23,15 +23,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-extern usm_pool_t *up_usm_pool_create_sse2(int, int, int);
+extern usm_pool_t *up_usm_pool_create_sse2(int, int, int, int);
 extern void        up_usm_pool_destroy_sse2(usm_pool_t *);
 extern int         up_usm_pool_apply_sse2(usm_pool_t *, uint8_t *, int,
                                           const uint8_t *, int, int);
-extern usm_pool_t *up_usm_pool_create_avx2(int, int, int);
+extern usm_pool_t *up_usm_pool_create_avx2(int, int, int, int);
 extern void        up_usm_pool_destroy_avx2(usm_pool_t *);
 extern int         up_usm_pool_apply_avx2(usm_pool_t *, uint8_t *, int,
                                           const uint8_t *, int, int);
-extern usm_pool_t *up_usm_pool_create_avx512(int, int, int);
+extern usm_pool_t *up_usm_pool_create_avx512(int, int, int, int);
 extern void        up_usm_pool_destroy_avx512(usm_pool_t *);
 extern int         up_usm_pool_apply_avx512(usm_pool_t *, uint8_t *, int,
                                             const uint8_t *, int, int);
@@ -123,7 +123,7 @@ static void run_one(const uint8_t *data, size_t size)
     /* Establish reference output via SSE2 (always available). */
     memset(dst_sse2, 0xCC, n);
     {
-        usm_pool_t *p = up_usm_pool_create_sse2(workers, width, height);
+        usm_pool_t *p = up_usm_pool_create_sse2(workers, width, height, 0);
         if (!p) goto out;
         up_usm_pool_apply_sse2(p, dst_sse2, width, src, width, amount);
         up_usm_pool_destroy_sse2(p);
@@ -131,7 +131,7 @@ static void run_one(const uint8_t *data, size_t size)
 
     if (has_avx2) {
         memset(dst_avx2, 0xCC, n);
-        usm_pool_t *p = up_usm_pool_create_avx2(workers, width, height);
+        usm_pool_t *p = up_usm_pool_create_avx2(workers, width, height, 0);
         if (p) {
             up_usm_pool_apply_avx2(p, dst_avx2, width, src, width, amount);
             up_usm_pool_destroy_avx2(p);
@@ -142,7 +142,7 @@ static void run_one(const uint8_t *data, size_t size)
 
     if (has_avx512) {
         memset(dst_avx512, 0xCC, n);
-        usm_pool_t *p = up_usm_pool_create_avx512(workers, width, height);
+        usm_pool_t *p = up_usm_pool_create_avx512(workers, width, height, 0);
         if (p) {
             up_usm_pool_apply_avx512(p, dst_avx512, width, src, width, amount);
             up_usm_pool_destroy_avx512(p);

@@ -33,6 +33,10 @@ typedef struct scaler_ctx_s
     int                     dst_w, dst_h;
     int                     algo;       /* UP_ALGO_* */
     int                     threads_pref; /* 0 = auto; >0 = explicit */
+    int                     zimg_stripe_min_lines; /* 0 = use default 16;
+                                           * smaller = more workers fit on
+                                           * low-res frames (lower latency,
+                                           * worse load balance) */
     int                     dst_zerocopy; /* 0 = copy-out (safe); 1 = write
                                            * directly to VLC dst picture
                                            * (opt-in, may not work everywhere) */

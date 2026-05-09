@@ -47,9 +47,12 @@
 #include <stdint.h>
 
 /* Forward declarations: each lives in its own variant .o */
-extern usm_pool_t *up_usm_pool_create_sse2(int n_threads, int width, int height);
-extern usm_pool_t *up_usm_pool_create_avx2(int n_threads, int width, int height);
-extern usm_pool_t *up_usm_pool_create_avx512(int n_threads, int width, int height);
+extern usm_pool_t *up_usm_pool_create_sse2(int n_threads, int width, int height,
+                                           int stripe_min_rows);
+extern usm_pool_t *up_usm_pool_create_avx2(int n_threads, int width, int height,
+                                           int stripe_min_rows);
+extern usm_pool_t *up_usm_pool_create_avx512(int n_threads, int width, int height,
+                                             int stripe_min_rows);
 
 extern void up_usm_pool_destroy_sse2(usm_pool_t *pool);
 extern void up_usm_pool_destroy_avx2(usm_pool_t *pool);
@@ -72,7 +75,7 @@ extern int up_usm_pool_apply_avx512(usm_pool_t *pool,
 const char *up_usm_pool_variant_name = "uninitialized";
 
 /* Function pointers populated at .so load. */
-static usm_pool_t *(*p_create) (int, int, int);
+static usm_pool_t *(*p_create) (int, int, int, int);
 static void        (*p_destroy)(usm_pool_t *);
 static int         (*p_apply)  (usm_pool_t *, uint8_t *, int,
                                 const uint8_t *, int, int);
@@ -115,9 +118,10 @@ up_usm_pool_dispatch_init(void)
 /* Public API — thin forwarding shims. The function-pointer indirection
  * is one extra load per call; ~1 ns on modern x86. Negligible against
  * the millisecond-scale work it dispatches. */
-usm_pool_t *up_usm_pool_create(int n_threads, int width, int height)
+usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
+                               int stripe_min_rows)
 {
-    return p_create(n_threads, width, height);
+    return p_create(n_threads, width, height, stripe_min_rows);
 }
 
 void up_usm_pool_destroy(usm_pool_t *pool)

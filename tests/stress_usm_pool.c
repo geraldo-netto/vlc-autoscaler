@@ -105,7 +105,7 @@ static int run_config(const stress_config_t *cfg)
         return -1;
     }
 
-    usm_pool_t *pool = up_usm_pool_create(cfg->n_threads, cfg->width, cfg->height);
+    usm_pool_t *pool = up_usm_pool_create(cfg->n_threads, cfg->width, cfg->height, 0);
     if (!pool) {
         free(src); free(dst_st); free(dst_mt); free(ws);
         printf("POOL CREATE FAILED\n");
