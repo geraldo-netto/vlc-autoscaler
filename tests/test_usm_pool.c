@@ -26,6 +26,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+/*
+ * AddressSanitizer aborts the program when an allocation request
+ * exceeds its internal hard cap (0x10000000000 = 1 TB). We deliberately
+ * trigger a huge `aligned_alloc` in test_apply_lazy_init_oom_sticky to
+ * exercise the workspace-alloc failure path; without this override
+ * ASan would kill the test runner instead of letting aligned_alloc
+ * return NULL. The override only affects this test binary; real
+ * production builds have no ASan.
+ */
+__attribute__((used))
+const char *__asan_default_options(void)
+{
+    return "allocator_may_return_null=1";
+}
+
 static int g_run = 0, g_fail = 0, g_cur_fail = 0;
 static const char *g_cur = NULL;
 
