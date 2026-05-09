@@ -135,17 +135,29 @@ int main(int argc, char **argv)
     if (!src || !dst) { fprintf(stderr, "alloc fail\n"); return 1; }
 
     usm_pool_t *pool = up_usm_pool_create(a.n_threads, a.width, a.height, 0);
-    if (!pool) { fprintf(stderr, "pool create fail\n"); return 1; }
+    if (!pool) {
+        fprintf(stderr, "pool create fail\n");
+        free(src); free(dst);
+        return 1;
+    }
 
-    if (run_warmup(pool, src, dst, a.width, plane, amount) != 0) return 1;
+    int rc_run = 0;
+    if (run_warmup(pool, src, dst, a.width, plane, amount) != 0) {
+        rc_run = 1;
+        goto out;
+    }
 
     double us_per_frame = 0.0;
-    if (run_timed(pool, src, dst, &a, amount, &us_per_frame) != 0) return 1;
+    if (run_timed(pool, src, dst, &a, amount, &us_per_frame) != 0) {
+        rc_run = 1;
+        goto out;
+    }
 
     printf("%d,%d,%d,%d,%d,%s,%.2f\n",
            a.n_threads, a.width, a.height, a.frames, a.amount_pct, a.fill, us_per_frame);
 
+out:
     up_usm_pool_destroy(pool);
     free(src); free(dst);
-    return 0;
+    return rc_run;
 }
