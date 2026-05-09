@@ -60,7 +60,7 @@ typical 480p→1080p use this is fine.
 
 This is the recipe that survived all our testing. It runs the filter
 inside the transcode stage, which has its own filter chain separate from
-the display's chain — so VLC's `MAX_CHAIN_LEVEL=3` doesn't bite.
+the display's chain — so VLC's `CHAIN_LEVEL_MAX=2` (error at level > 2 = 3) doesn't bite.
 
 ```sh
 vlc --autoupscale-threads=16 \
@@ -73,7 +73,7 @@ vlc --autoupscale-threads=16 \
 **What it does:**
 - Transcodes the video stream through autoupscale → x264
 - Encoded H.264 + AAC are then displayed
-- Bypasses the `MAX_CHAIN_LEVEL=3` limit that affects the direct display path
+- Bypasses the `CHAIN_LEVEL_MAX=2` chroma-chain limit that affects the direct display path
 
 **When it works:**
 - Most sub-720p content from MP4/MKV containers
@@ -200,10 +200,10 @@ vlc --avcodec-hw=none \
 - AutoUpscale's own multi-threading is unaffected
 
 **Alternative: patch VLC.** The repo ships
-`patches/vlc-3.0-raise-max-chain-level.patch` which raises `MAX_CHAIN_LEVEL`
-from 3 to 5 in VLC's source. If you build VLC yourself this is a permanent
-fix; if you use distro packages, the `--avcodec-hw=none` workaround is
-your only option.
+`patches/vlc-3.0-raise-chain-level.patch` which raises `CHAIN_LEVEL_MAX`
+from 2 to 5 in `modules/video_chroma/chain.c`. If you build VLC yourself
+this is a permanent fix; if you use distro packages, the `--avcodec-hw=none`
+workaround is your only option.
 
 ---
 
@@ -680,9 +680,9 @@ usually sustainable, but verify with the engagement log and frame-drop
 count at the end of playback.
 
 **If you need the chain-recursion fix**, apply
-`patches/vlc-3.0-raise-max-chain-level.patch` to your VLC source and
-rebuild — that's a compile-time patch that raises an internal
-`MAX_CHAIN_LEVEL` constant, not a runtime flag. See [Recipe 2](#recipe-2-transcode-pipeline-bypassing-the-recursion-limit)
+`patches/vlc-3.0-raise-chain-level.patch` to your VLC source and
+rebuild — that's a compile-time patch that raises the internal
+`CHAIN_LEVEL_MAX` constant, not a runtime flag. See [Recipe 2](#recipe-2-transcode-pipeline-bypassing-the-recursion-limit)
 for context on when this is needed.
 
 **Verifying it's working:** the engagement log line shows up at

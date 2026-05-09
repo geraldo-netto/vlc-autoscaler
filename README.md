@@ -280,8 +280,9 @@ decode, VLC's filter chain solver may give up with:
 chain filter error: Too high level of recursion (3)
 ```
 
-This is a **hard-coded limit in VLC core** (`MAX_CHAIN_LEVEL` in
-`src/misc/filter_chain.c`), not something the plugin can fix.
+This is a **hard-coded limit in VLC** (`CHAIN_LEVEL_MAX` in
+`modules/video_chroma/chain.c`, default `2` — error fires at level
+> 2 = 3), not something the plugin can fix.
 
 **Where the recursion actually happens** (verified from a full debug
 log): it's *not* in your `postproc → autoupscale` chain itself. That
@@ -391,11 +392,12 @@ quality.** The workaround below addresses both problems.
    Same upscale-vs-display caveat applies if you use autoupscale via
    `--video-filter`.
 
-4. **Patch VLC's `MAX_CHAIN_LEVEL`.** The most surgical fix if you
-   build VLC yourself. Bump the constant from 3 to 4 or 5 in
-   `src/misc/filter_chain.c` and rebuild. One-line patch — included
-   in this repo at
-   [`patches/vlc-3.0-raise-max-chain-level.patch`](patches/vlc-3.0-raise-max-chain-level.patch).
+4. **Patch VLC's `CHAIN_LEVEL_MAX`.** The most surgical fix if you
+   build VLC yourself. Bump the constant from 2 to 5 in
+   `modules/video_chroma/chain.c` and rebuild. One-line patch —
+   included in this repo at
+   [`patches/vlc-3.0-raise-chain-level.patch`](patches/vlc-3.0-raise-chain-level.patch),
+   verified against VLC 3.0.20.
    Lets `postproc + autoupscale + hwaccel` chains succeed without any
    plugin or filter-syntax changes. Note: this lets the chain
    *construct*, but the upscale-then-downscale waste still happens

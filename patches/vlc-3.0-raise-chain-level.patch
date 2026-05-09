@@ -1,0 +1,49 @@
+vlc: raise chain-filter recursion limit (CHAIN_LEVEL_MAX 2 -> 5)
+
+The chroma chain helper (modules/video_chroma/chain.c) bails out with
+"Too high level of recursion (N)" when constructing chains that need
+more than CHAIN_LEVEL_MAX+1 (= 3) filter levels in series. This bites
+users who combine two pixel-reading filters (e.g. postproc +
+autoupscale) with hardware decode, because VLC must thread a hw->sw
+download converter between the decoder and the first filter, pushing
+the chain to 4 deep:
+
+    HW_decoder -> hw->sw_converter -> postproc -> autoupscale -> vout
+                                          (already 3 levels into recursion)
+
+Bumping CHAIN_LEVEL_MAX from 2 to 5 lets these chains construct
+without any filter or syntax changes from the user's side. Higher
+values risk longer chain-search times in pathological cases but the
+search is bounded by the available filter modules; 5 is conservative.
+
+NB: the constant is named CHAIN_LEVEL_MAX (not MAX_CHAIN_LEVEL) and
+lives in modules/video_chroma/chain.c (not src/misc/filter_chain.c).
+The error is triggered by `level > CHAIN_LEVEL_MAX`, so the limit
+fires one above the constant's value (default 2 -> error at 3).
+
+Apply with:
+
+    cd /path/to/vlc-source        # tag 3.0.20 verified
+    patch -p1 < /path/to/this/file.patch
+
+Then rebuild VLC normally.
+
+This patch is unaffiliated with VideoLAN; it's offered as a workaround
+for a specific deep-chain scenario, not a recommended upstream change.
+If you find it useful, consider sending it upstream with a clear
+reproducer.
+
+---
+
+diff --git a/modules/video_chroma/chain.c b/modules/video_chroma/chain.c
+--- a/modules/video_chroma/chain.c
++++ b/modules/video_chroma/chain.c
+@@ -138,7 +138,7 @@ static picture_t *BufferChainedFilters( filter_t *p_filter )
+     return filter_NewPicture( p_parent );
+ }
+
+-#define CHAIN_LEVEL_MAX 2
++#define CHAIN_LEVEL_MAX 5
+
+ /*****************************************************************************
+  * Activate: allocate a chroma function
