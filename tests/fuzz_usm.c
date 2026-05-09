@@ -22,18 +22,27 @@
 #define FUZZ_MAX_W 96
 #define FUZZ_MAX_H 96
 
-/*
- * Run one iteration with input from `data`. Reads a small struct out of
- * the first ~16 bytes; the rest seeds the source plane.
- */
-static void run_one(const uint8_t *data, size_t size)
+typedef struct {
+    int width;
+    int height;
+    int dst_stride;
+    int src_stride;
+    int amount;
+    int in_place;
+    size_t src_bytes;
+    size_t dst_bytes;
+    size_t ws_bytes;
+} fuzz_params_t;
+
+/* Parse fuzz bytes into geometry/amount/in_place params. Returns 1 on
+ * success, 0 if input too short or workspace size is zero. */
+static int parse_params(const uint8_t *data, size_t size, fuzz_params_t *p)
 {
-    if (size < 12) return;
+    if (size < 12) return 0;
 
     uint16_t u_w, u_h, u_dst_pad, u_src_pad;
     int16_t  i_amount;
-    uint8_t  flag_in_place;
-    uint8_t  flag_zero_amount;
+    uint8_t  flag_in_place, flag_zero_amount;
 
     memcpy(&u_w,        data + 0, 2);
     memcpy(&u_h,        data + 2, 2);
@@ -43,32 +52,23 @@ static void run_one(const uint8_t *data, size_t size)
     flag_in_place    = data[10];
     flag_zero_amount = data[11];
 
-    int width  = (u_w % FUZZ_MAX_W) + 1;
-    int height = (u_h % FUZZ_MAX_H) + 1;
-    int dst_pad = u_dst_pad % 8;          /* 0..7 extra stride padding */
-    int src_pad = u_src_pad % 8;
-    int dst_stride = width + dst_pad;
-    int src_stride = width + src_pad;
-    int amount = (int)i_amount;
-    if (flag_zero_amount & 1) amount = 0;  /* exercise identity path */
+    p->width      = (u_w % FUZZ_MAX_W) + 1;
+    p->height     = (u_h % FUZZ_MAX_H) + 1;
+    p->dst_stride = p->width + (u_dst_pad % 8);
+    p->src_stride = p->width + (u_src_pad % 8);
+    p->amount     = (flag_zero_amount & 1) ? 0 : (int)i_amount;
+    p->in_place   = (flag_in_place & 1) && (p->dst_stride == p->src_stride);
 
-    int in_place = (flag_in_place & 1) && (dst_stride == src_stride);
+    p->src_bytes = (size_t)p->src_stride * (size_t)p->height;
+    p->dst_bytes = (size_t)p->dst_stride * (size_t)p->height;
+    p->ws_bytes  = up_usm_workspace_size(p->width, p->height);
+    return p->ws_bytes != 0;
+}
 
-    size_t src_bytes = (size_t)src_stride * (size_t)height;
-    size_t dst_bytes = (size_t)dst_stride * (size_t)height;
-    size_t ws_bytes  = up_usm_workspace_size(width, height);
-    if (ws_bytes == 0) return;
-
-    uint8_t *src = (uint8_t *)malloc(src_bytes + 1);
-    uint8_t *dst = NULL;
-    uint8_t *ws  = (uint8_t *)malloc(ws_bytes + 1);
-    if (!src || !ws) { free(src); free(ws); return; }
-
-    /* Sentinels at the end to catch one-byte overruns. */
-    src[src_bytes] = 0x5A;
-    ws[ws_bytes]   = 0x5A;
-
-    /* Seed src with whatever's left in `data`, repeated. */
+/* Fill src plane from leftover fuzz bytes (or zero if none). */
+static void seed_src(uint8_t *src, size_t src_bytes,
+                     const uint8_t *data, size_t size)
+{
     if (size > 12) {
         const uint8_t *seed = data + 12;
         size_t seed_n = size - 12;
@@ -77,68 +77,113 @@ static void run_one(const uint8_t *data, size_t size)
     } else {
         memset(src, 0, src_bytes);
     }
+}
 
-    if (in_place) {
-        dst = src;
-    } else {
-        dst = (uint8_t *)malloc(dst_bytes + 1);
-        if (!dst) { free(src); free(ws); return; }
-        dst[dst_bytes] = 0x5A;
-        memset(dst, 0xAB, dst_bytes);
-    }
-
-    /* Save src for later comparison if amount==0. */
-    uint8_t *src_copy = NULL;
-    if (amount == 0 && !in_place) {
-        src_copy = (uint8_t *)malloc(src_bytes);
-        if (src_copy) memcpy(src_copy, src, src_bytes);
-    }
-
-    int rc = up_usm_apply_plane(dst, dst_stride, src, src_stride,
-                                width, height, amount, ws);
-
-    /* Postconditions. */
-    if (rc != 1) abort();  /* All inputs above are valid. */
-
-    /* Sentinels intact. */
+/* Verify trailing sentinel bytes intact. */
+static void check_sentinels(const uint8_t *src, size_t src_bytes,
+                            const uint8_t *ws,  size_t ws_bytes,
+                            const uint8_t *dst, size_t dst_bytes,
+                            int in_place)
+{
     if (src[src_bytes] != 0x5A) abort();
     if (ws[ws_bytes]   != 0x5A) abort();
     if (!in_place && dst[dst_bytes] != 0x5A) abort();
+}
 
-    /* If amount was 0 and we have a copy, dst must equal original src
-     * within the live region, ignoring stride padding. */
-    if (amount == 0 && src_copy != NULL) {
-        for (int y = 0; y < height; y++) {
-            if (memcmp(dst + (size_t)y * dst_stride,
-                       src_copy + (size_t)y * src_stride,
-                       (size_t)width) != 0) abort();
+/* If amount==0, dst live region must equal saved src copy. */
+static void check_identity(const uint8_t *dst, const uint8_t *src_copy,
+                           const fuzz_params_t *p)
+{
+    if (p->amount != 0 || src_copy == NULL) return;
+    for (int y = 0; y < p->height; y++) {
+        if (memcmp(dst + (size_t)y * p->dst_stride,
+                   src_copy + (size_t)y * p->src_stride,
+                   (size_t)p->width) != 0) abort();
+    }
+}
+
+/* Returns 1 if every byte in src live region equals v. */
+static int src_is_constant(const uint8_t *src, const fuzz_params_t *p,
+                           uint8_t v)
+{
+    for (int y = 0; y < p->height; y++) {
+        for (int x = 0; x < p->width; x++) {
+            if (src[(size_t)y * p->src_stride + x] != v) return 0;
         }
     }
+    return 1;
+}
 
-    /* Constant-input check: if all source bytes in the live region equal v,
-     * the output's live region must also equal v (high-pass of constant=0). */
-    {
-        int constant = 1;
-        uint8_t v = src[0];
-        for (int y = 0; y < height && constant; y++) {
-            for (int x = 0; x < width; x++) {
-                if (src[(size_t)y * src_stride + x] != v) {
-                    constant = 0; break;
-                }
-            }
-        }
-        if (constant) {
-            for (int y = 0; y < height; y++) {
-                for (int x = 0; x < width; x++) {
-                    if (dst[(size_t)y * dst_stride + x] != v) abort();
-                }
-            }
+/* High-pass of constant input must be zero, so dst==v in live region. */
+static void check_constant_input(const uint8_t *src, const uint8_t *dst,
+                                 const fuzz_params_t *p)
+{
+    uint8_t v = src[0];
+    if (!src_is_constant(src, p, v)) return;
+    for (int y = 0; y < p->height; y++) {
+        for (int x = 0; x < p->width; x++) {
+            if (dst[(size_t)y * p->dst_stride + x] != v) abort();
         }
     }
+}
 
+/* Run the kernel and verify all postconditions. */
+static void run_kernel_and_check(uint8_t *dst, uint8_t *src, uint8_t *ws,
+                                 const uint8_t *src_copy,
+                                 const fuzz_params_t *p)
+{
+    int rc = up_usm_apply_plane(dst, p->dst_stride, src, p->src_stride,
+                                p->width, p->height, p->amount, ws);
+    if (rc != 1) abort();  /* All inputs above are valid. */
+
+    check_sentinels(src, p->src_bytes, ws, p->ws_bytes,
+                    dst, p->dst_bytes, p->in_place);
+    check_identity(dst, src_copy, p);
+    check_constant_input(src, dst, p);
+}
+
+/*
+ * Run one iteration with input from `data`. Reads a small struct out of
+ * the first ~16 bytes; the rest seeds the source plane.
+ */
+static void run_one(const uint8_t *data, size_t size)
+{
+    fuzz_params_t p;
+    if (!parse_params(data, size, &p)) return;
+
+    uint8_t *src = (uint8_t *)malloc(p.src_bytes + 1);
+    uint8_t *ws  = (uint8_t *)malloc(p.ws_bytes + 1);
+    uint8_t *dst = NULL;
+    uint8_t *src_copy = NULL;
+    if (!src || !ws) goto out;
+
+    /* Sentinels at the end to catch one-byte overruns. */
+    src[p.src_bytes] = 0x5A;
+    ws[p.ws_bytes]   = 0x5A;
+
+    seed_src(src, p.src_bytes, data, size);
+
+    if (p.in_place) {
+        dst = src;
+    } else {
+        dst = (uint8_t *)malloc(p.dst_bytes + 1);
+        if (!dst) goto out;
+        dst[p.dst_bytes] = 0x5A;
+        memset(dst, 0xAB, p.dst_bytes);
+    }
+
+    /* Save src for later comparison if amount==0. */
+    if (p.amount == 0 && !p.in_place) {
+        src_copy = (uint8_t *)malloc(p.src_bytes);
+        if (src_copy) memcpy(src_copy, src, p.src_bytes);
+    }
+
+    run_kernel_and_check(dst, src, ws, src_copy, &p);
+
+out:
     free(ws);
     free(src);
-    if (!in_place) free(dst);
+    if (!p.in_place) free(dst);
     free(src_copy);
 }
 

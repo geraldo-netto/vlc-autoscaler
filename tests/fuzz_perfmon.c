@@ -30,23 +30,63 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Run one trial: parse the fuzz input as a sequence of (target_fps, then
- * a stream of int64_t-encoded sample ns values). Verify invariants. */
-static int run_one(const uint8_t *data, size_t size)
+/* Parse target_fps prefix; advance cursor. Returns 1 if too small. */
+static int parse_target_fps(const uint8_t **data, size_t *size, int *target_fps)
 {
-    /* Need at least target_fps + 1 sample. */
-    if (size < sizeof(int) + sizeof(int64_t)) return 0;
-
-    int target_fps;
-    memcpy(&target_fps, data, sizeof target_fps);
-    data += sizeof target_fps;
-    size -= sizeof target_fps;
+    if (*size < sizeof(int) + sizeof(int64_t)) return 1;
+    memcpy(target_fps, *data, sizeof *target_fps);
+    *data += sizeof *target_fps;
+    *size -= sizeof *target_fps;
 
     /* Constrain to a sane range so the budget arithmetic doesn't overflow.
      * The plugin enforces 0..240 anyway; fuzz a slightly wider band to
      * exercise edge cases. */
-    if (target_fps < 0)    target_fps = -target_fps;  /* abs */
-    if (target_fps > 1000) target_fps = target_fps % 1001;
+    if (*target_fps < 0)    *target_fps = -(*target_fps);  /* abs */
+    if (*target_fps > 1000) *target_fps = *target_fps % 1001;
+    return 0;
+}
+
+/* Pull next int64_t sample. Returns 1 if buffer drained. */
+static int next_sample(const uint8_t **data, size_t *size, int64_t *sample)
+{
+    if (*size < sizeof(int64_t)) return 1;
+    memcpy(sample, *data, sizeof *sample);
+    *data += sizeof *sample;
+    *size -= sizeof *sample;
+    return 0;
+}
+
+/* Validate one record_ns step. Returns 1 on invariant break. */
+static int check_step(up_perfmon_t *pm, int rc, int *warned_count,
+                      int n_samples, int64_t init_budget)
+{
+    if (rc != 0 && rc != 1) {
+        fprintf(stderr, "FAIL: rc=%d (must be 0 or 1)\n", rc);
+        return 1;
+    }
+    if (rc == 1) (*warned_count)++;
+    if (*warned_count > 1) {
+        fprintf(stderr, "FAIL: warned %d times (must be at most 1)\n",
+                *warned_count);
+        return 1;
+    }
+    if (up_perfmon_ewma_us(pm) < 0) {
+        fprintf(stderr, "FAIL: ewma_us<0 after %d samples\n", n_samples);
+        return 1;
+    }
+    if (up_perfmon_budget_us(pm) != init_budget) {
+        fprintf(stderr, "FAIL: budget changed after sample %d\n", n_samples);
+        return 1;
+    }
+    return 0;
+}
+
+/* Run one trial: parse the fuzz input as a sequence of (target_fps, then
+ * a stream of int64_t-encoded sample ns values). Verify invariants. */
+static int run_one(const uint8_t *data, size_t size)
+{
+    int target_fps;
+    if (parse_target_fps(&data, &size, &target_fps)) return 0;
 
     up_perfmon_t pm;
     up_perfmon_init(&pm, target_fps);
@@ -58,33 +98,12 @@ static int run_one(const uint8_t *data, size_t size)
 
     int warned_count = 0;
     int n_samples = 0;
-    while (size >= sizeof(int64_t)) {
-        int64_t sample;
-        memcpy(&sample, data, sizeof sample);
-        data += sizeof sample;
-        size -= sizeof sample;
-
+    int64_t sample;
+    while (!next_sample(&data, &size, &sample)) {
         int rc = up_perfmon_record_ns(&pm, sample);
         n_samples++;
-
-        if (rc != 0 && rc != 1) {
-            fprintf(stderr, "FAIL: rc=%d (must be 0 or 1)\n", rc);
+        if (check_step(&pm, rc, &warned_count, n_samples, init_budget))
             return 1;
-        }
-        if (rc == 1) warned_count++;
-        if (warned_count > 1) {
-            fprintf(stderr, "FAIL: warned %d times (must be at most 1)\n",
-                    warned_count);
-            return 1;
-        }
-        if (up_perfmon_ewma_us(&pm) < 0) {
-            fprintf(stderr, "FAIL: ewma_us<0 after %d samples\n", n_samples);
-            return 1;
-        }
-        if (up_perfmon_budget_us(&pm) != init_budget) {
-            fprintf(stderr, "FAIL: budget changed after sample %d\n", n_samples);
-            return 1;
-        }
     }
     return 0;
 }

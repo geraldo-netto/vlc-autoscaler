@@ -26,6 +26,96 @@
 #include <limits.h>
 #include <limits.h>
 
+static void chk_bypass(int src_w, int src_h, int skip_above,
+                       int preset, int cores, unsigned long mem_mb,
+                       const up_dims_t *out)
+{
+    if (out->width != 0 || out->height != 0) {
+        fprintf(stderr,
+                "INVARIANT: rc=0 but out=(%d,%d) for "
+                "src=(%d,%d) skip=%d preset=%d cores=%d mem=%lu\n",
+                out->width, out->height, src_w, src_h,
+                skip_above, preset, cores, mem_mb);
+        abort();
+    }
+}
+
+static void chk_dim_bounds(const up_dims_t *out)
+{
+    if (out->width <= 0 || out->height <= 0) abort();
+    if (out->width  > UP_MAX_DIM)             abort();
+    if (out->height > UP_MAX_DIM)             abort();
+    if (out->width  & 1) abort();
+    if (out->height & 1) abort();
+}
+
+static void chk_not_downscale(int src_w, int src_h, const up_dims_t *out)
+{
+    if (out->width  < src_w) abort();
+    if (out->height < src_h) abort();
+}
+
+static void chk_aspect(int src_w, int src_h, const up_dims_t *out)
+{
+    /* |src_w*out.height - out.width*src_h|  <=  2*src_h + 4 */
+    int64_t lhs = (int64_t)src_w * (int64_t)out->height;
+    int64_t rhs = (int64_t)out->width * (int64_t)src_h;
+    int64_t diff = lhs - rhs;
+    if (diff < 0) diff = -diff;
+    int64_t slack = 2LL * (int64_t)src_h + 4LL;
+    if (diff > slack) abort();
+}
+
+static void chk_ratio_cap(int src_h, const up_dims_t *out)
+{
+    if (src_h > 0 && src_h <= INT_MAX / UP_MAX_RATIO) {
+        if (out->height > src_h * UP_MAX_RATIO) abort();
+    }
+}
+
+static void chk_auto_ceiling(int src_w, int src_h, int preset,
+                             int cores, unsigned long mem_mb,
+                             const up_dims_t *out)
+{
+    if (preset == UP_TARGET_AUTO && out->height > 1080) {
+        fprintf(stderr,
+                "INVARIANT: AUTO produced height=%d (must be <= 1080) for "
+                "src=(%d,%d) cores=%d mem=%lu\n",
+                out->height, src_w, src_h, cores, mem_mb);
+        abort();
+    }
+}
+
+static int preset_nominal(int preset)
+{
+    switch (preset) {
+        case UP_TARGET_720P:   return  720;
+        case UP_TARGET_1080P:  return 1080;
+        case UP_TARGET_1440P:  return 1440;
+        case UP_TARGET_4K:     return 2160;
+        case UP_TARGET_5K:     return 2880;
+        case UP_TARGET_8K:     return 4320;
+        default:               return 0;
+    }
+}
+
+static void chk_preset_reaches_nominal(int src_h, int preset,
+                                       const up_dims_t *out)
+{
+    int nominal = preset_nominal(preset);
+    if (nominal <= 0 || src_h <= 0 || src_h > INT_MAX / UP_MAX_RATIO) return;
+    int cap = src_h * UP_MAX_RATIO;
+    int expected = (nominal <= cap) ? nominal : cap;
+    if (expected < src_h) expected = src_h;
+    if (out->height + 1 < expected) {
+        fprintf(stderr,
+                "INVARIANT: preset=%d expected height>=%d (cap=%d) "
+                "got %d for src_h=%d\n",
+                preset, expected, cap, out->height, src_h);
+        abort();
+    }
+}
+
 /*
  * Verify the result of up_plan_upscale matches its documented contract.
  * Aborts (which the fuzzer reports as a finding) on any violation.
@@ -35,85 +125,84 @@ static void check_invariants(int src_w, int src_h, int skip_above,
                              int rc, const up_dims_t *out)
 {
     if (rc == 0) {
-        /* On bypass, output must be zeroed. */
-        if (out->width != 0 || out->height != 0) {
-            fprintf(stderr,
-                    "INVARIANT: rc=0 but out=(%d,%d) for "
-                    "src=(%d,%d) skip=%d preset=%d cores=%d mem=%lu\n",
-                    out->width, out->height, src_w, src_h,
-                    skip_above, preset, cores, mem_mb);
-            abort();
-        }
+        chk_bypass(src_w, src_h, skip_above, preset, cores, mem_mb, out);
         return;
     }
+    chk_dim_bounds(out);
+    chk_not_downscale(src_w, src_h, out);
+    chk_aspect(src_w, src_h, out);
+    chk_ratio_cap(src_h, out);
+    chk_auto_ceiling(src_w, src_h, preset, cores, mem_mb, out);
+    chk_preset_reaches_nominal(src_h, preset, out);
+}
 
-    /* rc == 1: an upscale was planned. */
-    if (out->width <= 0 || out->height <= 0) abort();
-    if (out->width  > UP_MAX_DIM)             abort();
-    if (out->height > UP_MAX_DIM)             abort();
+typedef struct {
+    int32_t  src_w, src_h, skip, preset;
+    int      cores;
+    unsigned long mem_mb;
+} fuzz_inputs_t;
 
-    /* Output must be even (chroma alignment). */
-    if (out->width  & 1) abort();
-    if (out->height & 1) abort();
+static int clamp_cores(int32_t v)
+{
+    if (v > INT_MAX) return INT_MAX;
+    if (v < INT_MIN) return INT_MIN;
+    return (int)v;
+}
 
-    /* Result must actually be an upscale, not a downscale. */
-    if (out->width  < src_w) abort();
-    if (out->height < src_h) abort();
+static void parse_inputs(const uint8_t *data, size_t size, fuzz_inputs_t *fi)
+{
+    uint8_t buf[32] = { 0 };
+    size_t n = size < sizeof buf ? size : sizeof buf;
+    if (n > 0) memcpy(buf, data, n);
 
-    /* Aspect-ratio preservation within rounding slack:
-     *   |src_w*out.height - out.width*src_h|  <=  2*src_h + 4
-     * Bound derives from: target_w = src_w*target_h/src_h is floor-divided
-     * (off by <= 1 of the true value, so the cross product diff is <= src_h),
-     * then rounded down to even (off by another 1, so another src_h). */
-    int64_t lhs = (int64_t)src_w * (int64_t)out->height;
-    int64_t rhs = (int64_t)out->width * (int64_t)src_h;
-    int64_t diff = lhs - rhs;
-    if (diff < 0) diff = -diff;
-    int64_t slack = 2LL * (int64_t)src_h + 4LL;
-    if (diff > slack) abort();
+    int32_t i_cores;
+    uint32_t u_mem_mb;
+    memcpy(&fi->src_w,  buf +  0, 4);
+    memcpy(&fi->src_h,  buf +  4, 4);
+    memcpy(&fi->skip,   buf +  8, 4);
+    memcpy(&fi->preset, buf + 12, 4);
+    memcpy(&i_cores,    buf + 16, 4);
+    memcpy(&u_mem_mb,   buf + 20, 4);
 
-    /* Upscale ratio cap: out.height <= UP_MAX_RATIO * src_h. */
-    if (src_h > 0 && src_h <= INT_MAX / UP_MAX_RATIO) {
-        if (out->height > src_h * UP_MAX_RATIO) abort();
+    fi->cores  = clamp_cores(i_cores);
+    fi->mem_mb = (unsigned long)u_mem_mb;
+}
+
+static void check_decide_target_height(const fuzz_inputs_t *fi)
+{
+    int dh = up_decide_target_height(fi->src_h, fi->preset, fi->cores, fi->mem_mb);
+    if (fi->src_h > 0) {
+        if (dh < 0) abort();
+        if (dh != 0 && dh < fi->src_h) abort();
+    } else {
+        if (dh != 0) abort();
     }
 
-    /* --- Design-rule invariants for the resolution ladder --- */
-
-    /* AUTO must never produce output above 1080p. Going higher requires
-     * explicit user opt-in (target=3..6). This is the design ceiling. */
-    if (preset == UP_TARGET_AUTO && out->height > 1080) {
-        fprintf(stderr,
-                "INVARIANT: AUTO produced height=%d (must be <= 1080) for "
-                "src=(%d,%d) cores=%d mem=%lu\n",
-                out->height, src_w, src_h, cores, mem_mb);
-        abort();
-    }
-
-    /* For valid known presets: if no ratio cap binds, the output height
-     * must reach the preset's nominal target. This guards against a
-     * regression where a switch case silently falls through to AUTO. */
-    int nominal = 0;
-    switch (preset) {
-        case UP_TARGET_720P:   nominal =  720; break;
-        case UP_TARGET_1080P:  nominal = 1080; break;
-        case UP_TARGET_1440P:  nominal = 1440; break;
-        case UP_TARGET_4K:     nominal = 2160; break;
-        case UP_TARGET_5K:     nominal = 2880; break;
-        case UP_TARGET_8K:     nominal = 4320; break;
-        default: nominal = 0;  /* AUTO or unknown -> no fixed target */
-    }
-    if (nominal > 0 && src_h > 0 && src_h <= INT_MAX / UP_MAX_RATIO) {
-        int cap = src_h * UP_MAX_RATIO;
-        int expected = (nominal <= cap) ? nominal : cap;
-        if (expected < src_h) expected = src_h;
-        /* Even-rounding can shave 1 pixel; allow that slack. */
-        if (out->height + 1 < expected) {
+    /* Out-of-range presets must behave identically to AUTO. */
+    if (fi->src_h > 0 &&
+        (fi->preset < UP_TARGET_AUTO || fi->preset > UP_TARGET_MAX)) {
+        int dh_auto = up_decide_target_height(fi->src_h, UP_TARGET_AUTO,
+                                              fi->cores, fi->mem_mb);
+        if (dh != dh_auto) {
             fprintf(stderr,
-                    "INVARIANT: preset=%d expected height>=%d (cap=%d) "
-                    "got %d for src_h=%d\n",
-                    preset, expected, cap, out->height, src_h);
+                    "INVARIANT: out-of-range preset=%d gave dh=%d but "
+                    "AUTO gave %d (src_h=%d cores=%d mem=%lu)\n",
+                    fi->preset, dh, dh_auto, fi->src_h, fi->cores, fi->mem_mb);
             abort();
         }
+    }
+}
+
+static void check_compute_target_dims(const fuzz_inputs_t *fi)
+{
+    up_dims_t d2 = { -1, -1 };
+    int rc2 = up_compute_target_dims(fi->src_w, fi->src_h, fi->skip, &d2);
+    if (rc2 == 0) {
+        if (d2.width != 0 || d2.height != 0) abort();
+    } else {
+        if ((d2.width & 1) || (d2.height & 1)) abort();
+        if (d2.width <= 0 || d2.height <= 0) abort();
+        if (d2.width > UP_MAX_DIM || d2.height > UP_MAX_DIM) abort();
     }
 }
 
@@ -123,74 +212,18 @@ static void check_invariants(int src_w, int src_h, int skip_above,
  */
 static void run_one(const uint8_t *data, size_t size)
 {
-    uint8_t buf[32] = { 0 };
-    size_t n = size < sizeof buf ? size : sizeof buf;
-    if (n > 0) memcpy(buf, data, n);
-
-    /* Carve fields out of the buffer. */
-    int32_t i_src_w, i_src_h, i_skip, i_preset;
-    int32_t i_cores;
-    uint32_t u_mem_mb;
-    memcpy(&i_src_w,  buf +  0, 4);
-    memcpy(&i_src_h,  buf +  4, 4);
-    memcpy(&i_skip,   buf +  8, 4);
-    memcpy(&i_preset, buf + 12, 4);
-    memcpy(&i_cores,  buf + 16, 4);
-    memcpy(&u_mem_mb, buf + 20, 4);
-
-    /* Don't artificially constrain - the whole point of a fuzzer is to feed
-     * weird values - but do clamp `cores` to int range so we're testing the
-     * contract, not C type coercion. up_plan_upscale takes int cores in the
-     * new API; up_detect_cores in production already clamps to a sane range. */
-    int cores;
-    if (i_cores > INT_MAX) cores = INT_MAX;
-    else if (i_cores < INT_MIN) cores = INT_MIN;
-    else cores = (int)i_cores;
-    unsigned long mem_mb = (unsigned long)u_mem_mb;
+    fuzz_inputs_t fi;
+    parse_inputs(data, size, &fi);
 
     up_dims_t out = { -1, -1 };
-    int rc = up_plan_upscale(i_src_w, i_src_h, i_skip, i_preset,
-                             cores, mem_mb, &out);
+    int rc = up_plan_upscale(fi.src_w, fi.src_h, fi.skip, fi.preset,
+                             fi.cores, fi.mem_mb, &out);
 
-    check_invariants(i_src_w, i_src_h, i_skip, i_preset,
-                     cores, mem_mb, rc, &out);
+    check_invariants(fi.src_w, fi.src_h, fi.skip, fi.preset,
+                     fi.cores, fi.mem_mb, rc, &out);
 
-    /* Also exercise the helpers individually with the same inputs. */
-    int dh = up_decide_target_height(i_src_h, i_preset, cores, mem_mb);
-    if (i_src_h > 0) {
-        if (dh < 0) abort();
-        if (dh != 0 && dh < i_src_h) abort();
-    } else {
-        if (dh != 0) abort();
-    }
-
-    /* Table-bounds invariant: any preset OUTSIDE the documented range
-     * [UP_TARGET_AUTO, UP_TARGET_MAX] must produce identical output to
-     * UP_TARGET_AUTO. The table-driven dispatch added 2026-05 must not
-     * silently index past UP_PRESET_HEIGHTS. ASan would catch the OOB
-     * read directly; this check catches a logic regression where the
-     * guard is dropped. */
-    if (i_src_h > 0 && (i_preset < UP_TARGET_AUTO || i_preset > UP_TARGET_MAX)) {
-        int dh_auto = up_decide_target_height(i_src_h, UP_TARGET_AUTO,
-                                              cores, mem_mb);
-        if (dh != dh_auto) {
-            fprintf(stderr,
-                    "INVARIANT: out-of-range preset=%d gave dh=%d but "
-                    "AUTO gave %d (src_h=%d cores=%d mem=%lu)\n",
-                    i_preset, dh, dh_auto, i_src_h, cores, mem_mb);
-            abort();
-        }
-    }
-
-    up_dims_t d2 = { -1, -1 };
-    int rc2 = up_compute_target_dims(i_src_w, i_src_h, i_skip, &d2);
-    if (rc2 == 0) {
-        if (d2.width != 0 || d2.height != 0) abort();
-    } else {
-        if ((d2.width & 1) || (d2.height & 1)) abort();
-        if (d2.width <= 0 || d2.height <= 0) abort();
-        if (d2.width > UP_MAX_DIM || d2.height > UP_MAX_DIM) abort();
-    }
+    check_decide_target_height(&fi);
+    check_compute_target_dims(&fi);
 }
 
 /* ---------- libFuzzer entry point ---------- */

@@ -168,6 +168,69 @@ struct usm_pool_s {
  * completion via sem_post(w->done). Phases distinguished by w->phase.
  * Exits cleanly when the main thread sets should_exit = true and posts go.
  * =========================================================================*/
+
+/* Pass 1: horizontal blur every row in our stripe into the shared
+ * workspace. No reads of other workers' rows; no race because each
+ * worker writes a disjoint row range. With USM_POOL_FLAT_SKIP, also
+ * sample the middle row of the stripe to decide whether phase 2 can
+ * short-circuit. */
+static void usm_worker_phase0_hblur(usm_worker_t *w)
+{
+    for (int y = w->y_start; y < w->y_end; y++) {
+        up_usm__hblur_row(
+            w->workspace + (size_t)y * (size_t)w->width,
+            w->src + (size_t)y * (size_t)w->src_stride,
+            w->width);
+    }
+
+#if USM_POOL_FLAT_SKIP
+    {
+        int mid_y = w->y_start + (w->y_end - w->y_start) / 2;
+        uint64_t act = up_usm__row_h_activity(
+            w->src + (size_t)mid_y * (size_t)w->src_stride,
+            w->width);
+        w->flat_skip =
+            (act < (uint64_t)w->width * (uint64_t)USM_FLAT_AVG_DELTA);
+    }
+#endif
+}
+
+/* Stripe was flat in phase 0 → identity copy is bit-identical within
+ * rounding to combine output, since combine adds (src - hblur)*amount
+ * where (src - hblur) ≈ 0 on flat areas. Saves one O(width*stripe_h)
+ * pass of combine kernel. */
+static void usm_worker_phase1_skip_copy(usm_worker_t *w)
+{
+    for (int y = w->y_start; y < w->y_end; y++) {
+        if (w->dst + (size_t)y * (size_t)w->dst_stride
+            != w->src + (size_t)y * (size_t)w->src_stride)
+            memcpy(
+                w->dst + (size_t)y * (size_t)w->dst_stride,
+                w->src + (size_t)y * (size_t)w->src_stride,
+                (size_t)w->width);
+    }
+}
+
+/* Pass 2: combine workspace[y-1, y, y+1] with src to produce dst, on
+ * each row in our stripe. Reads of workspace rows just above y_start
+ * and just below y_end-1 belong to the neighboring workers but are
+ * race-free because pass 1 fully completed before any pass 2 work
+ * began. */
+static void usm_worker_phase1_combine(usm_worker_t *w)
+{
+    for (int y = w->y_start; y < w->y_end; y++) {
+        int yu = (y > 0) ? (y - 1) : 0;
+        int yd = (y < w->height - 1) ? (y + 1) : (w->height - 1);
+        up_usm__combine_row(
+            w->dst + (size_t)y * (size_t)w->dst_stride,
+            w->src + (size_t)y * (size_t)w->src_stride,
+            w->workspace + (size_t)yu * (size_t)w->width,
+            w->workspace + (size_t)y  * (size_t)w->width,
+            w->workspace + (size_t)yd * (size_t)w->width,
+            w->width, w->amount_q8);
+    }
+}
+
 static void *usm_worker_main(void *arg)
 {
     usm_worker_t *w = (usm_worker_t *)arg;
@@ -175,60 +238,13 @@ static void *usm_worker_main(void *arg)
         sem_wait(&w->go);
         if (w->should_exit) break;
 
-        if (w->phase == 0) {
-            /* Pass 1: horizontal blur every row in our stripe into the
-             * shared workspace. No reads of other workers' rows; no
-             * race because each worker writes a disjoint row range. */
-            for (int y = w->y_start; y < w->y_end; y++) {
-                up_usm__hblur_row(
-                    w->workspace + (size_t)y * (size_t)w->width,
-                    w->src + (size_t)y * (size_t)w->src_stride,
-                    w->width);
-            }
+        if (w->phase == 0)
+            usm_worker_phase0_hblur(w);
+        else if (USM_POOL_FLAT_SKIP && w->flat_skip)
+            usm_worker_phase1_skip_copy(w);
+        else
+            usm_worker_phase1_combine(w);
 
-#if USM_POOL_FLAT_SKIP
-            /* Per-stripe flat detection: sample the middle row of the
-             * stripe, decide whether phase 2 can short-circuit. */
-            {
-                int mid_y = w->y_start + (w->y_end - w->y_start) / 2;
-                uint64_t act = up_usm__row_h_activity(
-                    w->src + (size_t)mid_y * (size_t)w->src_stride,
-                    w->width);
-                w->flat_skip =
-                    (act < (uint64_t)w->width * (uint64_t)USM_FLAT_AVG_DELTA);
-            }
-#endif
-        } else if (USM_POOL_FLAT_SKIP && w->flat_skip) {
-            /* Stripe was flat in phase 0 → identity copy is bit-identical
-             * within rounding to combine output, since combine adds
-             * (src - hblur)*amount where (src - hblur) ≈ 0 on flat areas.
-             * Saves one O(width*stripe_h) pass of combine kernel. */
-            for (int y = w->y_start; y < w->y_end; y++) {
-                if (w->dst + (size_t)y * (size_t)w->dst_stride
-                    != w->src + (size_t)y * (size_t)w->src_stride)
-                    memcpy(
-                        w->dst + (size_t)y * (size_t)w->dst_stride,
-                        w->src + (size_t)y * (size_t)w->src_stride,
-                        (size_t)w->width);
-            }
-        } else {
-            /* Pass 2: combine workspace[y-1, y, y+1] with src to produce
-             * dst, on each row in our stripe. Reads of workspace rows
-             * just above y_start and just below y_end-1 belong to the
-             * neighboring workers but are race-free because pass 1
-             * fully completed before any pass 2 work began. */
-            for (int y = w->y_start; y < w->y_end; y++) {
-                int yu = (y > 0) ? (y - 1) : 0;
-                int yd = (y < w->height - 1) ? (y + 1) : (w->height - 1);
-                up_usm__combine_row(
-                    w->dst + (size_t)y * (size_t)w->dst_stride,
-                    w->src + (size_t)y * (size_t)w->src_stride,
-                    w->workspace + (size_t)yu * (size_t)w->width,
-                    w->workspace + (size_t)y  * (size_t)w->width,
-                    w->workspace + (size_t)yd * (size_t)w->width,
-                    w->width, w->amount_q8);
-            }
-        }
         sem_post(w->done);
     }
     return NULL;
@@ -401,18 +417,47 @@ static void usm_pool_run_phase(usm_pool_t *p, int phase)
         sem_wait(&p->done);
 }
 
+static int usm_pool_validate_args(const usm_pool_t *p,
+                                  const uint8_t *dst, int dst_stride,
+                                  const uint8_t *src, int src_stride)
+{
+    if (!p) return -1;
+    if (!dst || !src) return -1;
+    if (dst_stride < p->width || src_stride < p->width) return -1;
+    return 0;
+}
+
+/* Clamp amount, matching up_usm_apply_plane. */
+static int usm_pool_clamp_amount(int amount_q8)
+{
+    if (amount_q8 < 0) return 0;
+    if (amount_q8 > UP_USM_AMOUNT_Q8_MAX) return UP_USM_AMOUNT_Q8_MAX;
+    return amount_q8;
+}
+
+/* Lazy init on first real call. Returns 0 on success (already done or
+ * just succeeded), -1 on prior or fresh failure (sticky). */
+static int usm_pool_ensure_init(usm_pool_t *p)
+{
+    if (p->lazy_init_done) return 0;
+    if (p->lazy_init_failed) return -1;
+    if (usm_pool_lazy_init(p) != 0) {
+        p->lazy_init_failed = true;
+        return -1;
+    }
+    p->lazy_init_done = true;
+    return 0;
+}
+
 int up_usm_pool_apply(usm_pool_t *p,
                       uint8_t *dst, int dst_stride,
                       const uint8_t *src, int src_stride,
                       int amount_q8)
 {
-    if (!p) return -1;
-    if (!dst || !src) return -1;
-    if (dst_stride < p->width || src_stride < p->width) return -1;
+    if (usm_pool_validate_args(p, dst, dst_stride, src, src_stride) != 0)
+        return -1;
 
-    /* Clamp amount, matching up_usm_apply_plane. */
-    if (amount_q8 < 0) amount_q8 = 0;
-    if (amount_q8 > UP_USM_AMOUNT_Q8_MAX) amount_q8 = UP_USM_AMOUNT_Q8_MAX;
+    amount_q8 = usm_pool_clamp_amount(amount_q8);
 
     /* Identity fast path: no thread activity, no workspace alloc. */
     if (amount_q8 == 0) {
@@ -421,15 +466,7 @@ int up_usm_pool_apply(usm_pool_t *p,
         return 0;
     }
 
-    /* Lazy init on first real call. */
-    if (!p->lazy_init_done) {
-        if (p->lazy_init_failed) return -1;
-        if (usm_pool_lazy_init(p) != 0) {
-            p->lazy_init_failed = true;
-            return -1;
-        }
-        p->lazy_init_done = true;
-    }
+    if (usm_pool_ensure_init(p) != 0) return -1;
 
     usm_pool_set_per_frame(p, dst, dst_stride, src, src_stride, amount_q8);
     usm_pool_run_phase(p, 0);  /* pass 1: hblur into workspace */

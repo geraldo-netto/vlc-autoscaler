@@ -78,40 +78,36 @@ static void check_equal_or_abort(const uint8_t *a, const uint8_t *b, size_t n,
     abort();
 }
 
-static void run_one(const uint8_t *data, size_t size)
-{
-    if (size < 8) return;
-    init_features();
+/* Decoded fuzz parameters for a single iteration. */
+typedef struct {
+    int width;
+    int height;
+    int amount;
+    int workers;
+    uint8_t seed;
+} fuzz_params_t;
 
+static void decode_params(const uint8_t *data, fuzz_params_t *p)
+{
     uint16_t u_w, u_h;
     int16_t  i_amount;
-    uint8_t  u_workers;
-    uint8_t  u_seed;
 
-    memcpy(&u_w,       data + 0, 2);
-    memcpy(&u_h,       data + 2, 2);
-    memcpy(&i_amount,  data + 4, 2);
-    u_workers = data[6];
-    u_seed    = data[7];
+    memcpy(&u_w,      data + 0, 2);
+    memcpy(&u_h,      data + 2, 2);
+    memcpy(&i_amount, data + 4, 2);
 
-    int width   = (u_w % FUZZ_MAX_W) + 1;
-    int height  = (u_h % FUZZ_MAX_H) + 1;
-    int amount  = ((int)i_amount % 513) - 1;   /* -1..511 — pool clamps to [0, 256] */
-    if (amount < 0) amount = 0;
-    int workers = (u_workers % 6) + 1;          /* 1..6 workers */
+    p->width   = (u_w % FUZZ_MAX_W) + 1;
+    p->height  = (u_h % FUZZ_MAX_H) + 1;
+    p->amount  = ((int)i_amount % 513) - 1;   /* -1..511 — pool clamps to [0, 256] */
+    if (p->amount < 0) p->amount = 0;
+    p->workers = (data[6] % 6) + 1;            /* 1..6 workers */
+    p->seed    = data[7];
+}
 
-    size_t n = (size_t)width * (size_t)height;
-    uint8_t *src        = malloc(n);
-    uint8_t *dst_sse2   = malloc(n);
-    uint8_t *dst_avx2   = malloc(n);
-    uint8_t *dst_avx512 = malloc(n);
-    if (!src || !dst_sse2 || !dst_avx2 || !dst_avx512) {
-        free(src); free(dst_sse2); free(dst_avx2); free(dst_avx512);
-        return;
-    }
-
-    /* Seed source pattern from u_seed and any tail of the fuzz input. */
-    uint32_t s = 0x9E3779B9u ^ (uint32_t)u_seed;
+static void fill_source(uint8_t *src, size_t n,
+                        const uint8_t *data, size_t size, uint8_t seed)
+{
+    uint32_t s = 0x9E3779B9u ^ (uint32_t)seed;
     if (size > 8) {
         for (size_t k = 8; k < size && k < 8 + 16; k++) s = (s << 5) ^ data[k];
     }
@@ -119,37 +115,66 @@ static void run_one(const uint8_t *data, size_t size)
         s = s * 1664525u + 1013904223u;
         src[i] = (uint8_t)(s >> 16);
     }
+}
 
-    /* Establish reference output via SSE2 (always available). */
-    memset(dst_sse2, 0xCC, n);
-    {
-        usm_pool_t *p = up_usm_pool_create_sse2(workers, width, height, 0);
-        if (!p) goto out;
-        up_usm_pool_apply_sse2(p, dst_sse2, width, src, width, amount);
-        up_usm_pool_destroy_sse2(p);
-    }
+/* Run SSE2 reference. Returns 0 on pool-create failure, 1 on success. */
+static int run_sse2_reference(uint8_t *dst, const uint8_t *src, size_t n,
+                              const fuzz_params_t *p)
+{
+    memset(dst, 0xCC, n);
+    usm_pool_t *pool = up_usm_pool_create_sse2(p->workers, p->width, p->height, 0);
+    if (!pool) return 0;
+    up_usm_pool_apply_sse2(pool, dst, p->width, src, p->width, p->amount);
+    up_usm_pool_destroy_sse2(pool);
+    return 1;
+}
 
-    if (has_avx2) {
-        memset(dst_avx2, 0xCC, n);
-        usm_pool_t *p = up_usm_pool_create_avx2(workers, width, height, 0);
-        if (p) {
-            up_usm_pool_apply_avx2(p, dst_avx2, width, src, width, amount);
-            up_usm_pool_destroy_avx2(p);
-            check_equal_or_abort(dst_sse2, dst_avx2, n, "avx2",
-                                 width, height, amount, workers);
-        }
-    }
+static void run_avx2_and_check(uint8_t *dst, const uint8_t *dst_ref,
+                               const uint8_t *src, size_t n,
+                               const fuzz_params_t *p)
+{
+    memset(dst, 0xCC, n);
+    usm_pool_t *pool = up_usm_pool_create_avx2(p->workers, p->width, p->height, 0);
+    if (!pool) return;
+    up_usm_pool_apply_avx2(pool, dst, p->width, src, p->width, p->amount);
+    up_usm_pool_destroy_avx2(pool);
+    check_equal_or_abort(dst_ref, dst, n, "avx2",
+                         p->width, p->height, p->amount, p->workers);
+}
 
-    if (has_avx512) {
-        memset(dst_avx512, 0xCC, n);
-        usm_pool_t *p = up_usm_pool_create_avx512(workers, width, height, 0);
-        if (p) {
-            up_usm_pool_apply_avx512(p, dst_avx512, width, src, width, amount);
-            up_usm_pool_destroy_avx512(p);
-            check_equal_or_abort(dst_sse2, dst_avx512, n, "avx512",
-                                 width, height, amount, workers);
-        }
-    }
+static void run_avx512_and_check(uint8_t *dst, const uint8_t *dst_ref,
+                                 const uint8_t *src, size_t n,
+                                 const fuzz_params_t *p)
+{
+    memset(dst, 0xCC, n);
+    usm_pool_t *pool = up_usm_pool_create_avx512(p->workers, p->width, p->height, 0);
+    if (!pool) return;
+    up_usm_pool_apply_avx512(pool, dst, p->width, src, p->width, p->amount);
+    up_usm_pool_destroy_avx512(pool);
+    check_equal_or_abort(dst_ref, dst, n, "avx512",
+                         p->width, p->height, p->amount, p->workers);
+}
+
+static void run_one(const uint8_t *data, size_t size)
+{
+    if (size < 8) return;
+    init_features();
+
+    fuzz_params_t p;
+    decode_params(data, &p);
+
+    size_t n = (size_t)p.width * (size_t)p.height;
+    uint8_t *src        = malloc(n);
+    uint8_t *dst_sse2   = malloc(n);
+    uint8_t *dst_avx2   = malloc(n);
+    uint8_t *dst_avx512 = malloc(n);
+    if (!src || !dst_sse2 || !dst_avx2 || !dst_avx512) goto out;
+
+    fill_source(src, n, data, size, p.seed);
+
+    if (!run_sse2_reference(dst_sse2, src, n, &p)) goto out;
+    if (has_avx2)   run_avx2_and_check(dst_avx2, dst_sse2, src, n, &p);
+    if (has_avx512) run_avx512_and_check(dst_avx512, dst_sse2, src, n, &p);
 
 out:
     free(src); free(dst_sse2); free(dst_avx2); free(dst_avx512);

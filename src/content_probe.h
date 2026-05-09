@@ -128,6 +128,43 @@ static inline uint64_t up_laplacian_variance(const uint8_t *plane,
  * pixels. Caller can divide by *n_samples_out for a mean. 0 if input is
  * invalid or the plane is too small to sample.
  */
+/* Vertical block edges: difference between column (k*b - 1) and
+ * column (k*b) at every step-th row. Accumulates into *sum/*n. */
+static inline void up_block_edge_vertical(const uint8_t *plane,
+                                          int stride, int w, int h,
+                                          int b, int step,
+                                          uint64_t *sum, uint64_t *n)
+{
+    for (int y = 0; y < h; y += step) {
+        const uint8_t *row = plane + (size_t)y * (size_t)stride;
+        for (int x = b; x < w; x += b) {
+            int diff = (int)row[x] - (int)row[x - 1];
+            if (diff < 0) diff = -diff;
+            *sum += (uint64_t)diff;
+            (*n)++;
+        }
+    }
+}
+
+/* Horizontal block edges: difference between row (k*b - 1) and
+ * row (k*b) at every step-th column. Accumulates into *sum/*n. */
+static inline void up_block_edge_horizontal(const uint8_t *plane,
+                                            int stride, int w, int h,
+                                            int b, int step,
+                                            uint64_t *sum, uint64_t *n)
+{
+    for (int y = b; y < h; y += b) {
+        const uint8_t *row    = plane + (size_t)y * (size_t)stride;
+        const uint8_t *row_up = row - stride;
+        for (int x = 0; x < w; x += step) {
+            int diff = (int)row[x] - (int)row_up[x];
+            if (diff < 0) diff = -diff;
+            *sum += (uint64_t)diff;
+            (*n)++;
+        }
+    }
+}
+
 static inline uint64_t up_block_edge_strength(const uint8_t *plane,
                                               int stride, int w, int h,
                                               uint64_t *n_samples_out)
@@ -148,29 +185,9 @@ static inline uint64_t up_block_edge_strength(const uint8_t *plane,
     /* UP_PROBE_GRID_STEP and UP_PROBE_BLOCK_SIZE are compile-time
      * constants >= 1; no defensive clamp needed. */
 
-    /* Vertical block edges: difference between column (k*b - 1) and
-     * column (k*b) at every step-th row. */
-    for (int y = 0; y < h; y += step) {
-        const uint8_t *row = plane + (size_t)y * (size_t)stride;
-        for (int x = b; x < w; x += b) {
-            int diff = (int)row[x] - (int)row[x - 1];
-            if (diff < 0) diff = -diff;
-            sum_abs += (uint64_t)diff;
-            n++;
-        }
-    }
-    /* Horizontal block edges: difference between row (k*b - 1) and
-     * row (k*b) at every step-th column. */
-    for (int y = b; y < h; y += b) {
-        const uint8_t *row    = plane + (size_t)y * (size_t)stride;
-        const uint8_t *row_up = row - stride;
-        for (int x = 0; x < w; x += step) {
-            int diff = (int)row[x] - (int)row_up[x];
-            if (diff < 0) diff = -diff;
-            sum_abs += (uint64_t)diff;
-            n++;
-        }
-    }
+    up_block_edge_vertical(plane, stride, w, h, b, step, &sum_abs, &n);
+    up_block_edge_horizontal(plane, stride, w, h, b, step, &sum_abs, &n);
+
     if (n_samples_out) *n_samples_out = n;
     return sum_abs;
 }

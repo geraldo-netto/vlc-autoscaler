@@ -157,18 +157,8 @@ static void check_chroma_class(uint32_t fourcc, uint32_t cls_byte)
     }
 }
 
-static void check_plane_geometry(int w, int h)
+static void check_plane_pitch_lines(int w, int h)
 {
-    /* up_plane_pitch(w, sub_w) and up_plane_lines(h, sub_h) take sub_w/sub_h
-     * as SHIFT EXPONENTS, not divisors:
-     *   sub_w = 0  ->  full width  (luma plane)
-     *   sub_w = 1  ->  half width  (4:2:0/4:2:2 chroma)
-     *   sub_w = 2  ->  quarter (theoretical 4:1:1)
-     * The minimum return is ceil(w / 2^sub_w), padded up for alignment.
-     * The helpers must produce sane values for any valid (w, h). */
-    if (w <= 0 || h <= 0) return;
-    if (w > 65536 || h > 65536) return;  /* skip wildly out-of-range */
-
     int yp = up_plane_pitch(w, 0);      /* luma: full width */
     int yl = up_plane_lines(h, 0);
     int cp = up_plane_pitch(w, 1);      /* 4:2:0 chroma: half width */
@@ -187,13 +177,18 @@ static void check_plane_geometry(int w, int h)
     /* Pitch must be aligned: divisible by UP_PITCH_ALIGN (64). */
     if (yp % UP_PITCH_ALIGN != 0) FAIL("luma pitch %d not 64-aligned for w=%d", yp, w);
     if (cp % UP_PITCH_ALIGN != 0) FAIL("chroma pitch %d not 64-aligned for w=%d", cp, w);
+}
 
-    /* round_up helpers must never shrink. */
+static void check_round_up(int w, int h)
+{
     int rp = up_round_up_pitch(w);
     int rl = up_round_up_lines(h);
     if (rp < w) FAIL("round_up_pitch(%d)=%d < w", w, rp);
     if (rl < h) FAIL("round_up_lines(%d)=%d < h", h, rl);
+}
 
+static void check_zimg_plane_idx_range(void)
+{
     /* zimg plane index is in [0, 2] for any swap value. */
     for (int swap = 0; swap < 2; swap++) {
         for (int idx = 0; idx < 3; idx++) {
@@ -206,66 +201,87 @@ static void check_plane_geometry(int w, int h)
     }
 }
 
-static void check_stripe_partition(int n, int src_h, int dst_h)
+static void check_plane_geometry(int w, int h)
+{
+    /* up_plane_pitch(w, sub_w) and up_plane_lines(h, sub_h) take sub_w/sub_h
+     * as SHIFT EXPONENTS, not divisors:
+     *   sub_w = 0  ->  full width  (luma plane)
+     *   sub_w = 1  ->  half width  (4:2:0/4:2:2 chroma)
+     *   sub_w = 2  ->  quarter (theoretical 4:1:1)
+     * The minimum return is ceil(w / 2^sub_w), padded up for alignment.
+     * The helpers must produce sane values for any valid (w, h). */
+    if (w <= 0 || h <= 0) return;
+    if (w > 65536 || h > 65536) return;  /* skip wildly out-of-range */
+
+    check_plane_pitch_lines(w, h);
+    check_round_up(w, h);
+    check_zimg_plane_idx_range();
+}
+
+static int stripe_partition_skip(int n, int src_h, int dst_h, int *out_max_n)
 {
     /* compute_stripe_bounds(i, n, src_h, dst_h) for i in [0, n) must produce
-     * a non-overlapping, contiguous cover of [0, src_h) and [0, dst_h) —
+     * a non-overlapping, contiguous cover of [0, src_h) and [0, dst_h) -
      * BUT only when the caller honors the production constraint that
      * n_stripes <= dst_h / UP_STRIPE_MIN_DST_LINES. Otherwise stripes can
      * legitimately collapse to zero size; the production caller breaks
      * out of its loop in that case (see scaler_zimg.c around line 390). */
-    if (n <= 0 || n > 64 || src_h <= 0 || dst_h <= 0) return;
-    if (src_h > 65536 || dst_h > 65536) return;
+    if (n <= 0 || n > 64 || src_h <= 0 || dst_h <= 0) return 1;
+    if (src_h > 65536 || dst_h > 65536) return 1;
 
-    /* Mirror the production caller's invariant: clamp n to a value that
-     * actually fits. If we don't, return-0 from compute_stripe_bounds is
-     * a legitimate outcome, not a bug. */
     int max_n_for_dst = dst_h / UP_STRIPE_MIN_DST_LINES;
     if (max_n_for_dst < 1) max_n_for_dst = 1;
-    if (n > max_n_for_dst) return;
-    /* Each src stripe needs at least ~4 raw lines for round-down-to-even
-     * to leave a non-empty range after both endpoints are aligned
-     * independently. With 2, the rounded `src_y_start = floor_even(...)
-     * = 0` and `src_y_end = floor_even(...) = 0` is possible. The exact
-     * boundary depends on dst_h and n; 4 is a safe conservative bound
-     * that matches what the production code's clamp ends up with anyway
-     * (ctx->dst_h / 16 stripes * round trip through src). */
-    if (src_h / n < 4) return;
+    if (n > max_n_for_dst) return 1;
+    if (src_h / n < 4) return 1;
+    *out_max_n = max_n_for_dst;
+    return 0;
+}
+
+static void check_stripe_step(int i, int n, int src_h, int dst_h, int max_n,
+                              int prev_src_end, int prev_dst_end,
+                              int *out_src_end, int *out_dst_end)
+{
+    /* Pre-fill with canaries to catch writes-on-failure. */
+    int s_a = -777, s_b = -777, d_a = -888, d_b = -888;
+    int ok = up_compute_stripe_bounds(i, n, src_h, dst_h,
+                                      &s_a, &s_b, &d_a, &d_b);
+    if (!ok) {
+        FAIL("stripe_bounds returned 0 for valid input "
+             "i=%d n=%d src_h=%d dst_h=%d (max_n=%d, src_h/n=%d)",
+             i, n, src_h, dst_h, max_n, src_h / n);
+    }
+    if (s_a < 0 || s_b > src_h || s_a > s_b) {
+        FAIL("src bounds invalid: i=%d n=%d src_h=%d dst_h=%d "
+             "s_a=%d s_b=%d", i, n, src_h, dst_h, s_a, s_b);
+    }
+    if (d_a < 0 || d_b > dst_h || d_a > d_b) {
+        FAIL("dst bounds invalid: i=%d n=%d src_h=%d dst_h=%d "
+             "d_a=%d d_b=%d", i, n, src_h, dst_h, d_a, d_b);
+    }
+    if (s_a != prev_src_end) {
+        FAIL("src not contiguous: i=%d n=%d src_h=%d s_a=%d prev=%d",
+             i, n, src_h, s_a, prev_src_end);
+    }
+    if (d_a != prev_dst_end) {
+        FAIL("dst not contiguous: i=%d n=%d dst_h=%d d_a=%d prev=%d",
+             i, n, dst_h, d_a, prev_dst_end);
+    }
+    *out_src_end = s_b;
+    *out_dst_end = d_b;
+}
+
+static void check_stripe_partition(int n, int src_h, int dst_h)
+{
+    int max_n_for_dst = 0;
+    if (stripe_partition_skip(n, src_h, dst_h, &max_n_for_dst)) return;
 
     int prev_src_end = 0;
     int prev_dst_end = 0;
     for (int i = 0; i < n; i++) {
-        /* Pre-fill with canaries to catch writes-on-failure. */
-        int s_a = -777, s_b = -777, d_a = -888, d_b = -888;
-        int ok = up_compute_stripe_bounds(i, n, src_h, dst_h,
-                                          &s_a, &s_b, &d_a, &d_b);
-        if (!ok) {
-            FAIL("stripe_bounds returned 0 for valid input "
-                 "i=%d n=%d src_h=%d dst_h=%d (max_n=%d, src_h/n=%d)",
-                 i, n, src_h, dst_h, max_n_for_dst, src_h / n);
-        }
-        /* Bounds must be in range. */
-        if (s_a < 0 || s_b > src_h || s_a > s_b) {
-            FAIL("src bounds invalid: i=%d n=%d src_h=%d dst_h=%d "
-                 "s_a=%d s_b=%d", i, n, src_h, dst_h, s_a, s_b);
-        }
-        if (d_a < 0 || d_b > dst_h || d_a > d_b) {
-            FAIL("dst bounds invalid: i=%d n=%d src_h=%d dst_h=%d "
-                 "d_a=%d d_b=%d", i, n, src_h, dst_h, d_a, d_b);
-        }
-        /* Stripes must be contiguous from previous. */
-        if (s_a != prev_src_end) {
-            FAIL("src not contiguous: i=%d n=%d src_h=%d s_a=%d prev=%d",
-                 i, n, src_h, s_a, prev_src_end);
-        }
-        if (d_a != prev_dst_end) {
-            FAIL("dst not contiguous: i=%d n=%d dst_h=%d d_a=%d prev=%d",
-                 i, n, dst_h, d_a, prev_dst_end);
-        }
-        prev_src_end = s_b;
-        prev_dst_end = d_b;
+        check_stripe_step(i, n, src_h, dst_h, max_n_for_dst,
+                          prev_src_end, prev_dst_end,
+                          &prev_src_end, &prev_dst_end);
     }
-    /* Final stripe must close at the full extents. */
     if (prev_src_end != src_h) {
         FAIL("partition src not closed: n=%d src_h=%d final=%d",
              n, src_h, prev_src_end);
@@ -274,6 +290,19 @@ static void check_stripe_partition(int n, int src_h, int dst_h)
         FAIL("partition dst not closed: n=%d dst_h=%d final=%d",
              n, dst_h, prev_dst_end);
     }
+}
+
+static int stripe_invalid_input(int i, int n, int src_h, int dst_h)
+{
+    /* Compute whether the input is invalid per the documented contract. */
+    return (n <= 0) || (src_h <= 0) || (dst_h <= 0)
+        || (i < 0)  || (i >= n);
+}
+
+static int stripe_canary_unchanged(int s_a, int s_b, int d_a, int d_b)
+{
+    return s_a == 0x4DEAD && s_b == 0x4BEEF
+        && d_a == 0x4CAFE && d_b == 0x4BABE;
 }
 
 static void check_stripe_invalid(int i, int n, int src_h, int dst_h)
@@ -291,25 +320,20 @@ static void check_stripe_invalid(int i, int n, int src_h, int dst_h)
     int ok = up_compute_stripe_bounds(i, n, src_h, dst_h,
                                       &s_a, &s_b, &d_a, &d_b);
 
-    /* Compute whether the input is invalid per the documented contract. */
-    int invalid = (n <= 0) || (src_h <= 0) || (dst_h <= 0)
-               || (i < 0)  || (i >= n);
+    int invalid = stripe_invalid_input(i, n, src_h, dst_h);
 
     if (invalid && ok) {
         FAIL("stripe_bounds accepted invalid input "
              "i=%d n=%d src_h=%d dst_h=%d", i, n, src_h, dst_h);
     }
-    if (!invalid && !ok) {
+    if (!invalid && !ok && stripe_canary_unchanged(s_a, s_b, d_a, d_b)) {
         /* Valid (i, n, src_h, dst_h) by entry-guard rules — but the
          * function may still return 0 for degenerate stripes. Only
          * complain if all four output values are unchanged from the
          * canary, which would indicate the function exited from the
          * entry guard without doing any work despite valid inputs. */
-        if (s_a == 0x4DEAD && s_b == 0x4BEEF
-         && d_a == 0x4CAFE && d_b == 0x4BABE) {
-            FAIL("stripe_bounds rejected valid input without computing: "
-                 "i=%d n=%d src_h=%d dst_h=%d", i, n, src_h, dst_h);
-        }
+        FAIL("stripe_bounds rejected valid input without computing: "
+             "i=%d n=%d src_h=%d dst_h=%d", i, n, src_h, dst_h);
     }
 }
 

@@ -139,6 +139,21 @@ static inline int up_decide_target_height(int src_h, int preset,
 }
 
 /*
+ * Validate the (src_w, src_h, target_h) triple for up_compute_target_dims.
+ * Returns 1 if all three are positive and within UP_MAX_DIM.
+ *
+ * Extracted to keep up_compute_target_dims under the CCN-10 ceiling.
+ */
+static inline int up__dims_inputs_valid(int src_w, int src_h, int target_h)
+{
+    if (src_w <= 0 || src_h <= 0 || target_h <= 0)
+        return 0;
+    if (src_w > UP_MAX_DIM || src_h > UP_MAX_DIM || target_h > UP_MAX_DIM)
+        return 0;
+    return 1;
+}
+
+/*
  * Compute aspect-preserving, even-rounded output dimensions.
  *
  *   src_w, src_h : source dimensions, both > 0
@@ -155,9 +170,7 @@ static inline int up_compute_target_dims(int src_w, int src_h,
     out->width = 0;
     out->height = 0;
 
-    if (src_w <= 0 || src_h <= 0 || target_h <= 0)
-        return 0;
-    if (src_w > UP_MAX_DIM || src_h > UP_MAX_DIM || target_h > UP_MAX_DIM)
+    if (!up__dims_inputs_valid(src_w, src_h, target_h))
         return 0;
 
     /* 64-bit math so we don't overflow on huge inputs. */
@@ -174,6 +187,47 @@ static inline int up_compute_target_dims(int src_w, int src_h,
 
     out->width  = target_w;
     out->height = target_h_even;
+    return 1;
+}
+
+/*
+ * Pre-flight check for up_plan_upscale: validates the source dimensions
+ * and applies the AUTO-only skip_above bypass. Returns 1 if planning
+ * should proceed, 0 if the filter must bypass.
+ *
+ * Extracted to keep up_plan_upscale under the CCN-10 ceiling.
+ */
+static inline int up__plan_inputs_ok(int src_w, int src_h, int skip_above,
+                                     int preset)
+{
+    if (src_w <= 0 || src_h <= 0)
+        return 0;
+    if (src_w > UP_MAX_DIM || src_h > UP_MAX_DIM)
+        return 0;
+    /* skip_above only applies to AUTO. If the user explicitly asked for a
+     * specific target, respect it even when the source is already HD —
+     * e.g. preset=4K should upscale a 1080p source to 4K. */
+    if (preset == UP_TARGET_AUTO && skip_above > 0 && src_h >= skip_above)
+        return 0;
+    return 1;
+}
+
+/*
+ * Post-condition check for up_plan_upscale results. Verifies the
+ * computed output dims are >= src in both axes and strictly larger
+ * in at least one. Returns 1 if the plan is a real upscale.
+ *
+ * The "both axes >= src" guard catches the pathological aspect-ratio
+ * case where even-rounding the width drops it below src_w (e.g. src
+ * 3x1024 -> 2x1080). Found by libFuzzer; see tests/fuzz_upscale_logic.c.
+ */
+static inline int up__plan_result_ok(int src_w, int src_h,
+                                     const up_dims_t *out)
+{
+    if (out->width < src_w || out->height < src_h)
+        return 0;
+    if (out->width == src_w && out->height == src_h)
+        return 0;
     return 1;
 }
 
@@ -198,14 +252,7 @@ static inline int up_plan_upscale(int src_w, int src_h, int skip_above,
     out->width = 0;
     out->height = 0;
 
-    if (src_w <= 0 || src_h <= 0)
-        return 0;
-    if (src_w > UP_MAX_DIM || src_h > UP_MAX_DIM)
-        return 0;
-    /* skip_above only applies to AUTO. If the user explicitly asked for a
-     * specific target, respect it even when the source is already HD —
-     * e.g. preset=4K should upscale a 1080p source to 4K. */
-    if (preset == UP_TARGET_AUTO && skip_above > 0 && src_h >= skip_above)
+    if (!up__plan_inputs_ok(src_w, src_h, skip_above, preset))
         return 0;
 
     int target_h = up_decide_target_height(src_h, preset, cores, mem_mb);
@@ -215,17 +262,7 @@ static inline int up_plan_upscale(int src_w, int src_h, int skip_above,
     if (!up_compute_target_dims(src_w, src_h, target_h, out))
         return 0;
 
-    /* Final guarantee: result must be at least as large as the source in
-     * BOTH axes. Even-rounding the width can otherwise produce a smaller
-     * value for pathological aspect ratios (e.g. src 3x1024 -> 2x1080).
-     * Found by libFuzzer; see tests/fuzz_upscale_logic.c. */
-    if (out->width < src_w || out->height < src_h) {
-        out->width = 0;
-        out->height = 0;
-        return 0;
-    }
-    /* And one of them must be strictly larger, otherwise it's a no-op. */
-    if (out->width == src_w && out->height == src_h) {
+    if (!up__plan_result_ok(src_w, src_h, out)) {
         out->width = 0;
         out->height = 0;
         return 0;

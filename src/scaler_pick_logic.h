@@ -39,6 +39,39 @@ typedef int (*up_supports_fn)(uint32_t chroma, int algo);
  * We expose them as parallel arrays so this header doesn't need to
  * know about the rest of the backend struct. */
 
+static inline const void *up_pick_zimg_if_ok(
+    const void *zimg_handle, up_supports_fn zimg_supports,
+    uint32_t chroma, int algo)
+{
+    if (zimg_handle && zimg_supports && zimg_supports(chroma, algo))
+        return zimg_handle;
+    return NULL;
+}
+
+static inline const void *up_pick_swscale_if_ok(
+    const void *swscale_handle, up_supports_fn swscale_supports,
+    uint32_t chroma, int algo)
+{
+    if (swscale_supports(chroma, algo))
+        return swscale_handle;
+    return NULL;
+}
+
+static inline const void *up_pick_auto(
+    const void *zimg_handle, up_supports_fn zimg_supports,
+    const void *swscale_handle, up_supports_fn swscale_supports,
+    uint32_t chroma, int algo)
+{
+    /* Try zimg first (better quality, supports Spline36).
+     * Fall through to swscale on any miss. */
+    const void *z = up_pick_zimg_if_ok(zimg_handle, zimg_supports,
+                                       chroma, algo);
+    if (z)
+        return z;
+    return up_pick_swscale_if_ok(swscale_handle, swscale_supports,
+                                 chroma, algo);
+}
+
 /*
  * Pure dispatch. zimg_handle may be NULL (e.g. when libzimg wasn't
  * linked). swscale_handle must not be NULL. zimg_supports and
@@ -56,26 +89,16 @@ static inline const void *up_scaler_pick_with(
 
     switch (pref) {
         case SCALER_PICK_ZIMG:
-            if (zimg_handle && zimg_supports
-             && zimg_supports(chroma, algo))
-                return zimg_handle;
-            return NULL;
-
+            return up_pick_zimg_if_ok(zimg_handle, zimg_supports,
+                                      chroma, algo);
         case SCALER_PICK_SWSCALE:
-            if (swscale_supports(chroma, algo))
-                return swscale_handle;
-            return NULL;
-
+            return up_pick_swscale_if_ok(swscale_handle, swscale_supports,
+                                         chroma, algo);
         case SCALER_PICK_AUTO:
         default:
-            /* Try zimg first (better quality, supports Spline36).
-             * Fall through to swscale on any miss. */
-            if (zimg_handle && zimg_supports
-             && zimg_supports(chroma, algo))
-                return zimg_handle;
-            if (swscale_supports(chroma, algo))
-                return swscale_handle;
-            return NULL;
+            return up_pick_auto(zimg_handle, zimg_supports,
+                                swscale_handle, swscale_supports,
+                                chroma, algo);
     }
 }
 

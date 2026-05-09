@@ -80,6 +80,95 @@ typedef struct {
     const char *name;
 } stress_config_t;
 
+typedef struct {
+    uint8_t *src;
+    uint8_t *dst_st;
+    uint8_t *dst_mt;
+    uint8_t *ws;
+} stress_bufs_t;
+
+/* Allocate the four per-config buffers. Returns 0 on success, -1 on
+ * malloc failure (in which case any partial allocations are freed). */
+static int alloc_bufs(stress_bufs_t *b, size_t plane_size)
+{
+    b->src    = malloc(plane_size);
+    b->dst_st = malloc(plane_size);
+    b->dst_mt = malloc(plane_size);
+    b->ws     = malloc(plane_size);
+    if (!b->src || !b->dst_st || !b->dst_mt || !b->ws) return -1;
+    return 0;
+}
+
+static void free_bufs(stress_bufs_t *b)
+{
+    free(b->src); free(b->dst_st); free(b->dst_mt); free(b->ws);
+}
+
+/* Run one frame: refill src, run reference + pool, compare. Returns
+ * the number of differing bytes, or SIZE_MAX if the pool apply failed. */
+static size_t run_one_frame(const stress_config_t *cfg, stress_bufs_t *b,
+                            usm_pool_t *pool, int amount, int frame,
+                            size_t plane_size)
+{
+    /* Fresh src each frame — defeats any pointer-caching bug. */
+    fill_xorshift(b->src, plane_size, 0xDEADBEEFu + (uint32_t)frame * 7919);
+
+    /* Single-threaded reference. */
+    memset(b->dst_st, 0, plane_size);
+    memset(b->ws, 0, plane_size);
+    up_usm_apply_plane(b->dst_st, cfg->width, b->src, cfg->width,
+                       cfg->width, cfg->height, amount, b->ws);
+
+    /* Multi-threaded: same input, must produce identical output. */
+    memset(b->dst_mt, 0xAA, plane_size);  /* poison: catch unwritten regions */
+    if (up_usm_pool_apply(pool, b->dst_mt, cfg->width, b->src, cfg->width,
+                          amount) != 0) {
+        return (size_t)-1;
+    }
+
+    return byte_diff(b->dst_st, b->dst_mt, plane_size);
+}
+
+/* Drive cfg->frames through pool. Sets *diverged_frames and
+ * *total_diff_bytes. Returns 0 on success, -1 on apply failure. */
+static int drive_frames(const stress_config_t *cfg, stress_bufs_t *b,
+                        usm_pool_t *pool, int amount, size_t plane_size,
+                        int *diverged_frames, size_t *total_diff_bytes)
+{
+    *diverged_frames = 0;
+    *total_diff_bytes = 0;
+    for (int frame = 0; frame < cfg->frames; frame++) {
+        size_t d = run_one_frame(cfg, b, pool, amount, frame, plane_size);
+        if (d == (size_t)-1) {
+            printf("APPLY FAILED at frame %d\n", frame);
+            return -1;
+        }
+        if (d == 0) continue;
+        (*diverged_frames)++;
+        *total_diff_bytes += d;
+        if (*diverged_frames <= 3)
+            printf("\n    frame %d: %zu bytes differ", frame, d);
+    }
+    return 0;
+}
+
+static void report_result(const stress_config_t *cfg, int diverged_frames,
+                          size_t total_diff_bytes, double elapsed_ms,
+                          int *rc)
+{
+    if (diverged_frames > 0) {
+        if (diverged_frames > 3)
+            printf("\n    ...total %d frames diverged, %zu bytes",
+                   diverged_frames, total_diff_bytes);
+        printf("\n    FAIL\n");
+        *rc = -1;
+    } else if (*rc == 0) {
+        printf("OK  (%d frames, %.0f ms, %.2f us/frame)\n",
+               cfg->frames, elapsed_ms,
+               (elapsed_ms * 1000.0) / cfg->frames);
+    }
+}
+
 /* Run one stress configuration. Returns 0 on success, -1 on any
  * divergence or pool failure. */
 static int run_config(const stress_config_t *cfg)
@@ -94,78 +183,39 @@ static int run_config(const stress_config_t *cfg)
         return -1;
     }
 
-    /* Allocate buffers. ws is the single-threaded workspace. */
-    uint8_t *src    = malloc(plane_size);
-    uint8_t *dst_st = malloc(plane_size);
-    uint8_t *dst_mt = malloc(plane_size);
-    uint8_t *ws     = malloc(plane_size);
-    if (!src || !dst_st || !dst_mt || !ws) {
-        free(src); free(dst_st); free(dst_mt); free(ws);
+    stress_bufs_t b;
+    if (alloc_bufs(&b, plane_size) != 0) {
+        free_bufs(&b);
         printf("MALLOC FAILED\n");
         return -1;
     }
 
     usm_pool_t *pool = up_usm_pool_create(cfg->n_threads, cfg->width, cfg->height, 0);
     if (!pool) {
-        free(src); free(dst_st); free(dst_mt); free(ws);
+        free_bufs(&b);
         printf("POOL CREATE FAILED\n");
         return -1;
     }
 
     int rc = 0;
+    int diverged_frames = 0;
     size_t total_diff_bytes = 0;
-    int    diverged_frames = 0;
-
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    for (int frame = 0; frame < cfg->frames; frame++) {
-        /* Fresh src each frame — defeats any pointer-caching bug. */
-        fill_xorshift(src, plane_size, 0xDEADBEEFu + (uint32_t)frame * 7919);
-
-        /* Single-threaded reference. */
-        memset(dst_st, 0, plane_size);
-        memset(ws, 0, plane_size);
-        up_usm_apply_plane(dst_st, cfg->width, src, cfg->width,
-                           cfg->width, cfg->height, amount, ws);
-
-        /* Multi-threaded: same input, must produce identical output. */
-        memset(dst_mt, 0xAA, plane_size);  /* poison: catch unwritten regions */
-        if (up_usm_pool_apply(pool, dst_mt, cfg->width, src, cfg->width,
-                              amount) != 0) {
-            printf("APPLY FAILED at frame %d\n", frame);
-            rc = -1;
-            break;
-        }
-
-        size_t d = byte_diff(dst_st, dst_mt, plane_size);
-        if (d != 0) {
-            diverged_frames++;
-            total_diff_bytes += d;
-            if (diverged_frames <= 3) {
-                printf("\n    frame %d: %zu bytes differ", frame, d);
-            }
-        }
+    if (drive_frames(cfg, &b, pool, amount, plane_size,
+                     &diverged_frames, &total_diff_bytes) != 0) {
+        rc = -1;
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
     double elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000.0
                       + (t1.tv_nsec - t0.tv_nsec) / 1.0e6;
 
-    if (diverged_frames > 0) {
-        if (diverged_frames > 3)
-            printf("\n    ...total %d frames diverged, %zu bytes",
-                   diverged_frames, total_diff_bytes);
-        printf("\n    FAIL\n");
-        rc = -1;
-    } else if (rc == 0) {
-        printf("OK  (%d frames, %.0f ms, %.2f us/frame)\n",
-               cfg->frames, elapsed_ms,
-               (elapsed_ms * 1000.0) / cfg->frames);
-    }
+    report_result(cfg, diverged_frames, total_diff_bytes, elapsed_ms, &rc);
 
     up_usm_pool_destroy(pool);
-    free(src); free(dst_st); free(dst_mt); free(ws);
+    free_bufs(&b);
     return rc;
 }
 

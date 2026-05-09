@@ -29,75 +29,121 @@ static void fill_xs(uint8_t *buf, size_t n, uint32_t seed)
     uint32_t s = seed; for (size_t i = 0; i < n; i++) buf[i] = (uint8_t)xs32(&s);
 }
 
-int main(int argc, char **argv)
+struct bench_args {
+    int n_threads;
+    int width;
+    int height;
+    int frames;
+    int amount_pct;
+    const char *fill;
+    int mode; /* 0=rand, 1=flat, 2=mixed */
+};
+
+static int parse_fill_mode(const char *fill)
+{
+    if (!strcmp(fill, "rand"))  return 0;
+    if (!strcmp(fill, "flat"))  return 1;
+    if (!strcmp(fill, "mixed")) return 2;
+    return -1;
+}
+
+static int args_in_range(const struct bench_args *a)
+{
+    return a->n_threads >= 1 && a->width >= 8
+        && a->height >= 8 && a->frames >= 1;
+}
+
+static int parse_args(int argc, char **argv, struct bench_args *a)
 {
     if (argc < 4) {
         fprintf(stderr, "usage: %s <threads> <width> <height> [frames] [amount]\n", argv[0]);
         return 2;
     }
-    int  n_threads  = atoi(argv[1]);
-    int  width      = atoi(argv[2]);
-    int  height     = atoi(argv[3]);
-    int  frames     = (argc >= 5) ? atoi(argv[4]) : 100;
-    int  amount_pct = (argc >= 6) ? atoi(argv[5]) : 30;
-    const char *fill = (argc >= 7) ? argv[6] : "rand";
+    a->n_threads  = atoi(argv[1]);
+    a->width      = atoi(argv[2]);
+    a->height     = atoi(argv[3]);
+    a->frames     = (argc >= 5) ? atoi(argv[4]) : 100;
+    a->amount_pct = (argc >= 6) ? atoi(argv[5]) : 30;
+    a->fill       = (argc >= 7) ? argv[6] : "rand";
 
-    if (n_threads < 1 || width < 8 || height < 8 || frames < 1) {
+    if (!args_in_range(a)) {
         fprintf(stderr, "bad args\n"); return 2;
     }
-
-    int amount = up_usm_amount_pct_to_q8(amount_pct);
-    size_t plane = (size_t)width * (size_t)height;
-
-    uint8_t *src = aligned_alloc(64, plane);
-    uint8_t *dst = aligned_alloc(64, plane);
-    if (!src || !dst) { fprintf(stderr, "alloc fail\n"); return 1; }
-
-    usm_pool_t *pool = up_usm_pool_create(n_threads, width, height, 0);
-    if (!pool) { fprintf(stderr, "pool create fail\n"); return 1; }
-
-    /* Fill src for one frame according to mode. */
-    void (*fill_frame)(uint8_t *, size_t, uint32_t, int, int);
-    int mode_rand  = !strcmp(fill, "rand");
-    int mode_flat  = !strcmp(fill, "flat");
-    int mode_mixed = !strcmp(fill, "mixed");
-    if (!mode_rand && !mode_flat && !mode_mixed) {
-        fprintf(stderr, "unknown fill mode '%s'\n", fill); return 2;
+    a->mode = parse_fill_mode(a->fill);
+    if (a->mode < 0) {
+        fprintf(stderr, "unknown fill mode '%s'\n", a->fill); return 2;
     }
-    (void)fill_frame;
+    return 0;
+}
 
-    /* Pre-warm: 5 throwaway frames so worker threads + pages settle. */
+static void fill_frame(uint8_t *src, int width, int height, int mode, int i)
+{
+    size_t plane = (size_t)width * (size_t)height;
+    if (mode == 0) {
+        fill_xs(src, plane, 0xDEADBEEFu + (uint32_t)i * 2654435761u);
+    } else if (mode == 1) {
+        memset(src, 128 + (i & 7), plane);
+    } else {
+        size_t half = (size_t)width * (size_t)(height / 2);
+        memset(src, 128 + (i & 7), half);
+        fill_xs(src + half, plane - half,
+                0xDEADBEEFu + (uint32_t)i * 2654435761u);
+    }
+}
+
+static int run_warmup(usm_pool_t *pool, uint8_t *src, uint8_t *dst,
+                      int width, size_t plane, int amount)
+{
     for (int i = 0; i < 5; i++) {
         fill_xs(src, plane, 0xC0FFEEu + (uint32_t)i);
         if (up_usm_pool_apply(pool, dst, width, src, width, amount) != 0) {
             fprintf(stderr, "warm apply fail\n"); return 1;
         }
     }
+    return 0;
+}
 
+static int run_timed(usm_pool_t *pool, uint8_t *src, uint8_t *dst,
+                     const struct bench_args *a, int amount, double *us_per_frame)
+{
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    for (int i = 0; i < frames; i++) {
-        if (mode_rand) {
-            fill_xs(src, plane, 0xDEADBEEFu + (uint32_t)i * 2654435761u);
-        } else if (mode_flat) {
-            memset(src, 128 + (i & 7), plane);  /* near-constant grey */
-        } else { /* mixed: top half flat, bottom half random */
-            size_t half = (size_t)width * (size_t)(height / 2);
-            memset(src, 128 + (i & 7), half);
-            fill_xs(src + half, plane - half,
-                    0xDEADBEEFu + (uint32_t)i * 2654435761u);
-        }
-        if (up_usm_pool_apply(pool, dst, width, src, width, amount) != 0) {
+    for (int i = 0; i < a->frames; i++) {
+        fill_frame(src, a->width, a->height, a->mode, i);
+        if (up_usm_pool_apply(pool, dst, a->width, src, a->width, amount) != 0) {
             fprintf(stderr, "apply fail at frame %d\n", i); return 1;
         }
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
     double el_ns = (t1.tv_sec - t0.tv_sec) * 1.0e9 + (t1.tv_nsec - t0.tv_nsec);
-    double us_per_frame = (el_ns / 1000.0) / (double)frames;
+    *us_per_frame = (el_ns / 1000.0) / (double)a->frames;
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    struct bench_args a;
+    int rc = parse_args(argc, argv, &a);
+    if (rc) return rc;
+
+    int amount = up_usm_amount_pct_to_q8(a.amount_pct);
+    size_t plane = (size_t)a.width * (size_t)a.height;
+
+    uint8_t *src = aligned_alloc(64, plane);
+    uint8_t *dst = aligned_alloc(64, plane);
+    if (!src || !dst) { fprintf(stderr, "alloc fail\n"); return 1; }
+
+    usm_pool_t *pool = up_usm_pool_create(a.n_threads, a.width, a.height, 0);
+    if (!pool) { fprintf(stderr, "pool create fail\n"); return 1; }
+
+    if (run_warmup(pool, src, dst, a.width, plane, amount) != 0) return 1;
+
+    double us_per_frame = 0.0;
+    if (run_timed(pool, src, dst, &a, amount, &us_per_frame) != 0) return 1;
 
     printf("%d,%d,%d,%d,%d,%s,%.2f\n",
-           n_threads, width, height, frames, amount_pct, fill, us_per_frame);
+           a.n_threads, a.width, a.height, a.frames, a.amount_pct, a.fill, us_per_frame);
 
     up_usm_pool_destroy(pool);
     free(src); free(dst);
