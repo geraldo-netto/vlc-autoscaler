@@ -284,6 +284,31 @@ static void test_apply_amount_zero_unified_stride_fast_path(void)
     END();
 }
 
+static void check_strided_padding_byte(const uint8_t *buf, int W, int H,
+                                       int STRIDE, uint8_t expected)
+{
+    for (int y = 0; y < H; y++) {
+        for (int x = W; x < STRIDE; x++) {
+            CHECK_EQ(buf[y * STRIDE + x], expected);
+        }
+    }
+}
+
+static void check_strided_slow_path_result(const uint8_t *dst, const uint8_t *src,
+                                            int W, int H, int STRIDE)
+{
+    /* Visible region: must equal src. */
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            CHECK_EQ(dst[y * STRIDE + x], src[y * STRIDE + x]);
+        }
+    }
+    /* dst padding: must still be 0xAB (untouched by the slow path). */
+    check_strided_padding_byte(dst, W, H, STRIDE, 0xAB);
+    /* src padding: must still be 0xCC (read-only). */
+    check_strided_padding_byte(src, W, H, STRIDE, 0xCC);
+}
+
 static void test_apply_amount_zero_strided_slow_path(void)
 {
     BEGIN("amount=0 slow path: stride > width -> row loop, padding preserved");
@@ -301,24 +326,7 @@ static void test_apply_amount_zero_strided_slow_path(void)
     int rc = up_usm_apply_plane(dst, STRIDE, src, STRIDE, W, H, 0, ws);
     CHECK_EQ(rc, 1);
 
-    /* Visible region: must equal src. */
-    for (int y = 0; y < H; y++) {
-        for (int x = 0; x < W; x++) {
-            CHECK_EQ(dst[y * STRIDE + x], src[y * STRIDE + x]);
-        }
-    }
-    /* dst padding: must still be 0xAB (untouched by the slow path). */
-    for (int y = 0; y < H; y++) {
-        for (int x = W; x < STRIDE; x++) {
-            CHECK_EQ(dst[y * STRIDE + x], 0xAB);
-        }
-    }
-    /* src padding: must still be 0xCC (read-only). */
-    for (int y = 0; y < H; y++) {
-        for (int x = W; x < STRIDE; x++) {
-            CHECK_EQ(src[y * STRIDE + x], 0xCC);
-        }
-    }
+    check_strided_slow_path_result(dst, src, W, H, STRIDE);
     END();
 }
 

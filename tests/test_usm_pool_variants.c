@@ -272,6 +272,26 @@ static void test_unusual_dimensions(void)
     END();
 }
 
+/* Run one prepared source buffer through all available variants and
+ * byte-compare. Centralizes the alloc/run/cmp/free dance so each pattern
+ * case stays linear. */
+static void check_pattern(const uint8_t *src, int w, int h,
+                          int n_workers, int amount_q8)
+{
+    size_t n = (size_t)w*h;
+    uint8_t *dst1 = malloc(n), *dst2 = malloc(n), *dst3 = malloc(n);
+    run_sse2(dst1, src, n_workers, w, h, amount_q8);
+    if (has_avx2) {
+        run_avx2(dst2, src, n_workers, w, h, amount_q8);
+        CHECK(memcmp(dst1, dst2, n) == 0);
+    }
+    if (has_avx512) {
+        run_avx512(dst3, src, n_workers, w, h, amount_q8);
+        CHECK(memcmp(dst1, dst3, n) == 0);
+    }
+    free(dst1); free(dst2); free(dst3);
+}
+
 static void test_content_patterns(void)
 {
     /* Different content might exercise different code paths in the
@@ -282,51 +302,24 @@ static void test_content_patterns(void)
     size_t n = (size_t)w*h;
     uint8_t *src = malloc(n);
     memset(src, 128, n);
-    uint8_t *dst1 = malloc(n), *dst2 = malloc(n), *dst3 = malloc(n);
-    run_sse2(dst1, src, 2, w, h, 76);
-    if (has_avx2) {
-        run_avx2(dst2, src, 2, w, h, 76);
-        CHECK(memcmp(dst1, dst2, n) == 0);
-    }
-    if (has_avx512) {
-        run_avx512(dst3, src, 2, w, h, 76);
-        CHECK(memcmp(dst1, dst3, n) == 0);
-    }
-    free(src); free(dst1); free(dst2); free(dst3);
+    check_pattern(src, w, h, 2, 76);
+    free(src);
     END();
 
     BEGIN("checkerboard (high-frequency)");
     w = 256; h = 256; n = (size_t)w*h;
     src = malloc(n);
     for (size_t i = 0; i < n; i++) src[i] = ((i + i/(size_t)w) & 1) ? 255 : 0;
-    dst1 = malloc(n); dst2 = malloc(n); dst3 = malloc(n);
-    run_sse2(dst1, src, 2, w, h, 128);
-    if (has_avx2) {
-        run_avx2(dst2, src, 2, w, h, 128);
-        CHECK(memcmp(dst1, dst2, n) == 0);
-    }
-    if (has_avx512) {
-        run_avx512(dst3, src, 2, w, h, 128);
-        CHECK(memcmp(dst1, dst3, n) == 0);
-    }
-    free(src); free(dst1); free(dst2); free(dst3);
+    check_pattern(src, w, h, 2, 128);
+    free(src);
     END();
 
     BEGIN("ramp (gradient — exercises clamp at edges)");
     w = 256; h = 8; n = (size_t)w*h;
     src = malloc(n);
     for (size_t i = 0; i < n; i++) src[i] = (uint8_t)(i & 0xff);
-    dst1 = malloc(n); dst2 = malloc(n); dst3 = malloc(n);
-    run_sse2(dst1, src, 1, w, h, 200);
-    if (has_avx2) {
-        run_avx2(dst2, src, 1, w, h, 200);
-        CHECK(memcmp(dst1, dst2, n) == 0);
-    }
-    if (has_avx512) {
-        run_avx512(dst3, src, 1, w, h, 200);
-        CHECK(memcmp(dst1, dst3, n) == 0);
-    }
-    free(src); free(dst1); free(dst2); free(dst3);
+    check_pattern(src, w, h, 1, 200);
+    free(src);
     END();
 }
 

@@ -129,7 +129,7 @@ static inline uint64_t up_laplacian_variance(const uint8_t *plane,
  * invalid or the plane is too small to sample.
  */
 /* Vertical block edges: difference between column (k*b - 1) and
- * column (k*b) at every step-th row. Accumulates into *sum/*n. */
+ * column (k*b) at every step-th row. Accumulates into sum and n. */
 static inline void up_block_edge_vertical(const uint8_t *plane,
                                           int stride, int w, int h,
                                           int b, int step,
@@ -147,7 +147,7 @@ static inline void up_block_edge_vertical(const uint8_t *plane,
 }
 
 /* Horizontal block edges: difference between row (k*b - 1) and
- * row (k*b) at every step-th column. Accumulates into *sum/*n. */
+ * row (k*b) at every step-th column. Accumulates into sum and n. */
 static inline void up_block_edge_horizontal(const uint8_t *plane,
                                             int stride, int w, int h,
                                             int b, int step,

@@ -168,6 +168,19 @@ static void parse_inputs(const uint8_t *data, size_t size, fuzz_inputs_t *fi)
     fi->mem_mb = (unsigned long)u_mem_mb;
 }
 
+static void chk_dh_oor_matches_auto(const fuzz_inputs_t *fi, int dh)
+{
+    int dh_auto = up_decide_target_height(fi->src_h, UP_TARGET_AUTO,
+                                          fi->cores, fi->mem_mb);
+    if (dh != dh_auto) {
+        fprintf(stderr,
+                "INVARIANT: out-of-range preset=%d gave dh=%d but "
+                "AUTO gave %d (src_h=%d cores=%d mem=%lu)\n",
+                fi->preset, dh, dh_auto, fi->src_h, fi->cores, fi->mem_mb);
+        abort();
+    }
+}
+
 static void check_decide_target_height(const fuzz_inputs_t *fi)
 {
     int dh = up_decide_target_height(fi->src_h, fi->preset, fi->cores, fi->mem_mb);
@@ -181,16 +194,15 @@ static void check_decide_target_height(const fuzz_inputs_t *fi)
     /* Out-of-range presets must behave identically to AUTO. */
     if (fi->src_h > 0 &&
         (fi->preset < UP_TARGET_AUTO || fi->preset > UP_TARGET_MAX)) {
-        int dh_auto = up_decide_target_height(fi->src_h, UP_TARGET_AUTO,
-                                              fi->cores, fi->mem_mb);
-        if (dh != dh_auto) {
-            fprintf(stderr,
-                    "INVARIANT: out-of-range preset=%d gave dh=%d but "
-                    "AUTO gave %d (src_h=%d cores=%d mem=%lu)\n",
-                    fi->preset, dh, dh_auto, fi->src_h, fi->cores, fi->mem_mb);
-            abort();
-        }
+        chk_dh_oor_matches_auto(fi, dh);
     }
+}
+
+static void chk_ctd_nonzero(const up_dims_t *d2)
+{
+    if ((d2->width & 1) || (d2->height & 1)) abort();
+    if (d2->width <= 0 || d2->height <= 0) abort();
+    if (d2->width > UP_MAX_DIM || d2->height > UP_MAX_DIM) abort();
 }
 
 static void check_compute_target_dims(const fuzz_inputs_t *fi)
@@ -200,9 +212,7 @@ static void check_compute_target_dims(const fuzz_inputs_t *fi)
     if (rc2 == 0) {
         if (d2.width != 0 || d2.height != 0) abort();
     } else {
-        if ((d2.width & 1) || (d2.height & 1)) abort();
-        if (d2.width <= 0 || d2.height <= 0) abort();
-        if (d2.width > UP_MAX_DIM || d2.height > UP_MAX_DIM) abort();
+        chk_ctd_nonzero(&d2);
     }
 }
 

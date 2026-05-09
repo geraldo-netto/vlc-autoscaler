@@ -118,19 +118,9 @@ static uint32_t pick_chroma(uint32_t cls_byte, uint32_t garbage_seed)
 
 /* ---- invariant checkers ---- */
 
-static void check_chroma_class(uint32_t fourcc, uint32_t cls_byte)
+static void check_known_class(uint32_t fourcc, uint32_t cls_byte,
+                               bool opaque, bool yplane)
 {
-    bool opaque = up_chroma_is_opaque(fourcc);
-    bool yplane = up_chroma_has_y_plane(fourcc);
-
-    /* CRITICAL: a chroma can be opaque OR has-y-plane, never both.
-     * Y-plane sharpening on opaque GPU surfaces would be a use-after-
-     * read-of-uninitialized-memory at best, a segfault at worst. */
-    if (opaque && yplane) {
-        FAIL("fourcc 0x%08x is BOTH opaque and has-y-plane", fourcc);
-    }
-
-    /* Cross-check known classes. */
     switch (cls_byte % CC_COUNT) {
         case CC_OPAQUE:
             if (!opaque) {
@@ -155,6 +145,21 @@ static void check_chroma_class(uint32_t fourcc, uint32_t cls_byte)
             /* For garbage, just check the mutual-exclusion above. */
             break;
     }
+}
+
+static void check_chroma_class(uint32_t fourcc, uint32_t cls_byte)
+{
+    bool opaque = up_chroma_is_opaque(fourcc);
+    bool yplane = up_chroma_has_y_plane(fourcc);
+
+    /* CRITICAL: a chroma can be opaque OR has-y-plane, never both.
+     * Y-plane sharpening on opaque GPU surfaces would be a use-after-
+     * read-of-uninitialized-memory at best, a segfault at worst. */
+    if (opaque && yplane) {
+        FAIL("fourcc 0x%08x is BOTH opaque and has-y-plane", fourcc);
+    }
+
+    check_known_class(fourcc, cls_byte, opaque, yplane);
 }
 
 static void check_plane_pitch_lines(int w, int h)
@@ -218,6 +223,13 @@ static void check_plane_geometry(int w, int h)
     check_zimg_plane_idx_range();
 }
 
+static int stripe_inputs_out_of_range(int n, int src_h, int dst_h)
+{
+    if (n <= 0 || n > 64 || src_h <= 0 || dst_h <= 0) return 1;
+    if (src_h > 65536 || dst_h > 65536) return 1;
+    return 0;
+}
+
 static int stripe_partition_skip(int n, int src_h, int dst_h, int *out_max_n)
 {
     /* compute_stripe_bounds(i, n, src_h, dst_h) for i in [0, n) must produce
@@ -226,8 +238,7 @@ static int stripe_partition_skip(int n, int src_h, int dst_h, int *out_max_n)
      * n_stripes <= dst_h / UP_STRIPE_MIN_DST_LINES. Otherwise stripes can
      * legitimately collapse to zero size; the production caller breaks
      * out of its loop in that case (see scaler_zimg.c around line 390). */
-    if (n <= 0 || n > 64 || src_h <= 0 || dst_h <= 0) return 1;
-    if (src_h > 65536 || dst_h > 65536) return 1;
+    if (stripe_inputs_out_of_range(n, src_h, dst_h)) return 1;
 
     int max_n_for_dst = dst_h / UP_STRIPE_MIN_DST_LINES;
     if (max_n_for_dst < 1) max_n_for_dst = 1;
@@ -235,6 +246,19 @@ static int stripe_partition_skip(int n, int src_h, int dst_h, int *out_max_n)
     if (src_h / n < 4) return 1;
     *out_max_n = max_n_for_dst;
     return 0;
+}
+
+static void check_stripe_bounds_range(int i, int n, int src_h, int dst_h,
+                                       int s_a, int s_b, int d_a, int d_b)
+{
+    if (s_a < 0 || s_b > src_h || s_a > s_b) {
+        FAIL("src bounds invalid: i=%d n=%d src_h=%d dst_h=%d "
+             "s_a=%d s_b=%d", i, n, src_h, dst_h, s_a, s_b);
+    }
+    if (d_a < 0 || d_b > dst_h || d_a > d_b) {
+        FAIL("dst bounds invalid: i=%d n=%d src_h=%d dst_h=%d "
+             "d_a=%d d_b=%d", i, n, src_h, dst_h, d_a, d_b);
+    }
 }
 
 static void check_stripe_step(int i, int n, int src_h, int dst_h, int max_n,
@@ -250,14 +274,7 @@ static void check_stripe_step(int i, int n, int src_h, int dst_h, int max_n,
              "i=%d n=%d src_h=%d dst_h=%d (max_n=%d, src_h/n=%d)",
              i, n, src_h, dst_h, max_n, src_h / n);
     }
-    if (s_a < 0 || s_b > src_h || s_a > s_b) {
-        FAIL("src bounds invalid: i=%d n=%d src_h=%d dst_h=%d "
-             "s_a=%d s_b=%d", i, n, src_h, dst_h, s_a, s_b);
-    }
-    if (d_a < 0 || d_b > dst_h || d_a > d_b) {
-        FAIL("dst bounds invalid: i=%d n=%d src_h=%d dst_h=%d "
-             "d_a=%d d_b=%d", i, n, src_h, dst_h, d_a, d_b);
-    }
+    check_stripe_bounds_range(i, n, src_h, dst_h, s_a, s_b, d_a, d_b);
     if (s_a != prev_src_end) {
         FAIL("src not contiguous: i=%d n=%d src_h=%d s_a=%d prev=%d",
              i, n, src_h, s_a, prev_src_end);

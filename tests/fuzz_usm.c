@@ -142,6 +142,33 @@ static void run_kernel_and_check(uint8_t *dst, uint8_t *src, uint8_t *ws,
     check_constant_input(src, dst, p);
 }
 
+/* Set up dst plane (alias src for in-place, fresh alloc otherwise) and
+ * snapshot src when amount==0. Returns 1 on success, 0 on alloc failure. */
+static int setup_dst_and_copy(uint8_t *src, const fuzz_params_t *p,
+                              uint8_t **dst_out, uint8_t **src_copy_out)
+{
+    uint8_t *dst = NULL;
+    uint8_t *src_copy = NULL;
+
+    if (p->in_place) {
+        dst = src;
+    } else {
+        dst = (uint8_t *)malloc(p->dst_bytes + 1);
+        if (!dst) return 0;
+        dst[p->dst_bytes] = 0x5A;
+        memset(dst, 0xAB, p->dst_bytes);
+    }
+
+    if (p->amount == 0 && !p->in_place) {
+        src_copy = (uint8_t *)malloc(p->src_bytes);
+        if (src_copy) memcpy(src_copy, src, p->src_bytes);
+    }
+
+    *dst_out = dst;
+    *src_copy_out = src_copy;
+    return 1;
+}
+
 /*
  * Run one iteration with input from `data`. Reads a small struct out of
  * the first ~16 bytes; the rest seeds the source plane.
@@ -163,20 +190,7 @@ static void run_one(const uint8_t *data, size_t size)
 
     seed_src(src, p.src_bytes, data, size);
 
-    if (p.in_place) {
-        dst = src;
-    } else {
-        dst = (uint8_t *)malloc(p.dst_bytes + 1);
-        if (!dst) goto out;
-        dst[p.dst_bytes] = 0x5A;
-        memset(dst, 0xAB, p.dst_bytes);
-    }
-
-    /* Save src for later comparison if amount==0. */
-    if (p.amount == 0 && !p.in_place) {
-        src_copy = (uint8_t *)malloc(p.src_bytes);
-        if (src_copy) memcpy(src_copy, src, p.src_bytes);
-    }
+    if (!setup_dst_and_copy(src, &p, &dst, &src_copy)) goto out;
 
     run_kernel_and_check(dst, src, ws, src_copy, &p);
 
