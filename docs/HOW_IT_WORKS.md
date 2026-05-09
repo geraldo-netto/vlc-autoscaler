@@ -48,7 +48,9 @@ leave the filter enabled globally without paying any cost on HD content.
 1. Reads `i_visible_width` / `i_visible_height` from the input format
    (falls back to `i_width` / `i_height` if visible isn't set).
 2. Reads the module options (`target`, `algo`, `skip-above`, `usm`,
-   `backend`, `target-fps`, `threads`).
+   `backend`, `target-fps`, `threads`, `zerocopy-dst`, `content-probe`,
+   `usm-stripe-min-rows`, `zimg-stripe-lines`, `usm-skip-sharp`,
+   `usm-sharp-threshold`).
 3. Calls `DetectHardware()` to get core count and total RAM.
 4. Calls `up_plan_upscale()` from `upscale_logic.h` to decide whether to
    engage and, if so, what target dimensions to use. This is where all the
@@ -236,8 +238,8 @@ Two passes over the plane:
    output picture.
 
 `amount` is in Q8 fixed point so the inner loop has no floating-point
-ops. The user-facing option `--autoupscale-usm` is a percentage; 30%
-(the default) is `amount_q8 = 76`, 100% is `256`, 200% is `512`.
+ops. The user-facing option `--autoupscale-usm` is a percentage; 20%
+(the default) is `amount_q8 = 51`, 100% is `256`, 200% is `512`.
 
 **Why luma only.** Sharpening the chroma planes amplifies noise in the
 colour difference signal, which shows up as colour fringing on high-
@@ -260,8 +262,17 @@ about 0.6 ns/pixel scalar-equivalent; a 1080p Y plane (≈ 2.07 MP)
 costs ~1.17 ms per frame single-threaded through `up_usm_pool_apply`
 (median of 5 trials, 800 iters each). The threaded pool brings this
 down to ~0.23 ms with 8 stripes — about 1.4 % of a 60 fps budget.
-Numbers are for amount=76 (the default 30 % USM); identity
+Numbers are for amount=51 (the default 20 % USM); identity
 (`amount==0`) takes a memcpy fast path with no thread activity.
+
+**Per-deployment tunables.** `up_usm_pool_create()` takes a
+`stripe_min_rows` argument (`0` = compile-time default `8`) wired to
+`--autoupscale-usm-stripe-min-rows`. The zimg backend reads
+`scaler_ctx_t.zimg_stripe_min_lines` (`0` = default `16`) wired to
+`--autoupscale-zimg-stripe-lines`. Lower values let more workers fit
+on low-resolution frames at the cost of dispatch overhead; higher
+values give better load balance on tall frames. Defaults match the
+historical hardcoded constants and are right for almost everyone.
 
 ### Threaded USM (`src/usm_pool.h`, `src/usm_pool.c`)
 
@@ -302,6 +313,26 @@ during VLC's chain solving cost nothing for USM.
 short-circuits to a memcpy (or no-op when src and dst alias) with no
 thread activity and no workspace allocation. So `--autoupscale-usm=0`
 truly disables USM at zero cost, even if the pool was created.
+
+**Auto-skip on grainy sources.** Independent of `amount`, the plugin
+also bypasses USM after the content probe completes (frame ~60) when
+the source's mean Laplacian variance exceeds
+`UP_PROBE_THRESH_SHARP_LAP_MEAN` (default `3500`, exposed as
+`--autoupscale-usm-sharp-threshold`). On heavily textured / grainy
+content USM amplifies the noise without adding perceived sharpness, so
+the plugin sets a `usm_skip_sharp` flag in `filter_sys_t` and
+`ApplyUsmIfEnabled()` returns early thereafter. Toggle with
+`--autoupscale-usm-skip-sharp=0` to keep USM on regardless of source.
+
+**Optional flat-skip (compile-time).** The pool also has an opt-in
+per-stripe early-out (`-DUSM_POOL_FLAT_SKIP=1` at compile time): each
+worker samples its stripe's middle row in pass 1, and if horizontal
+activity is below `USM_FLAT_AVG_DELTA` (≈ 2/255 average neighbour
+difference) the pass-2 combine kernel is replaced by an identity copy.
+Defaults to off because the implicit byte-identity guarantee against
+the single-threaded reference is dropped (per-pixel delta of up to a
+few LSB on borderline-flat content). Useful for benchmarking and for
+content-specific builds where letterbox / fade-to-black dominate.
 
 **Correctness verification.** The crucial invariant is that pool
 output equals single-threaded output bit-for-bit. This is enforced by
@@ -515,6 +546,16 @@ On clean grainy 480p content the metrics typically read lap-mean
 800–2000 and edge-mean 1–4, so the advisory doesn't fire. On heavily
 artifact-ridden web-rips the metrics shift toward lap-mean 200–400
 and edge-mean 8–15, where the advisory IS appropriate.
+
+The same accumulator drives a second decision:
+`up_should_skip_usm_for_sharpness()` returns true when `lap_mean`
+exceeds `UP_PROBE_THRESH_SHARP_LAP_MEAN` (default `3500`, above the
+clean-grainy 800–2000 band so it triggers only on actively
+over-detailed sources — film grain, high-noise sensors, etc.). When
+that fires the plugin sets `filter_sys_t.usm_skip_sharp`, and every
+subsequent `ApplyUsmIfEnabled()` returns early. Both knobs are exposed
+as VLC options (`--autoupscale-usm-skip-sharp` to toggle,
+`--autoupscale-usm-sharp-threshold` to retune).
 
 ### Verification
 
@@ -1088,3 +1129,40 @@ finding and minimizes the input. During development of
 `fuzz_frame_shape`, this loop caught two real bugs in the test
 harness itself — proving that the invariants are tight enough to
 distinguish "wrong test" from "correct code".
+
+### Bench tooling
+
+`tests/bench_usm_pool.c` is a standalone perf bench separate from the
+correctness tests. It accepts `<threads> <width> <height> [frames]
+[amount] [fill]` and prints one CSV line of µs/frame, with
+warmup-and-discard handling so worker-spawn and first-touch page
+faults don't pollute the timed loop. Three fill modes (`rand` /
+`flat` / `mixed`) drive different content patterns through the
+kernels — useful when measuring the effect of compile-time toggles
+like `USM_POOL_FLAT_SKIP`.
+
+`scripts/bench_matrix.sh` sweeps a `(threads × resolution)` grid
+(threads ∈ {1, 4, 8, 12, 16, 20}; resolution ∈ {720p, 1080p, 1440p})
+and emits a CSV row per cell with the median of 3 runs. Used to A/B
+the pool against itself across configurations during development.
+
+### Coverage
+
+`make coverage` builds a separate `cov/` test binary set with
+`--coverage -fprofile-arcs -ftest-coverage`, runs them, then prints
+per-file gcov summaries via `scripts/coverage_report.sh`. The script
+fails the build if any tracked file falls below 80 % line coverage.
+Total tracked coverage at the time of writing is 93.9 %, with the
+lowest tracked file (`usm_pool.c`) at 88.8 %. `usm_pool.h` shows
+`-%` because it's a pure-API header (zero executable lines), not a
+coverage gap — see the project README for the explanation.
+
+### Cyclomatic complexity
+
+`lizard` is the standard tool. `make analyze` runs cppcheck only;
+complexity is enforced manually as a project rule: every function in
+`src/` must have CCN ≤ 10, and every function in `tests/` must have
+CCN ≤ 9. Verified by `lizard -C 11 src` (warns at 11+) and
+`lizard -C 10 tests` (warns at 10+). Helpers extracted for
+complexity stay `static` (or `static inline` for header-only modules)
+and live in the same file as their caller.

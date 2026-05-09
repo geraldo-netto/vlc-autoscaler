@@ -228,7 +228,7 @@ vlc --autoupscale-threads=24 \
   - 1 = Bicubic
   - 2 = Lanczos
   - 3 = Spline36 (recommended for upscaling)
-- `--autoupscale-usm=50` — stronger sharpening (default 30). Range 0-200.
+- `--autoupscale-usm=50` — stronger sharpening (default 20). Range 0-200.
   At 50, edges are visibly crisper; at 100 it starts to look "digital";
   at 200 it produces ringing.
 - `--autoupscale-content-probe=1` — diagnostic logging on. The probe
@@ -240,7 +240,7 @@ vlc --autoupscale-threads=24 \
   (see Recipe 9).
 
 **Cost:**
-- USM at 50% costs ~2× the default 30%
+- USM at 50% costs ~2.5× the default 20%
 - Spline36 is already default, so no change there
 - The copy-out path adds ~1-2 ms per frame at 1080p
 
@@ -696,7 +696,7 @@ Expected output:
 
 ```
 AutoUpscale engaged: 854x480 -> 1280x720 (backend=zimg preset=0 algo=3 \
-  usm=30 fps_target=60 threads=14 cores=32 mem=...MB simd=avx512)
+  usm=20 fps_target=60 threads=14 cores=32 mem=...MB simd=avx512)
 ```
 
 The `simd=avx512` confirms the runtime dispatcher picked the AVX-512

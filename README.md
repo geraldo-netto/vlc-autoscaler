@@ -4,10 +4,11 @@ A VLC video filter that detects sub-720p video and upscales it in real time
 to 720p or 1080p, picking the target automatically from available CPU and
 RAM (or by explicit override).
 
-The actual scaling is done with **libswscale** (FFmpeg's resampler, which
-VLC already links against). It supports fast bilinear, bicubic, and Lanczos.
-Lanczos is the default — it's the cleanest of the three while still being
-fast enough for real-time playback on modest hardware.
+The scaling is done by either **libzimg** (preferred when present) or
+**libswscale** (FFmpeg's resampler, which VLC already links against).
+zimg adds Spline36 to the bilinear / bicubic / Lanczos lineup. Spline36
+is the default — sharper than Lanczos for upscaling with less ringing,
+and still fast enough for real-time playback on modest hardware.
 
 > **Note.** This is a classical-DSP upscaler, not an AI one. It cannot
 > "invent" detail that wasn't in the source the way Real-ESRGAN or Anime4K
@@ -24,6 +25,8 @@ fast enough for real-time playback on modest hardware.
 | libFuzzer (60s × 5 in CI, seeded)      | 0 crashes; corpora accelerate discovery ~2× |
 | Concurrency stress (ASan + TSan)       | 19 configs, ~935 frames, 0 races        |
 | `cppcheck` (warning + style)           | clean                                   |
+| Cyclomatic complexity (lizard)         | all src + tests ≤ 10; tests ≤ 9         |
+| Line coverage (`make coverage`)        | 93.9% total, every tracked file ≥ 80%   |
 | Plugin compiles against VLC 3.0.20     | clean, no warnings                      |
 | Live transcode (zimg + swscale)        | verified end-to-end up to 8K            |
 | GitHub Actions CI                      | runs on push/PR to `main` and `develop` |
@@ -92,17 +95,21 @@ setup: enable once, leave it on, only sub-HD content is touched.
 
 ## Options
 
-| Option                       | Range  | Default | Meaning                                                  |
-|------------------------------|--------|---------|----------------------------------------------------------|
-| `--autoupscale-target`       | 0–6    | 0       | 0 = auto (720p/1080p based on HW), 1 = 720p, 2 = 1080p, 3 = 1440p, 4 = 4K, 5 = 5K, 6 = 8K. AUTO never picks above 1080p — higher targets must be explicit. All targets are subject to a 4× linear ratio cap relative to source. |
-| `--autoupscale-algo`         | 0–3    | **3**   | 0 = bilinear, 1 = bicubic, 2 = lanczos, **3 = spline36** |
-| `--autoupscale-skip-above`   | 1+     | 720     | Source heights ≥ this value are passed through untouched |
-| `--autoupscale-usm`          | 0–200  | 30      | Unsharp-mask amount (%) applied to luma post-upscale     |
-| `--autoupscale-backend`      | 0–2    | 0       | 0 = auto (zimg → swscale), 1 = zimg only, 2 = swscale only |
-| `--autoupscale-target-fps`   | 0–240  | 60      | Per-frame work over `1 / target_fps` triggers a one-time tuning hint. 0 disables monitoring. |
-| `--autoupscale-threads`      | 0–64   | 0       | Slice the frame into N horizontal stripes processed in parallel. 0 = auto (`cores/2 − 2`), 1 = single-threaded, 2..64 = explicit. |
-| `--autoupscale-zerocopy-dst` | 0–1    | **1**   | 1 = workers write directly into VLC's destination picture (default). Saves ~125 µs/frame at 1080p. Set to 0 to use the copy-out path if you see garbled output or crashes. |
-| `--autoupscale-content-probe`| 0–1    | **1**   | 1 = run the diagnostic content probe on the first ~60 frames to detect heavily-compressed soft sources where upscaling actively hurts. Logs a one-time advisory when triggered. Observe-only — never modifies output. 0 = skip the probe. |
+| Option                              | Range  | Default | Meaning                                                  |
+|-------------------------------------|--------|---------|----------------------------------------------------------|
+| `--autoupscale-target`              | 0–6    | 0       | 0 = auto (720p/1080p based on HW), 1 = 720p, 2 = 1080p, 3 = 1440p, 4 = 4K, 5 = 5K, 6 = 8K. AUTO never picks above 1080p — higher targets must be explicit. All targets are subject to a 4× linear ratio cap relative to source. |
+| `--autoupscale-algo`                | 0–3    | **3**   | 0 = bilinear, 1 = bicubic, 2 = lanczos, **3 = spline36** |
+| `--autoupscale-skip-above`          | 1+     | 720     | Source heights ≥ this value are passed through untouched |
+| `--autoupscale-usm`                 | 0–200  | **20**  | Unsharp-mask amount (%) applied to luma post-upscale     |
+| `--autoupscale-backend`             | 0–2    | 0       | 0 = auto (zimg → swscale), 1 = zimg only, 2 = swscale only |
+| `--autoupscale-target-fps`          | 0–240  | 60      | Per-frame work over `1 / target_fps` triggers a one-time tuning hint. 0 disables monitoring. |
+| `--autoupscale-threads`             | 0–64   | 0       | Slice the frame into N horizontal stripes processed in parallel. 0 = auto (`cores/2 − 2`), 1 = single-threaded, 2..64 = explicit. |
+| `--autoupscale-zerocopy-dst`        | 0–1    | **1**   | 1 = workers write directly into VLC's destination picture (default). Saves ~125 µs/frame at 1080p. Set to 0 to use the copy-out path if you see garbled output or crashes. |
+| `--autoupscale-content-probe`       | 0–1    | **1**   | 1 = run the diagnostic content probe on the first ~60 frames to detect heavily-compressed soft sources where upscaling actively hurts. Logs a one-time advisory when triggered. Observe-only — never modifies output. 0 = skip the probe. |
+| `--autoupscale-usm-stripe-min-rows` | 0–256  | 0       | Minimum rows per USM worker stripe (0 = compile-time default 8). Smaller values let more workers fit on low-res frames at the cost of dispatch overhead. |
+| `--autoupscale-zimg-stripe-lines`   | 0–128  | 0       | Minimum dst lines per zimg worker stripe (0 = compile-time default 16). Same trade-off as above for the scaler backend. |
+| `--autoupscale-usm-skip-sharp`      | 0–1    | **1**   | 1 = after the probe completes, if the source is heavily textured/grainy (lap_mean above the sharp threshold), the USM post-pass is skipped for the rest of playback (USM amplifies grain on such content). 0 = always run USM. |
+| `--autoupscale-usm-sharp-threshold` | 500–20000 | 3500 | Mean Laplacian-variance threshold used by `usm-skip-sharp`. Lower = trip more aggressively (skip USM on more sources). Higher = trip rarely (USM stays on most content). |
 
 The plugin defaults to **Spline36 on zimg** — the highest-quality
 combination available. On systems without zimg, swscale transparently
@@ -135,7 +142,7 @@ build prints `zimg backend: ENABLED` or `disabled` so you know which.
 ### Performance auto-tuning
 
 The plugin defaults to the **highest-quality** settings (zimg + Spline36
-+ luma USM at 30%) and watches its own per-frame processing time. If the
++ luma USM at 20%) and watches its own per-frame processing time. If the
 exponentially-weighted average of frame work exceeds your target
 (`--autoupscale-target-fps`, default 60), the plugin emits a one-time
 hint with concrete tuning suggestions:
@@ -143,7 +150,7 @@ hint with concrete tuning suggestions:
 ```
 autoupscale filter: AutoUpscale engaged: 854x480 -> 1920x1080 (backend=zimg algo=3 ...)
 autoupscale filter: Performance warning: avg frame work is 22341 us, exceeding the
-                    60 FPS budget of 16666 us (backend=zimg algo=3 usm=30).
+                    60 FPS budget of 16666 us (backend=zimg algo=3 usm=20).
 autoupscale filter:   To tune down, try (in order of decreasing quality cost):
 autoupscale filter:     --autoupscale-algo=2   (lanczos: similar quality, faster)
 autoupscale filter:     --autoupscale-algo=1   (bicubic: noticeably faster, slight quality drop)
@@ -206,10 +213,17 @@ lines a user can fall back to `--autoupscale-threads=1`.
 
 The USM (unsharp mask) post-pass compensates for any resampler's slight
 softening, applied as a 3×3 separable Gaussian high-pass on the luma
-plane only. Defaults to 30% (subtle); 100% gives a clearly sharper
+plane only. Defaults to 20% (subtle); 100% gives a clearly sharper
 look, 200% is aggressive. Only applied to YUV chromas — sharpening
 packed RGB or chroma planes causes visible colour fringing on edges.
 Set to `0` to disable.
+
+The plugin also detects heavily textured/grainy sources after the first
+~60 frames (via the content probe's Laplacian-variance metric) and
+auto-skips the USM post-pass for those, since USM on grainy content
+amplifies noise without adding perceived sharpness. Tunable through
+`--autoupscale-usm-skip-sharp` (master toggle) and
+`--autoupscale-usm-sharp-threshold` (sensitivity).
 
 **Threaded USM.** USM uses the same worker count as the scaler
 (`--autoupscale-threads`). The luma plane is partitioned into N
@@ -447,12 +461,14 @@ src/
   usm.h                   pure unsharp-mask post-pass (header-only)
   usm_pool.h              public API for the threaded USM worker pool
   usm_pool.c              threaded USM implementation (lazy worker spawn)
+  usm_pool_dispatch.c     runtime SSE2/AVX2/AVX-512 dispatcher (MULTIVERSION=1)
   perfmon.h               pure EWMA perf monitor (header-only)
   threading.h             pure thread-count decision (header-only)
   zimg_helpers.h          pure pitch/lines/plane/stripe-bounds helpers
   chroma_classify.h       pure hwaccel/Y-plane chroma predicates
   scaler_zimg_chroma.h    pure chroma->zimg-subsample mapping (extracted for fuzzing)
   content_probe.h         pure no-reference quality probe (Laplacian + block-edge)
+  scaler_pick_logic.h     pure backend-dispatch logic (extracted for testing)
   scaler.h                backend interface
   scaler.c                backend picker (auto / zimg / swscale)
   scaler_swscale.c        libswscale backend (universal fallback)
@@ -463,10 +479,15 @@ tests/
   test_*.c                unit tests for each pure header (no framework)
   fuzz_*.c                libFuzzer + deterministic smoke targets (one source each)
   stress_usm_pool.c       concurrency stress, runs under ASan and TSan
+  bench_usm_pool.c        standalone perf bench (no verification)
   corpus/                 binary seeds for fuzz_upscale_logic (16 files, 32 bytes each)
   corpus_frame_shape/     binary seeds for fuzz_frame_shape (22 files, 24 bytes each)
   corpus_scaler_chroma/   binary seeds for fuzz_scaler_chroma (21 files, 8 bytes each)
   corpus_usm_variants/    binary seeds for fuzz_usm_variants (15 files, 8 bytes each)
+
+scripts/
+  bench_matrix.sh         run bench_usm_pool across (threads × resolution × fill)
+  coverage_report.sh      gcov per-file summary used by `make coverage`
 
 docs/HOW_IT_WORKS.md      design notes
 docs/USAGE.md             command-line recipes + diagnostic ladder
@@ -483,17 +504,18 @@ header — there's no shadow re-implementation in the tests.
 ## Building from source
 
 ```sh
-make            # build the VLC plugin (libautoupscale_plugin.so)
-make plugin     # same
-make test       # unit tests under ASan + UBSan (178 tests across 11 suites)
-make fuzz-smoke # 805k deterministic random inputs across 10 fuzzers under ASan + UBSan
-make fuzz       # libFuzzer build (clang); run e.g. build/fuzz_upscale_logic tests/corpus/
-make stress     # usm_pool concurrency stress, ASan + TSan (~70s)
-make analyze    # cppcheck across the source
-make install    # install plugin into VLC's plugins dir
+make             # build the VLC plugin (libautoupscale_plugin.so)
+make plugin      # same
+make test        # unit tests under ASan + UBSan (178 tests across 11 suites)
+make fuzz-smoke  # 805k deterministic random inputs across 10 fuzzers under ASan + UBSan
+make fuzz        # libFuzzer build (clang); run e.g. build/fuzz_upscale_logic tests/corpus/
+make stress      # usm_pool concurrency stress, ASan + TSan (~70s)
+make coverage    # gcov line-coverage report; fails if any tracked file < 80%
+make analyze     # cppcheck across the source
+make install     # install plugin into VLC's plugins dir
 make uninstall
 make clean
-make info       # show pkg-config paths and toolchain
+make info        # show pkg-config paths and toolchain
 ```
 
 **CPU baseline (defaults).** This plugin is a source distribution —
