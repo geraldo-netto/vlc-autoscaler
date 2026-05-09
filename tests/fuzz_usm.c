@@ -128,7 +128,7 @@ static void check_constant_input(const uint8_t *src, const uint8_t *dst,
 }
 
 /* Run the kernel and verify all postconditions. */
-static void run_kernel_and_check(uint8_t *dst, uint8_t *src, uint8_t *ws,
+static void run_kernel_and_check(uint8_t *dst, const uint8_t *src, uint8_t *ws,
                                  const uint8_t *src_copy,
                                  const fuzz_params_t *p)
 {

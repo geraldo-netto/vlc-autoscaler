@@ -57,7 +57,7 @@ static int next_sample(const uint8_t **data, size_t *size, int64_t *sample)
 }
 
 /* Validate one record_ns step. Returns 1 on invariant break. */
-static int check_step(up_perfmon_t *pm, int rc, int *warned_count,
+static int check_step(const up_perfmon_t *pm, int rc, int *warned_count,
                       int n_samples, int64_t init_budget)
 {
     if (rc != 0 && rc != 1) {
