@@ -138,21 +138,16 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
     "rows. Smaller values let more workers fit on low-res output but " \
     "increase per-stripe boundary work. Default 16. Range 4..128.")
 
-#define USM_SKIP_SHARP_TEXT N_("Skip USM on heavily textured sources")
-#define USM_SKIP_SHARP_LONGTEXT N_( \
-    "1 = on (default): after the first ~60 frames the plugin checks " \
-    "whether the source is heavily textured/grainy. If so the USM " \
-    "post-pass is skipped for the rest of the playback (it would " \
-    "amplify noise without adding perceived sharpness). " \
-    "0 = off: always run USM regardless of source detail level.")
-
 #define USM_SHARP_THRESH_TEXT N_("USM-skip sharpness threshold")
 #define USM_SHARP_THRESH_LONGTEXT N_( \
     "Mean Laplacian-variance value above which the source is " \
-    "considered heavily textured (and USM is skipped, see usm-skip-" \
-    "sharp). Lower = trip more aggressively (skip USM on more " \
-    "sources). Higher = trip rarely (USM stays on most content). " \
-    "Default 3500. Range 500..20000.")
+    "considered heavily textured/grainy and the USM post-pass is " \
+    "skipped for the rest of playback (USM on grainy content " \
+    "amplifies noise without adding perceived sharpness). " \
+    "Lower = trip more aggressively (skip USM on more sources). " \
+    "Higher = trip rarely (USM stays on most content). " \
+    "0 = feature off, USM always runs regardless of source. " \
+    "Default 3500. Range 0..20000.")
 
 #define PROBE_TEXT N_("Content-aware quality probe")
 #define PROBE_LONGTEXT N_( \
@@ -218,12 +213,9 @@ vlc_module_begin()
     add_integer_with_range( CFG_PREFIX "zimg-stripe-lines", 0, 0, 128,
                             ZIMG_STRIPE_LINES_TEXT,
                             ZIMG_STRIPE_LINES_LONGTEXT, false )
-    add_integer_with_range( CFG_PREFIX "usm-skip-sharp", 1, 0, 1,
-                            USM_SKIP_SHARP_TEXT,
-                            USM_SKIP_SHARP_LONGTEXT, false )
     add_integer_with_range( CFG_PREFIX "usm-sharp-threshold",
                             UP_PROBE_THRESH_SHARP_LAP_MEAN,
-                            500, 20000,
+                            0, 20000,
                             USM_SHARP_THRESH_TEXT,
                             USM_SHARP_THRESH_LONGTEXT, false )
 vlc_module_end()
@@ -279,9 +271,11 @@ struct filter_sys_t
      * mostly amplifies noise. See up_should_skip_usm_for_sharpness. */
     int                usm_skip_sharp;
 
-    /* User tunables read at Open(); see corresponding option longtexts. */
-    int                usm_skip_sharp_enabled;  /* 0/1 master switch */
-    int                usm_sharp_threshold;     /* runtime threshold */
+    /* User tunables read at Open(); see corresponding option longtexts.
+     * usm_sharp_threshold == 0 disables the feature (USM always runs);
+     * any positive value is the lap_mean cutoff above which USM is
+     * skipped after the probe completes. */
+    int                usm_sharp_threshold;
 };
 
 /* How many frames to observe before deciding. At 30fps this is 2 seconds
@@ -437,8 +431,6 @@ static void InitProbeAndPerfmon( filter_sys_t *p_sys, filter_t *p_filter,
     p_sys->probe_active  = p_sys->probe_enabled;
     p_sys->advice_logged = 0;
 
-    p_sys->usm_skip_sharp_enabled = var_InheritInteger( p_filter,
-        CFG_PREFIX "usm-skip-sharp" );
     p_sys->usm_sharp_threshold = var_InheritInteger( p_filter,
         CFG_PREFIX "usm-sharp-threshold" );
 }
@@ -615,7 +607,7 @@ static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
         return;
 
     p_sys->probe_active = 0;
-    if( p_sys->usm_skip_sharp_enabled
+    if( p_sys->usm_sharp_threshold > 0
         && p_sys->probe_accum.lap_samples > 0
         && (p_sys->probe_accum.lap_sum / p_sys->probe_accum.lap_samples)
            > (uint64_t)p_sys->usm_sharp_threshold )
@@ -625,8 +617,8 @@ static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
                   "AutoUpscale: source is heavily textured "
                   "(lap_mean=%llu > threshold=%d); skipping post-USM "
                   "to avoid amplifying grain. "
-                  "Override via --autoupscale-usm-skip-sharp=0 or "
-                  "--autoupscale-usm-sharp-threshold.",
+                  "Override via --autoupscale-usm-sharp-threshold=0 "
+                  "(disable) or a different cutoff.",
                   (unsigned long long)(p_sys->probe_accum.lap_sum
                        / p_sys->probe_accum.lap_samples),
                   p_sys->usm_sharp_threshold );

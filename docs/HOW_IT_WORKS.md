@@ -49,7 +49,7 @@ leave the filter enabled globally without paying any cost on HD content.
    (falls back to `i_width` / `i_height` if visible isn't set).
 2. Reads the module options (`target`, `algo`, `skip-above`, `usm`,
    `backend`, `target-fps`, `threads`, `zerocopy-dst`, `content-probe`,
-   `usm-stripe-min-rows`, `zimg-stripe-lines`, `usm-skip-sharp`,
+   `usm-stripe-min-rows`, `zimg-stripe-lines`,
    `usm-sharp-threshold`).
 3. Calls `DetectHardware()` to get core count and total RAM.
 4. Calls `up_plan_upscale()` from `upscale_logic.h` to decide whether to
@@ -317,12 +317,13 @@ truly disables USM at zero cost, even if the pool was created.
 **Auto-skip on grainy sources.** Independent of `amount`, the plugin
 also bypasses USM after the content probe completes (frame ~60) when
 the source's mean Laplacian variance exceeds
-`UP_PROBE_THRESH_SHARP_LAP_MEAN` (default `3500`, exposed as
-`--autoupscale-usm-sharp-threshold`). On heavily textured / grainy
-content USM amplifies the noise without adding perceived sharpness, so
-the plugin sets a `usm_skip_sharp` flag in `filter_sys_t` and
-`ApplyUsmIfEnabled()` returns early thereafter. Toggle with
-`--autoupscale-usm-skip-sharp=0` to keep USM on regardless of source.
+`p_sys->usm_sharp_threshold` (set from
+`--autoupscale-usm-sharp-threshold`, default `3500`). On heavily
+textured / grainy content USM amplifies the noise without adding
+perceived sharpness, so the plugin sets a `usm_skip_sharp` flag in
+`filter_sys_t` and `ApplyUsmIfEnabled()` returns early thereafter.
+Set the option to `0` to disable the feature entirely (USM keeps
+running regardless of source).
 
 **Optional flat-skip (compile-time).** The pool also has an opt-in
 per-stripe early-out (`-DUSM_POOL_FLAT_SKIP=1` at compile time): each
@@ -547,15 +548,15 @@ On clean grainy 480p content the metrics typically read lap-mean
 artifact-ridden web-rips the metrics shift toward lap-mean 200–400
 and edge-mean 8–15, where the advisory IS appropriate.
 
-The same accumulator drives a second decision:
-`up_should_skip_usm_for_sharpness()` returns true when `lap_mean`
-exceeds `UP_PROBE_THRESH_SHARP_LAP_MEAN` (default `3500`, above the
+The same accumulator drives a second decision: when `lap_mean`
+exceeds `p_sys->usm_sharp_threshold` (default `3500`, above the
 clean-grainy 800–2000 band so it triggers only on actively
 over-detailed sources — film grain, high-noise sensors, etc.). When
 that fires the plugin sets `filter_sys_t.usm_skip_sharp`, and every
-subsequent `ApplyUsmIfEnabled()` returns early. Both knobs are exposed
-as VLC options (`--autoupscale-usm-skip-sharp` to toggle,
-`--autoupscale-usm-sharp-threshold` to retune).
+subsequent `ApplyUsmIfEnabled()` returns early. The cutoff and the
+master switch are merged into a single VLC option,
+`--autoupscale-usm-sharp-threshold`: any positive value enables the
+feature with that cutoff; `0` disables it.
 
 ### Verification
 

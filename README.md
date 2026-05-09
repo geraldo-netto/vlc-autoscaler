@@ -108,8 +108,7 @@ setup: enable once, leave it on, only sub-HD content is touched.
 | `--autoupscale-content-probe`       | 0–1    | **1**   | 1 = run the diagnostic content probe on the first ~60 frames to detect heavily-compressed soft sources where upscaling actively hurts. Logs a one-time advisory when triggered. Observe-only — never modifies output. 0 = skip the probe. |
 | `--autoupscale-usm-stripe-min-rows` | 0–256  | 0       | Minimum rows per USM worker stripe (0 = compile-time default 8). Smaller values let more workers fit on low-res frames at the cost of dispatch overhead. |
 | `--autoupscale-zimg-stripe-lines`   | 0–128  | 0       | Minimum dst lines per zimg worker stripe (0 = compile-time default 16). Same trade-off as above for the scaler backend. |
-| `--autoupscale-usm-skip-sharp`      | 0–1    | **1**   | 1 = after the probe completes, if the source is heavily textured/grainy (lap_mean above the sharp threshold), the USM post-pass is skipped for the rest of playback (USM amplifies grain on such content). 0 = always run USM. |
-| `--autoupscale-usm-sharp-threshold` | 500–20000 | 3500 | Mean Laplacian-variance threshold used by `usm-skip-sharp`. Lower = trip more aggressively (skip USM on more sources). Higher = trip rarely (USM stays on most content). |
+| `--autoupscale-usm-sharp-threshold` | 0–20000 | **3500** | Mean Laplacian-variance cutoff above which the source is considered heavily textured/grainy and the USM post-pass is skipped for the rest of playback (USM amplifies grain without adding sharpness on such content). `0` disables the feature (USM always runs); higher values trip rarely; lower values trip aggressively. |
 
 The plugin defaults to **Spline36 on zimg** — the highest-quality
 combination available. On systems without zimg, swscale transparently
@@ -222,8 +221,9 @@ The plugin also detects heavily textured/grainy sources after the first
 ~60 frames (via the content probe's Laplacian-variance metric) and
 auto-skips the USM post-pass for those, since USM on grainy content
 amplifies noise without adding perceived sharpness. Tunable through
-`--autoupscale-usm-skip-sharp` (master toggle) and
-`--autoupscale-usm-sharp-threshold` (sensitivity).
+`--autoupscale-usm-sharp-threshold` — set the cutoff lower to trip
+on more sources, higher to trip rarely, or `0` to disable the feature
+entirely.
 
 **Threaded USM.** USM uses the same worker count as the scaler
 (`--autoupscale-threads`). The luma plane is partitioned into N
