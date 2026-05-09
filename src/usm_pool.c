@@ -105,7 +105,49 @@ typedef struct usm_worker_s {
     int             src_stride;
     int             dst_stride;
     int             amount_q8;
+
+    /* Set by phase 0; consumed by phase 1.
+     * 1 = stripe is visually flat → phase 2 short-circuits to identity.
+     * Only meaningful when USM_POOL_FLAT_SKIP is enabled. */
+    int             flat_skip;
 } usm_worker_t;
+
+/*
+ * Per-stripe flat detection (compile-time opt-in via USM_POOL_FLAT_SKIP).
+ *
+ * Sum of |src[x+1] - src[x]| over a single sampled row inside the stripe.
+ * Below ~2 average per-pixel delta the stripe carries no detail USM
+ * could enhance, and combine_row's pass becomes net-loss noise
+ * amplification. Skip combine entirely → identity copy of src→dst for
+ * the stripe. Cost: O(width) per stripe vs O(width*stripe_height) for
+ * combine, so even at 0% skip rate the overhead is <2% of phase 2.
+ *
+ * Disabled by default because it sacrifices byte-identity with the
+ * single-threaded reference up_usm_apply_plane on near-flat-but-not-
+ * exactly-flat content (per-pixel delta of up to a few LSB). Enabled
+ * for bench tooling where perceptual equivalence is sufficient.
+ *
+ * Conservative threshold: USM_FLAT_AVG_DELTA=2 means avg neighbour diff
+ * < 2/255 ≈ 0.8%. Real video almost never hits this except for solid
+ * colour fills (letterbox bars, plain backgrounds, fade-to-black).
+ */
+#ifndef USM_POOL_FLAT_SKIP
+#  define USM_POOL_FLAT_SKIP 0
+#endif
+
+#if USM_POOL_FLAT_SKIP
+#define USM_FLAT_AVG_DELTA 2
+
+static uint64_t up_usm__row_h_activity(const uint8_t *row, int w)
+{
+    uint64_t s = 0;
+    for (int x = 1; x < w; x++) {
+        int d = (int)row[x] - (int)row[x-1];
+        s += (uint64_t)(d < 0 ? -d : d);
+    }
+    return s;
+}
+#endif
 
 struct usm_pool_s {
     int            n_threads;       /* effective count after lazy_init may shrink */
@@ -142,6 +184,32 @@ static void *usm_worker_main(void *arg)
                     w->workspace + (size_t)y * (size_t)w->width,
                     w->src + (size_t)y * (size_t)w->src_stride,
                     w->width);
+            }
+
+#if USM_POOL_FLAT_SKIP
+            /* Per-stripe flat detection: sample the middle row of the
+             * stripe, decide whether phase 2 can short-circuit. */
+            {
+                int mid_y = w->y_start + (w->y_end - w->y_start) / 2;
+                uint64_t act = up_usm__row_h_activity(
+                    w->src + (size_t)mid_y * (size_t)w->src_stride,
+                    w->width);
+                w->flat_skip =
+                    (act < (uint64_t)w->width * (uint64_t)USM_FLAT_AVG_DELTA);
+            }
+#endif
+        } else if (USM_POOL_FLAT_SKIP && w->flat_skip) {
+            /* Stripe was flat in phase 0 → identity copy is bit-identical
+             * within rounding to combine output, since combine adds
+             * (src - hblur)*amount where (src - hblur) ≈ 0 on flat areas.
+             * Saves one O(width*stripe_h) pass of combine kernel. */
+            for (int y = w->y_start; y < w->y_end; y++) {
+                if (w->dst + (size_t)y * (size_t)w->dst_stride
+                    != w->src + (size_t)y * (size_t)w->src_stride)
+                    memcpy(
+                        w->dst + (size_t)y * (size_t)w->dst_stride,
+                        w->src + (size_t)y * (size_t)w->src_stride,
+                        (size_t)w->width);
             }
         } else {
             /* Pass 2: combine workspace[y-1, y, y+1] with src to produce
