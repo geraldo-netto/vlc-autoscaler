@@ -898,7 +898,7 @@ different class of bug:
 
 ### Unit tests — exact-value assertions
 
-178 tests across 11 suites in `tests/test_*.c`. Each test states a
+188 tests across 11 suites in `tests/test_*.c`. Each test states a
 specific, predictable expected value. They run under AddressSanitizer
 + UndefinedBehaviorSanitizer (`make test`), so memory errors and
 signed-overflow bugs are caught even when the asserted output happens
@@ -906,15 +906,15 @@ to be correct.
 
 | Suite                  | Count | Covers                                      |
 |------------------------|-------|---------------------------------------------|
-| `upscale_logic`        | 35    | preset dispatch (incl. all of 720p..8K), aspect math, ratio cap, AUTO ceiling, skip-above gating |
+| `upscale_logic`        | 36    | preset dispatch (incl. all of 720p..8K), aspect math, ratio cap, AUTO ceiling, skip-above gating + boundary cases |
 | `usm`                  | 17    | unsharp-mask single-thread reference        |
-| `perfmon`              | 10    | EWMA performance monitor                    |
+| `perfmon`              | 11    | EWMA performance monitor + target_fps OOB   |
 | `threading`            | 11    | thread-count decision                       |
-| `zimg_helpers`         | 23    | stripe bounds, copy-plane                   |
+| `zimg_helpers`         | 24    | stripe bounds, copy-plane, stripe-min sentinel |
 | `chroma_classify`      | 14    | opaque chroma list + cross-predicate invariant |
-| `usm_pool`             | 15    | threaded USM byte-identity vs single-thread |
-| `content_probe`        | 13    | source-content metrics (variance, gradient) |
-| `scaler_pick`          | 15    | backend selection logic                     |
+| `usm_pool`             | 17    | threaded USM byte-identity vs single-thread + stripe_min_rows + lazy-init OOM |
+| `content_probe`        | 17    | source-content metrics + sharp-threshold gate boundaries |
+| `scaler_pick`          | 16    | backend selection logic + pref OOB          |
 | `lifetime`             | 10    | resource lifetime / use-after-free          |
 | `usm_pool_variants`    | 15    | cross-SIMD-variant byte-equivalence (SSE2/AVX2/AVX-512) |
 
@@ -1153,10 +1153,14 @@ the pool against itself across configurations during development.
 `--coverage -fprofile-arcs -ftest-coverage`, runs them, then prints
 per-file gcov summaries via `scripts/coverage_report.sh`. The script
 fails the build if any tracked file falls below 80 % line coverage.
-Total tracked coverage at the time of writing is 93.9 %, with the
-lowest tracked file (`usm_pool.c`) at 88.8 %. `usm_pool.h` shows
+Total tracked coverage at the time of writing is 94.6 %, with the
+lowest tracked file (`usm_pool.c`) at 90.6 %. `usm_pool.h` shows
 `-%` because it's a pure-API header (zero executable lines), not a
 coverage gap — see the project README for the explanation.
+
+The `make coverage` step is wired into the GitHub Actions CI job
+(`.github/workflows/ci.yml`) so any push that drops a tracked file
+below the 80 % threshold fails before merge.
 
 ### Cyclomatic complexity
 

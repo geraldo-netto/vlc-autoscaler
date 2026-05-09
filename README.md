@@ -20,13 +20,13 @@ and still fast enough for real-time playback on modest hardware.
 
 | Check                                  | Result                                  |
 |----------------------------------------|-----------------------------------------|
-| Unit tests (ASan + UBSan)              | 178/178 pass across 11 suites           |
+| Unit tests (ASan + UBSan)              | 188/188 pass across 11 suites           |
 | Smoke fuzz (805k iters, ASan + UBSan)  | pass across 10 fuzzers                  |
 | libFuzzer (60s × 5 in CI, seeded)      | 0 crashes; corpora accelerate discovery ~2× |
 | Concurrency stress (ASan + TSan)       | 19 configs, ~935 frames, 0 races        |
 | `cppcheck` (warning + style)           | clean                                   |
 | Cyclomatic complexity (lizard)         | all src + tests ≤ 10; tests ≤ 9         |
-| Line coverage (`make coverage`)        | 93.9% total, every tracked file ≥ 80%   |
+| Line coverage (`make coverage`, CI-gated) | 94.6% total, every tracked file ≥ 80% |
 | Plugin compiles against VLC 3.0.20     | clean, no warnings                      |
 | Live transcode (zimg + swscale)        | verified end-to-end up to 8K            |
 | GitHub Actions CI                      | runs on push/PR to `main` and `develop` |
@@ -509,7 +509,7 @@ header — there's no shadow re-implementation in the tests.
 ```sh
 make             # build the VLC plugin (libautoupscale_plugin.so)
 make plugin      # same
-make test        # unit tests under ASan + UBSan (178 tests across 11 suites)
+make test        # unit tests under ASan + UBSan (188 tests across 11 suites)
 make fuzz-smoke  # 805k deterministic random inputs across 10 fuzzers under ASan + UBSan
 make fuzz        # libFuzzer build (clang); run e.g. build/fuzz_upscale_logic tests/corpus/
 make stress      # usm_pool concurrency stress, ASan + TSan (~70s)
