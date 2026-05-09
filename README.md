@@ -493,6 +493,7 @@ scripts/
 
 docs/HOW_IT_WORKS.md      design notes
 docs/USAGE.md             command-line recipes + diagnostic ladder
+docs/PERFORMANCE.md       expected µs/frame at common configs
 patches/                  optional VLC patches (workaround for chain depth limit)
 .github/workflows/ci.yml  build, test, smoke fuzz, stress, libFuzzer, cppcheck
 Makefile                  everything (`make help` lists targets)

@@ -46,6 +46,9 @@ jobs:
       - name: Concurrency stress (usm_pool, ASan + TSan, ~70s)
         run: make stress
 
+      - name: Line coverage (gcov, fails any tracked file < 80%)
+        run: make coverage
+
       - name: Static analysis (cppcheck)
         run: make analyze
 
