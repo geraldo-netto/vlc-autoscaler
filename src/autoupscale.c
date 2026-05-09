@@ -81,7 +81,11 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 #define SKIP_TEXT       N_("Skip-above height")
 #define SKIP_LONGTEXT   N_( \
     "Source heights >= this value are passed through untouched. " \
-    "Default 720 — anything 720p or higher is left alone.")
+    "Default 720 — anything 720p or higher is left alone. " \
+    "Only honoured when --autoupscale-target=0 (AUTO); explicit " \
+    "presets (1..6) bypass the skip-above gate so a 1080p source " \
+    "can still be requested up to 4K. Values <= 0 disable the gate " \
+    "(AUTO engages on any sub-target source).")
 
 #define USM_TEXT        N_("Unsharp-mask amount (post-upscale, percent)")
 #define USM_LONGTEXT    N_( \
