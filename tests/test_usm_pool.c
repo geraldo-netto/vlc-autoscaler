@@ -390,6 +390,54 @@ static void test_create_stripe_min_rows_boundaries(void)
     END();
 }
 
+/*
+ * Coverage for the lazy-init failure paths in usm_pool.c.
+ *
+ * When `up_usm_pool_apply` first runs (lazy init), it allocates a
+ * width*height workspace via `aligned_alloc`. Passing pathological
+ * dimensions whose product exceeds available virtual memory causes
+ * the allocation to return NULL — exercising the
+ * `lazy_init_failed = true` sticky path. The pool must:
+ *   1. return -1 from the first apply()
+ *   2. continue to return -1 from subsequent apply() calls without
+ *      re-attempting the allocation (the "sticky" contract)
+ *   3. destroy cleanly without leaking the partial state
+ */
+static void test_apply_lazy_init_oom_sticky(void)
+{
+    BEGIN("apply: lazy_init OOM -> sticky failure across subsequent calls");
+
+    /* INT_MAX × INT_MAX = ~4.6e18 bytes — guaranteed to exceed
+     * available virtual memory on any 64-bit Linux configuration. */
+    usm_pool_t *p = up_usm_pool_create(1, INT_MAX, INT_MAX, 0);
+    /* create() doesn't allocate the workspace — only the small priv
+     * struct — so it must succeed. */
+    CHECK(p != NULL);
+    if (!p) { END(); return; }
+
+    /* Tiny dst/src pointers — apply() never reaches them because
+     * lazy_init fails before any frame work. Strides match width to
+     * pass the pre-init validation. */
+    uint8_t scratch[16] = {0};
+    int amount = up_usm_amount_pct_to_q8(30);
+
+    int rc1 = up_usm_pool_apply(p, scratch, INT_MAX,
+                                 scratch, INT_MAX, amount);
+    CHECK(rc1 == -1);
+
+    /* Sticky: a second call must also fail without retry. The pool's
+     * `lazy_init_failed` flag is set on the first failed init and
+     * short-circuits future calls. */
+    int rc2 = up_usm_pool_apply(p, scratch, INT_MAX,
+                                 scratch, INT_MAX, amount);
+    CHECK(rc2 == -1);
+
+    /* Destroy must clean up safely even though lazy init never
+     * completed (no workers spawned, no workspace allocated). */
+    up_usm_pool_destroy(p);
+    END();
+}
+
 int main(void)
 {
     printf("Running usm_pool tests...\n");
@@ -411,6 +459,7 @@ int main(void)
     /* API safety */
     test_create_invalid_args();
     test_create_stripe_min_rows_boundaries();
+    test_apply_lazy_init_oom_sticky();
     test_destroy_null_safe();
     test_destroy_unused_pool();
     test_apply_null_pool();
