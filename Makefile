@@ -479,7 +479,15 @@ coverage: $(COV_TESTS)
 coverage-summary: coverage
 
 # --------- static analysis ---------
-analyze:
+.PHONY: complexity
+# Cyclomatic-complexity gate. lizard exits non-zero if any function has
+# CCN > 10 (project policy: every function stays at or below 10).
+complexity:
+	@command -v lizard >/dev/null 2>&1 || { \
+		echo "lizard not installed. pip: lizard"; exit 1; }
+	lizard -C 10 src/ tests/
+
+analyze: complexity
 	@command -v cppcheck >/dev/null 2>&1 || { \
 		echo "cppcheck not installed. apt: cppcheck"; exit 1; }
 	# autoupscale.c is excluded — it depends on VLC's macro-heavy headers

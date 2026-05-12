@@ -245,6 +245,20 @@ static inline void up_usm__pass2_combine(
     }
 }
 
+/* Extracted to cap the CCN of up_usm_apply_plane at <=10. The six
+ * boolean clauses below would otherwise count one branch each in the
+ * caller. */
+static inline int up_usm__args_valid(
+    const uint8_t *dst, int dst_stride,
+    const uint8_t *src, int src_stride,
+    int width, int height)
+{
+    if (dst == NULL || src == NULL) return 0;
+    if (width <= 0 || height <= 0) return 0;
+    if (dst_stride < width || src_stride < width) return 0;
+    return 1;
+}
+
 static inline int up_usm_apply_plane(
     uint8_t *dst, int dst_stride,
     const uint8_t *src, int src_stride,
@@ -252,10 +266,8 @@ static inline int up_usm_apply_plane(
     int amount_q8,
     uint8_t *workspace)
 {
-    /* Validate. */
-    if (dst == NULL || src == NULL) return 0;
-    if (width <= 0 || height <= 0) return 0;
-    if (dst_stride < width || src_stride < width) return 0;
+    if (!up_usm__args_valid(dst, dst_stride, src, src_stride, width, height))
+        return 0;
 
     /* Clamp amount. */
     if (amount_q8 < 0) amount_q8 = 0;

@@ -150,13 +150,23 @@ static inline void up_copy_plane(uint8_t *dst, int dst_stride,
  *
  * CCN 5.
  */
+/* Extracted to cap the CCN of up_compute_stripe_bounds at <=10. The
+ * five OR-ed clauses each count as a branch in the caller; collapsing
+ * them into a single call reduces the bound calculation's CCN from 11
+ * to 6 without changing behaviour. */
+static inline int up__stripe_args_valid(int i, int n, int src_h, int dst_h)
+{
+    if (n <= 0 || src_h <= 0 || dst_h <= 0) return 0;
+    if (i < 0 || i >= n) return 0;
+    return 1;
+}
+
 static inline int up_compute_stripe_bounds(
     int i, int n, int src_h, int dst_h,
     int *src_y_start, int *src_y_end,
     int *dst_y_start, int *dst_y_end)
 {
-    if (n <= 0 || src_h <= 0 || dst_h <= 0 || i < 0 || i >= n)
-        return 0;
+    if (!up__stripe_args_valid(i, n, src_h, dst_h)) return 0;
 
     *dst_y_start = (i == 0) ? 0
         : UP_ALIGN_DOWN_2((int)((int64_t)i * dst_h / n));
