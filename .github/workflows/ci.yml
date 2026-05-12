@@ -106,3 +106,38 @@ jobs:
             crash-*
             timeout-*
             leak-*
+
+  sonarcloud:
+    name: SonarCloud (C/C++ scan, tests excluded)
+    runs-on: ubuntu-latest
+    env:
+      MARCH: x86-64-v3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Sonar needs full history for blame / new-code detection.
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang pkg-config \
+            libvlccore-dev libvlc-dev \
+            libswscale-dev libavutil-dev
+
+      - name: Install sonar build-wrapper
+        uses: SonarSource/sonarcloud-github-c-cpp@v3
+
+      - name: Build plugin under build-wrapper
+        # Build the production target only — tests are not invoked.
+        # build-wrapper captures every compiler invocation into
+        # bw-output/ so the sonar-scanner can analyse the C/C++ TUs.
+        run: |
+          build-wrapper-linux-x86-64 --out-dir bw-output make plugin
+
+      - name: Run sonar-scanner
+        uses: SonarSource/sonarcloud-github-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

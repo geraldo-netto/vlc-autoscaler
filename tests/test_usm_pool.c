@@ -76,8 +76,11 @@ static size_t run_compare(int n_threads, int width, int height,
 {
     size_t plane_bytes = (size_t)width * (size_t)height;
     uint8_t *src   = malloc(plane_bytes);
-    uint8_t *dst_st = malloc(plane_bytes);
-    uint8_t *dst_mt = malloc(plane_bytes);
+    /* dst_st/dst_mt zeroed so the diff loop never reads an uninit byte
+     * if up_usm_pool_apply leaves bytes unwritten (also satisfies
+     * SonarQube's garbage-value check on the `!=` comparison). */
+    uint8_t *dst_st = calloc(plane_bytes, 1);
+    uint8_t *dst_mt = calloc(plane_bytes, 1);
     uint8_t *workspace = malloc(plane_bytes);
 
     if (!src || !dst_st || !dst_mt || !workspace) {
@@ -250,8 +253,10 @@ static void test_repeat_same_pool(void)
 
     size_t n = (size_t)width * height;
     uint8_t *src = malloc(n);
-    uint8_t *dst_st = malloc(n);
-    uint8_t *dst_mt = malloc(n);
+    /* See run_compare(): zero-init silences SonarQube's garbage-value
+     * read on dst_mt[i] in the inner diff loop. */
+    uint8_t *dst_st = calloc(n, 1);
+    uint8_t *dst_mt = calloc(n, 1);
     uint8_t *ws = malloc(n);
 
     if (!src || !dst_st || !dst_mt || !ws) {
@@ -365,7 +370,9 @@ static void test_create_stripe_min_rows_boundaries(void)
 
     uint8_t *src = malloc((size_t)W * H);
     uint8_t *dst = malloc((size_t)W * H);
-    uint8_t *ref = malloc((size_t)W * H);
+    /* Zero-init ref so the diff loop never reads garbage if the
+     * single-threaded apply_plane skips a byte (SonarQube cross-TU). */
+    uint8_t *ref = calloc((size_t)W * H, 1);
     uint8_t *ws  = malloc((size_t)W * H);
     if (!src || !dst || !ref || !ws) {
         printf("    malloc failed\n"); g_cur_fail++;
