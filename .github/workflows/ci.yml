@@ -27,9 +27,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential clang cppcheck pkg-config \
+            build-essential clang cppcheck pkg-config python3-pip \
             libvlccore-dev libvlc-dev \
             libswscale-dev libavutil-dev
+          # lizard is used by `make analyze` (complexity gate, CCN<=10).
+          # --break-system-packages is needed on Ubuntu 24.04+ runners
+          # (PEP 668); the runner is single-purpose so the warning is
+          # irrelevant.
+          pip3 install --user --break-system-packages lizard
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Show toolchain info
         run: make info
@@ -122,12 +128,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential clang pkg-config \
+            build-essential clang pkg-config unzip \
             libvlccore-dev libvlc-dev \
             libswscale-dev libavutil-dev
 
-      - name: Install sonar build-wrapper
-        uses: SonarSource/sonarcloud-github-c-cpp@v3
+      - name: Download SonarCloud build-wrapper
+        # The previous action `SonarSource/sonarcloud-github-c-cpp` was
+        # deprecated and the repo removed. The canonical replacement is
+        # downloading build-wrapper directly from SonarCloud's static
+        # endpoint, which is what that action did internally.
+        run: |
+          curl -sSLo build-wrapper.zip \
+            https://sonarcloud.io/static/cpp/build-wrapper-linux-x86.zip
+          unzip -o build-wrapper.zip -d "$HOME"
+          echo "$HOME/build-wrapper-linux-x86" >> "$GITHUB_PATH"
 
       - name: Build plugin under build-wrapper
         # Build the production target only — tests are not invoked.
@@ -137,7 +151,8 @@ jobs:
           build-wrapper-linux-x86-64 --out-dir bw-output make plugin
 
       - name: Run sonar-scanner
-        uses: SonarSource/sonarcloud-github-action@v3
+        uses: SonarSource/sonarqube-scan-action@v4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
