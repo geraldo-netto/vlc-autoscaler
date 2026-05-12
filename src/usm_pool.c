@@ -195,10 +195,16 @@ static void usm_worker_phase0_hblur(usm_worker_t *w)
 #endif
 }
 
+#if USM_POOL_FLAT_SKIP
 /* Stripe was flat in phase 0 → identity copy is bit-identical within
  * rounding to combine output, since combine adds (src - hblur)*amount
  * where (src - hblur) ≈ 0 on flat areas. Saves one O(width*stripe_h)
- * pass of combine kernel. */
+ * pass of combine kernel.
+ *
+ * Only compiled when the flat-skip feature is on; otherwise the call
+ * site in usm_worker_main is dead-coded by the constant-zero
+ * `USM_POOL_FLAT_SKIP` and coverage would flag this function as
+ * permanently 0%. */
 static void usm_worker_phase1_skip_copy(usm_worker_t *w)
 {
     for (int y = w->y_start; y < w->y_end; y++) {
@@ -210,6 +216,7 @@ static void usm_worker_phase1_skip_copy(usm_worker_t *w)
                 (size_t)w->width);
     }
 }
+#endif
 
 /* Pass 2: combine workspace[y-1, y, y+1] with src to produce dst, on
  * each row in our stripe. Reads of workspace rows just above y_start
@@ -240,8 +247,10 @@ static void *usm_worker_main(void *arg)
 
         if (w->phase == 0)
             usm_worker_phase0_hblur(w);
-        else if (USM_POOL_FLAT_SKIP && w->flat_skip)
+#if USM_POOL_FLAT_SKIP
+        else if (w->flat_skip)
             usm_worker_phase1_skip_copy(w);
+#endif
         else
             usm_worker_phase1_combine(w);
 
@@ -286,6 +295,24 @@ static int usm_pool_spawn_worker(usm_pool_t *p, int i, int n)
     return 0;
 }
 
+/* Divide `height` into `n` contiguous stripes and write each worker's
+ * y_start/y_end. The last stripe absorbs the integer-division remainder
+ * so the union of stripes covers [0, height). Called unconditionally
+ * after the spawn loop: when every worker spawned this is a redundant
+ * (idempotent) re-assignment, but when only `constructed < n_pref`
+ * workers came up it is the single place that re-balances them. Keeping
+ * the call unconditional means every test path exercises this helper. */
+static void usm_pool_repartition_stripes(usm_worker_t *workers, int n,
+                                         int height)
+{
+    for (int i = 0; i < n; i++) {
+        workers[i].y_start = (int)((int64_t)i * height / n);
+        workers[i].y_end   = (i == n - 1)
+            ? height
+            : (int)((int64_t)(i + 1) * height / n);
+    }
+}
+
 static int usm_pool_lazy_init(usm_pool_t *p)
 {
     /* aligned_alloc requires size to be a multiple of alignment per
@@ -317,18 +344,12 @@ static int usm_pool_lazy_init(usm_pool_t *p)
     }
     if (constructed == 0) return -1;
 
-    /* If we got fewer workers than requested, repartition the stripes
-     * across only the constructed ones. The unused worker slots stay
-     * zeroed (calloc) and are skipped by destroy. */
-    if (constructed < p->n_threads_pref) {
-        for (int i = 0; i < constructed; i++) {
-            usm_worker_t *w = &p->workers[i];
-            w->y_start = (int)((int64_t)i * p->height / constructed);
-            w->y_end   = (i == constructed - 1)
-                ? p->height
-                : (int)((int64_t)(i + 1) * p->height / constructed);
-        }
-    }
+    /* Repartition unconditionally. When constructed == n_threads_pref
+     * this is idempotent (same math the spawn loop just used). When
+     * constructed < n_threads_pref it re-balances stripes across the
+     * actually-spawned workers; the unused slots stay zeroed (calloc)
+     * and are skipped by destroy. */
+    usm_pool_repartition_stripes(p->workers, constructed, p->height);
     p->n_threads = constructed;
     return 0;
 }

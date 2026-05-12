@@ -466,7 +466,15 @@ coverage: $(COV_TESTS)
 	done
 	@# gcov emits .gcov in the CWD; move them into the build dir.
 	@mv ./*.gcov $(COV_BUILD)/ 2>/dev/null || true
+	@# Per-function coverage: re-run gcov with -f so each function's
+	@# summary is printed on stdout, then collected for the function-
+	@# level threshold check (independent of the per-file check below).
+	@for gcda in $(COV_BUILD)/*.gcda; do \
+	    gcov -f -r -m -o $(COV_BUILD) "$$gcda" 2>/dev/null; \
+	done > $(COV_BUILD)/functions.txt
+	@rm -f ./*.gcov  # gcov -f re-emits .gcov in CWD; discard duplicates.
 	@COV_DIR=$(COV_BUILD) THRESHOLD=80 ./scripts/coverage_report.sh
+	@COV_DIR=$(COV_BUILD) THRESHOLD=80 ./scripts/coverage_per_function.sh
 
 coverage-summary: coverage
 
