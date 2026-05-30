@@ -254,12 +254,16 @@ static void test_open_rejects_unsupported(void)
     END();
 }
 
-/* An extreme src->dst ratio collapses stripe 0's source range to zero rows,
- * so worker construction fails the stripe-bounds check and lazy init reports
- * failure without crashing. Covers the degenerate-stripe path. */
-static void test_degenerate_stripe_geometry(void)
+/* An extreme src->dst ratio (8 -> 1080 luma rows) drives the stripe-bounds
+ * math to its limit. Whether stripe 0's source range collapses to zero rows
+ * depends on how many stripes zimg_open creates, which is clamped to the
+ * machine's core count (up_threads_decide) — so on a many-core host it
+ * degenerates and lazy_init returns -1, while on a 1-2 core CI runner the few
+ * fat stripes stay valid and it succeeds. Either way the backend must not
+ * crash or leak (ASan/UBSan enforce); accept both results. */
+static void test_extreme_ratio_no_crash(void)
 {
-    BEGIN("extreme ratio collapses a stripe -> graceful failure, no crash");
+    BEGIN("extreme src->dst ratio: graceful (no crash/leak), rc 0 or -1");
     zt_pic_t src, dst;
     int ok = zt_pic_alloc(&src, VLC_CODEC_I420, 100, 8) == 0
           && zt_pic_alloc(&dst, VLC_CODEC_I420, 1920, 1080) == 0;
@@ -272,7 +276,7 @@ static void test_degenerate_stripe_geometry(void)
         ctx.backend->close(&ctx);
     }
     CHECK(ok);
-    CHECK(rc == -1);
+    CHECK(rc == 0 || rc == -1);
     zt_pic_free(&src);
     zt_pic_free(&dst);
     END();
@@ -287,7 +291,7 @@ int main(void)
     test_supports();
     test_all_algos();
     test_open_rejects_unsupported();
-    test_degenerate_stripe_geometry();
+    test_extreme_ratio_no_crash();
     test_construction_pthread_fail();
     printf("\n%d tests run, %d failed\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;
