@@ -25,6 +25,10 @@
 #include <stdint.h>
 #include <string.h>
 
+/* up_copy_plane: shared stride-aware plane copy, reused by the identity
+ * fast path here and by usm_pool.c (DUP-1). Header-only, no extra deps. */
+#include "zimg_helpers.h"
+
 /* User-facing amount range: 0..200 (percent of "1.0" sharpening).
  * 0  = off
  * 20 = subtle (default)
@@ -151,24 +155,21 @@ static inline void up_usm__apply_identity(
     const uint8_t *src, int src_stride,
     int width, int height)
 {
+    /* Skip the copy entirely when dst aliases src with the same stride. */
     if (dst == src && dst_stride == src_stride) return;
-    /* Unified-stride fast path: when src and dst are contiguous (no row
-     * padding) AND share a stride, the whole plane is one contiguous
-     * block in both buffers — collapse height memcpy() calls into one.
-     *
-     * For a 320×240 chroma plane that's 240 calls vs 1; each memcpy()
-     * call has ~30-40ns of dispatch+alignment overhead, so eliminating
-     * them is a measurable win for small widths. glibc's memcpy is
-     * already SIMD inside, so per-byte throughput is unchanged. */
-    if (dst_stride == src_stride && src_stride == width) {
-        memcpy(dst, src, (size_t)width * (size_t)height);
-        return;
-    }
-    for (int y = 0; y < height; y++) {
-        memcpy(dst + (size_t)y * (size_t)dst_stride,
-               src + (size_t)y * (size_t)src_stride,
-               (size_t)width);
-    }
+    /* Otherwise reuse the shared stride-aware plane copy (one memcpy when
+     * both buffers are contiguous, else row-by-row). See up_copy_plane in
+     * zimg_helpers.h. */
+    up_copy_plane(dst, dst_stride, src, src_stride, width, height);
+}
+
+/* Clamp a Q8 sharpening amount to [0, UP_USM_AMOUNT_Q8_MAX]. Shared by the
+ * single-threaded apply and the threaded pool (DUP-4). */
+static inline int up_usm__clamp_amount_q8(int amount_q8)
+{
+    if (amount_q8 < 0) return 0;
+    if (amount_q8 > UP_USM_AMOUNT_Q8_MAX) return UP_USM_AMOUNT_Q8_MAX;
+    return amount_q8;
 }
 
 /*
@@ -276,9 +277,7 @@ static inline int up_usm_apply_plane(
     if (!up_usm__args_valid(dst, dst_stride, src, src_stride, width, height))
         return 0;
 
-    /* Clamp amount. */
-    if (amount_q8 < 0) amount_q8 = 0;
-    if (amount_q8 > UP_USM_AMOUNT_Q8_MAX) amount_q8 = UP_USM_AMOUNT_Q8_MAX;
+    amount_q8 = up_usm__clamp_amount_q8(amount_q8);
 
     /* Identity fast path. */
     if (amount_q8 == 0) {

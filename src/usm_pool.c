@@ -414,29 +414,6 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
 }
 
 /*
- * Identity-copy fast path for amount_q8 == 0. Mirrors the matching
- * branch in up_usm_apply_plane (single-threaded). No thread activity.
- */
-static void usm_pool_identity(uint8_t *dst, int dst_stride,
-                              const uint8_t *src, int src_stride,
-                              int width, int height)
-{
-    if (dst == src && dst_stride == src_stride) return;
-    /* Unified-stride fast path: see comment in up_usm__apply_identity
-     * (src/usm.h). Collapses N memcpys into 1 when the whole plane is
-     * contiguous in both buffers. */
-    if (dst_stride == src_stride && src_stride == width) {
-        memcpy(dst, src, (size_t)width * (size_t)height);
-        return;
-    }
-    for (int y = 0; y < height; y++) {
-        memcpy(dst + (size_t)y * (size_t)dst_stride,
-               src + (size_t)y * (size_t)src_stride,
-               (size_t)width);
-    }
-}
-
-/*
  * Update each worker's per-frame state to point at the current src/dst
  * buffers and amount. Called by the main thread while workers are
  * blocked on their `go` semaphore - no synchronization needed.
@@ -480,14 +457,6 @@ static int usm_pool_validate_args(const usm_pool_t *p,
     return 0;
 }
 
-/* Clamp amount, matching up_usm_apply_plane. */
-static int usm_pool_clamp_amount(int amount_q8)
-{
-    if (amount_q8 < 0) return 0;
-    if (amount_q8 > UP_USM_AMOUNT_Q8_MAX) return UP_USM_AMOUNT_Q8_MAX;
-    return amount_q8;
-}
-
 /* Lazy init on first real call. Returns 0 on success (already done or
  * just succeeded), -1 on prior or fresh failure (sticky). */
 static int usm_pool_ensure_init(usm_pool_t *p)
@@ -510,12 +479,12 @@ int up_usm_pool_apply(usm_pool_t *p,
     if (usm_pool_validate_args(p, dst, dst_stride, src, src_stride) != 0)
         return -1;
 
-    amount_q8 = usm_pool_clamp_amount(amount_q8);
+    amount_q8 = up_usm__clamp_amount_q8(amount_q8);
 
     /* Identity fast path: no thread activity, no scratch alloc. */
     if (amount_q8 == 0) {
-        usm_pool_identity(dst, dst_stride, src, src_stride,
-                          p->width, p->height);
+        up_usm__apply_identity(dst, dst_stride, src, src_stride,
+                               p->width, p->height);
         return 0;
     }
 
