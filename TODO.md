@@ -158,6 +158,22 @@ Kept here so future passes don't re-pick them.
 | DEC-1 | `up_usm_pool_variant_name` accessor would still require mode-specific bodies; swapping a global for a call adds no decoupling and complicates tests. Decided 2026-05-30. |
 | DEC-2 | Link-time safety for shims is preferred over "clever" X-macro indirection per AGENTS.md guidelines. Decided 2026-05-30. |
 
+### Full-project rescan 2026-05-30 — candidates investigated and rejected
+
+Whole-project audit across every AGENTS.md category (parallel reviewers over
+all `src/`). NO new actionable findings; every candidate raised was a false
+positive or already-documented intentional design. Recorded so future passes
+don't re-investigate:
+
+| candidate | why rejected |
+|----|--------------|
+| `usm_pool.c` `usm_pool_lazy_init` "leaks scratch+workers if `init_done_sem` fails" | Not a leak: `lazy_init_failed` makes the failure sticky and `up_usm_pool_destroy` (called at filter Close) frees `p->scratch` and `p->workers` unconditionally. Same lazy-then-destroy ownership as the zimg pool. |
+| `scaler_pick_logic.h` `up_pick_swscale_if_ok` "derefs `swscale_supports` with no NULL check" | Safe: the only public entry `up_scaler_pick_with` guards `swscale_handle == NULL || swscale_supports == NULL` before any dispatch. The zimg/swscale asymmetry is intentional (zimg optional + NULL-guarded per-call; swscale mandatory + guarded once at entry). |
+| `autoupscale.c` Open `be->open` failure "leaves scaler priv dangling / Close never called" | Correct VLC contract: on Open returning `VLC_EGENERIC`, Close is never called and nothing is leaked — only `p_sys` is allocated before the check and it is `free()`d on the spot; the backend `open` frees its own priv on failure (it sets `ctx->priv` only on success). |
+| `autoupscale.c` `monotonic_ns` returns 0 on `clock_gettime` failure "masks perf warnings" | Intentional + documented: a clock failure must NOT trigger a spurious perf advisory; perfmon ignores non-positive samples by design. |
+| `autoupscale.c` `RunProbe` "pixel vs byte width unit mismatch (UB)" | Already handled + documented: width is taken from `format.i_visible_width` (pixels) and clamped to `i_pitch`; the probe is gated to 8-bit luma where 1 byte == 1 px. |
+| `scaler_swscale.c` `sws_scale` "implicit pitch narrowing" | No narrowing: `i_pitch` is already `int`, assigned to the `int` stride array `sws_scale` expects; the short-return (`rc != dst_h`) is already checked (ERR-2). |
+
 Coverage note: pure-logic files are 100% (gated). scaler_zimg.c is exercised
 to ~94% by `make coverage-zimg` (was 0%); the rest needs a live VLC logger
 (log_zimg_open) or fault injection and is intentionally ungated.
