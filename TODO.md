@@ -34,7 +34,7 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| SCAL-2 | open | S | `scaler_zimg.c` per-frame dispatch: the main-thread WAIT half is now O(1) (counting barrier, commit pending); the WAKE half still issues N `sem_post(go)` from the main thread | Done-side resolved: workers decrement an atomic `pending`, the last posts a single `all_done` the main thread waits on once (was N `sem_wait` on a shared sem). Validated race-free under the TSan harness. Residual: replace the N per-worker `go` sems with one broadcast gate (pthread_cond + generation) to take the wake half N->1. Riskier (touches the exit/`should_exit` handshake); deferred. |
+| (none open) | | | SCAL-2 FULLY RESOLVED. Per-frame main-thread dispatch is now O(1) syscalls both ways: WAKE side bumps a shared `generation` under a mutex + one `pthread_cond_broadcast` (was N `sem_post(go)`); DONE side is a counting barrier — workers decrement an atomic `pending`, the last posts a single `all_done` the main waits on once (was N `sem_wait`). `should_exit` is now mutex-protected (set + broadcast in `zimg_wake_all_for_exit`). Validated race-free + byte-identical under the ASan/UBSan and TSan harnesses; bench-zimg shows near-linear 1->16 thread scaling. |
 
 ## concurrency
 
@@ -140,7 +140,6 @@ now only on scope, not on lack of a safety net.
 | id | effort | description | why parked |
 |----|--------|-------------|------------|
 | SCAL-3 | S | 2D/column tiling for very wide/short zimg frames | Column tiling subdivides WIDTH; horizontal resampling across a column-tile boundary risks visible vertical seams (horizontal-stripe-only design avoids this). Needs zimg halo/overlap; the harness only checks full-write/determinism/zerocopy, NOT seam-free quality — would need a perceptual/reference check added. Low priority for typical content. |
-| SCAL-2 (wake half) | S | Replace zimg's per-frame N `sem_post(go)` with one broadcast gate (pthread_cond + generation) | The WAIT half is done (counting barrier, commit pending). The wake half remains: a cond broadcast touches the `should_exit`/exit handshake (currently a carefully-reasoned single-write-under-sem invariant), so it carries more race risk than the done-side barrier. Harness (TSan) covers it; parked on scope, not safety net. |
 | SCAL-4 | M | Worker thread affinity / core pinning | Parked pending EVIDENCE: no NUMA/high-core throughput bench exists to prove a gain, and pinning short-lived per-frame workers can HARM by fighting VLC's own threads and the OS scheduler's load balancing on the typical desktop. Non-portable (`pthread_setaffinity_np`). Revisit with a real multi-socket bench before adding speculative pinning. |
 
 ## Pending validation

@@ -34,10 +34,12 @@
  *
  * N persistent worker threads spawned at Open(), one per stripe. Each
  * worker owns its zimg_filter_graph (built for that stripe's src_h/dst_h
- * dimensions) and its tmp buffer. Per-frame dispatch via per-worker
- * sem_t "go"; completion is a counting barrier (SCAL-2): an atomic "pending"
- * counter the workers decrement, the last posting a single "all_done" sem the
- * main thread waits on exactly once (was N sem_wait on a shared sem).
+ * dimensions) and its tmp buffer. Per-frame dispatch is O(1) syscalls on the
+ * main thread (SCAL-2): the wake side bumps a shared "generation" under a
+ * mutex and wakes all workers with ONE pthread_cond broadcast, and completion
+ * is a counting barrier — workers decrement an atomic "pending", the last
+ * posting a single "all_done" sem the main thread waits on once. (Was N
+ * sem_post + N sem_wait per frame.)
  * N is determined by up_threads_decide() in threading.h.
  *
  * Stripe-boundary caveat: each stripe's graph resamples independently
@@ -90,18 +92,24 @@ typedef struct
     /* _Alignas(64) on the first member promotes the whole struct's
      * alignment to 64 and forces sizeof to a 64-byte multiple, so an
      * aligned-allocated array keeps each worker on its own cache line(s).
-     * Per dispatch the main thread writes per-worker fields (sem_t.go
-     * atomics; in zerocopy-dst mode also w->dst.{y,u,v,pitch_*}) and the
-     * worker writes w->result; without padding, two adjacent workers'
+     * Per dispatch the main thread writes per-worker fields (w->result reset;
+     * in zerocopy-dst mode also w->dst.{y,u,v,pitch_*}) and the worker writes
+     * w->result and w->seen_gen; without padding, two adjacent workers'
      * writes invalidate each other's lines on every frame. Same fix as
      * usm_worker_t in usm_pool.c. C11 disallows _Alignas on a typedef
      * name, hence on the first member. */
     alignas(64) pthread_t  thread;
-    sem_t              go;
-    /* SCAL-2: completion is a counting barrier, not N sem_post/sem_wait on a
-     * shared sem. Each worker decrements *pending after its stripe; only the
-     * one that drives it to zero posts *all_done, which the main thread waits
-     * on exactly once. Both shared with the parent. */
+    /* SCAL-2: the wake side is a single broadcast gate, not N per-worker
+     * sems. The main thread bumps *generation once per dispatch under *go_lock
+     * and broadcasts *go_cv; each worker sleeps until *generation advances past
+     * its own seen_gen. The done side is a counting barrier: each worker
+     * decrements *pending after its stripe; the one that drives it to zero
+     * posts *all_done, which the main thread waits on exactly once. All four
+     * shared pointers point into the parent zimg_priv_t. */
+    pthread_mutex_t   *go_lock;
+    pthread_cond_t    *go_cv;
+    uint64_t          *generation;   /* shared, guarded by *go_lock */
+    uint64_t           seen_gen;     /* worker-private: last dispatch handled */
     atomic_int        *pending;
     sem_t             *all_done;
     bool               thread_started; /* true iff pthread_create succeeded;
@@ -109,18 +117,14 @@ typedef struct
                                         * test on `thread` is not portable —
                                         * mirror usm_worker_t and gate join/
                                         * signal on this flag instead. */
-    /* should_exit (main->worker) and result (worker->main) are plain ints,
-     * race-free because of the sem handshake. should_exit is written EXACTLY
-     * ONCE per worker — by signal_worker_exit(), before its sem_post(go) —
-     * and the worker reads it after sem_wait(go) (acquire pairs with that
-     * release). release_worker_resources() only joins; it does NOT re-signal,
-     * so there is no concurrent second write. result is single-writer
-     * (worker) / single-reader (main): each worker writes result, then does an
-     * acq_rel fetch_sub on *pending; those RMWs form a release sequence, so the
-     * worker that hits zero (acquire) observes every other worker's result
-     * write, and its sem_post(all_done) -> main's sem_wait(all_done) publishes
-     * them to main. Keep signal-once-then-join on every teardown path or these
-     * would need to become _Atomic. */
+    /* should_exit (main->worker): set by zimg_wake_all_for_exit() under
+     * *go_lock together with a *generation bump + broadcast; the worker reads
+     * it under the same lock in its wait predicate, so the access is fully
+     * mutex-synchronized (no atomics needed). result is single-writer (worker)
+     * / single-reader (main): each worker writes result, then does an acq_rel
+     * fetch_sub on *pending; those RMWs form a release sequence, so the worker
+     * that hits zero (acquire) observes every other worker's result write, and
+     * its sem_post(all_done) -> main's sem_wait(all_done) publishes them. */
     int                should_exit;
 
     /* Persistent: one graph + one tmp buffer per worker. */
@@ -167,6 +171,11 @@ typedef struct
 {
     int               n_threads;
     stripe_worker_t  *workers;
+    /* SCAL-2 wake gate: one broadcast wakes all workers (was N sem_post). */
+    pthread_mutex_t   go_lock;
+    pthread_cond_t    go_cv;
+    uint64_t          generation;    /* bumped per dispatch + on exit, under go_lock */
+    bool              go_gate_inited; /* destroy guard: mutex+cond init'd */
     atomic_int        pending;       /* SCAL-2: live workers this dispatch */
     sem_t             all_done;      /* posted once when pending hits 0 */
     bool              all_done_inited; /* sem_destroy guard: true iff sem_init succeeded */
@@ -327,13 +336,26 @@ static void worker_copy_out_stripe(stripe_worker_t *w)
         cw, crows);
 }
 
+/* SCAL-2: block until the main thread bumps *generation (new dispatch) or
+ * sets should_exit. Returns true to run a frame, false to exit the loop.
+ * Runs under *go_lock; cond_wait handles spurious wakeups via the predicate. */
+static bool worker_wait_for_go(stripe_worker_t *w)
+{
+    pthread_mutex_lock(w->go_lock);
+    while (*w->generation == w->seen_gen && !w->should_exit)
+        pthread_cond_wait(w->go_cv, w->go_lock);
+    bool run = !w->should_exit;
+    w->seen_gen = *w->generation;
+    pthread_mutex_unlock(w->go_lock);
+    return run;
+}
+
 static void *worker_main(void *arg)
 {
     stripe_worker_t *w = (stripe_worker_t *)arg;
     for (;;)
     {
-        sem_wait(&w->go);
-        if (w->should_exit) break;
+        if (!worker_wait_for_go(w)) break;
 
         if (w->copy_in) worker_copy_in_stripe(w);  /* PERF-1: parallel copy-in */
 
@@ -536,6 +558,10 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
     /* I/O mode: copy on the side that is NOT zero-copy. */
     w->copy_in      = !p->src_zerocopy;
     w->copy_out     = !p->dst_zerocopy;
+    w->go_lock      = &p->go_lock;
+    w->go_cv        = &p->go_cv;
+    w->generation   = &p->generation;
+    w->seen_gen     = p->generation;   /* don't run a frame before the first dispatch */
     w->pending      = &p->pending;
     w->all_done     = &p->all_done;
     w->worker_id    = worker_id;
@@ -554,9 +580,7 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
         w->tmp = aligned_alloc(UP_PITCH_ALIGN, (w->tmp_size + UP_PITCH_ALIGN - 1) & ~(size_t)(UP_PITCH_ALIGN - 1));
         if (!w->tmp) return -1;
     }
-    if (sem_init(&w->go, 0, 0) != 0) return -1;
     if (pthread_create(&w->thread, NULL, worker_main, w) != 0) {
-        sem_destroy(&w->go);
         return -1;
     }
     w->thread_started = true;
@@ -574,36 +598,39 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
  * can't infer it from `w->thread` alone because pthread_t is opaque.
  *
  * A started worker MUST already have been told to exit via
- * signal_worker_exit() before this joins it — this function does NOT signal,
- * so should_exit is written exactly once (see the struct comment) and never
- * races the worker's read of it.
+ * zimg_wake_all_for_exit() before this joins it — that signal happens once,
+ * under go_lock, for every worker at once.
  *
  * After return, all dynamic resources owned by `w` are released; the
  * struct itself is NOT zeroed (caller decides whether to reuse the slot).
  */
 static void release_worker_resources(stripe_worker_t *w, bool had_thread)
 {
-    if (had_thread) {
+    if (had_thread)
         pthread_join(w->thread, NULL);
-        sem_destroy(&w->go);
-    }
     if (w->graph) { zimg_filter_graph_free(w->graph); w->graph = NULL; }
     free(w->tmp); w->tmp = NULL;
 }
 
 /*
- * Tell a started worker to finish its loop: write should_exit, then post its
- * go semaphore — exactly once. The worker reads should_exit only after its
- * sem_wait(go) (which acquires this release), so the single write is race-
- * free without atomics. No-op if the worker never started. Always pair with
- * a later release_worker_resources() that joins.
+ * SCAL-2: tell every started worker to finish its loop. Sets should_exit on
+ * all of them and bumps the generation under go_lock, then a single broadcast
+ * wakes them — one wake for the whole pool, not one sem_post per worker. The
+ * workers read should_exit under the same lock, so the writes never race their
+ * reads. Always pair with a later release_worker_resources() that joins.
  */
-static void signal_worker_exit(stripe_worker_t *w)
+static void zimg_wake_all_for_exit(zimg_priv_t *p)
 {
-    if (w->thread_started) {
-        w->should_exit = 1;
-        sem_post(&w->go);
-    }
+    /* If the gate never initialized, no thread was ever spawned (construct
+     * runs after gate init), so there is nothing to wake. */
+    if (!p->go_gate_inited) return;
+    pthread_mutex_lock(&p->go_lock);
+    for (int i = 0; i < p->n_threads; i++)
+        if (p->workers[i].thread_started)
+            p->workers[i].should_exit = 1;
+    p->generation++;
+    pthread_cond_broadcast(&p->go_cv);
+    pthread_mutex_unlock(&p->go_lock);
 }
 
 /*
@@ -613,11 +640,10 @@ static void signal_worker_exit(stripe_worker_t *w)
  */
 static void teardown_constructed_workers(zimg_priv_t *p, int n)
 {
-    /* Signal every worker first (batched wakeups), THEN join — same
-     * signal-once-then-reap order as zimg_close, so should_exit is written
-     * exactly once per worker. */
-    for (int i = 0; i < n; i++)
-        signal_worker_exit(&p->workers[i]);
+    /* One broadcast wakes every started worker (the broadcast reaches all
+     * waiters; non-started slots are skipped), THEN join — same
+     * signal-then-reap order as zimg_close. */
+    zimg_wake_all_for_exit(p);
     for (int i = 0; i < n; i++) {
         stripe_worker_t *w = &p->workers[i];
         release_worker_resources(w, w->thread_started);
@@ -783,6 +809,16 @@ static int zimg_lazy_init(zimg_priv_t *p)
     if (sem_init(&p->all_done, 0, 0) != 0) return -1;
     p->all_done_inited = true;
 
+    /* SCAL-2 wake gate. Must be live before construct_workers spawns threads,
+     * since each worker blocks on go_cv immediately (seen_gen == generation). */
+    if (pthread_mutex_init(&p->go_lock, NULL) != 0) return -1;
+    if (pthread_cond_init(&p->go_cv, NULL) != 0) {
+        pthread_mutex_destroy(&p->go_lock);
+        return -1;
+    }
+    p->generation = 0;
+    p->go_gate_inited = true;
+
     int constructed = 0;
     /* ARCH-1: the worker-construction chain reads only src/dst geometry, all
      * of which lives in the priv struct (init_priv_geometry) — no fake ctx. */
@@ -886,15 +922,19 @@ static void point_workers_planes(zimg_priv_t *p, const picture_t *pic,
  */
 static int zimg_dispatch_and_wait(zimg_priv_t *p)
 {
-    /* SCAL-2: arm the barrier before any worker can run (each is blocked on its
-     * own `go`); relaxed is sufficient because the sem_post(go) below release-
-     * publishes this store to each worker. */
+    /* SCAL-2 wake side: arm the done-barrier and reset results, then bump the
+     * generation once and wake every worker with a single broadcast (was N
+     * sem_post). All of this under go_lock, so a worker that wakes sees pending
+     * already armed and its result already reset. */
+    pthread_mutex_lock(&p->go_lock);
     atomic_store_explicit(&p->pending, p->n_threads, memory_order_relaxed);
-    for (int i = 0; i < p->n_threads; i++) {
+    for (int i = 0; i < p->n_threads; i++)
         p->workers[i].result = 0;
-        sem_post(&p->workers[i].go);
-    }
-    sem_wait(&p->all_done);   /* one wait, not N (was N sem_wait on a shared sem) */
+    p->generation++;
+    pthread_cond_broadcast(&p->go_cv);
+    pthread_mutex_unlock(&p->go_lock);
+
+    sem_wait(&p->all_done);   /* done side: one wait (counting barrier) */
     for (int i = 0; i < p->n_threads; i++) {
         if (p->workers[i].result != 0) return -1;
     }
@@ -985,29 +1025,22 @@ static int zimg_process(scaler_ctx_t *ctx,
     return zimg_dispatch_and_wait(p);
 }
 
-/*
- * Signal every started worker to exit, in a separate pass before joining,
- * so all sem_posts go out before we block on the first join. Joining one
- * thread at a time would serialize the wakeups; this batches them.
- */
-static void zimg_signal_all_workers_exit(zimg_priv_t *p)
-{
-    for (int i = 0; i < p->n_threads; i++)
-        signal_worker_exit(&p->workers[i]);
-}
-
 static void zimg_close(scaler_ctx_t *ctx)
 {
     zimg_priv_t *p = ctx->priv;
     if (!p) return;
 
     if (p->workers) {
-        zimg_signal_all_workers_exit(p);
+        zimg_wake_all_for_exit(p);   /* one broadcast, then join */
         for (int i = 0; i < p->n_threads; i++) {
             stripe_worker_t *w = &p->workers[i];
             release_worker_resources(w, w->thread_started);
         }
         free(p->workers);
+    }
+    if (p->go_gate_inited) {
+        pthread_cond_destroy(&p->go_cv);
+        pthread_mutex_destroy(&p->go_lock);
     }
     if (p->all_done_inited) sem_destroy(&p->all_done);
 
