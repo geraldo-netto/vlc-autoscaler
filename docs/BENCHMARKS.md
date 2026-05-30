@@ -63,3 +63,32 @@ frames each, on a 32-core x86-64 host at `-march=native -O3`.
 
 These per-path gains compound in the full `Filter()` pipeline (zimg resample
 then USM post-pass run back to back per frame).
+
+## SIMD microarchitecture scaling (MULTIVERSION)
+
+`MULTIVERSION=1` ships three copies of the USM pool, each compiled at a
+different x86-64 SIMD baseline, and `usm_pool_dispatch.c` picks the best at
+`.so` load via `__builtin_cpu_supports()`. Below: the same USM kernel
+(hblur + combine) built at each `-march`, on an AVX-512-capable host. The
+vectorizer genuinely widens — `usm_pool.c` emits xmm (SSE2) → 165 ymm (AVX2)
+→ 151 zmm (AVX-512) vector ops. Median of 5.
+
+| Workload | SSE2 `x86-64` | AVX2 `x86-64-v3` | AVX-512 `x86-64-v4` | AVX2 vs SSE2 | AVX-512 vs SSE2 | AVX-512 vs AVX2 |
+|----------|-------------:|-----------------:|--------------------:|:-----------:|:--------------:|:--------------:|
+| 1 thr · 1080p | 4293 | 1420 | 1224 | 3.02× | 3.51× | 1.16× |
+| 1 thr · 4K | 17065 | 5649 | 4811 | 3.02× | 3.55× | 1.17× |
+| 8 thr · 1080p | 656 | 260 | 205 | 2.52× | 3.21× | 1.27× |
+
+(µs/frame.) AVX2 ~triples SSE2 throughput; AVX-512 adds a further ~16–27%.
+The step from SSE2→AVX2 (2× the lane width) over-delivers (3×) because the
+`x86-64-v3` baseline also brings more registers + better scheduling, while
+AVX-512 (4× SSE2 lanes) under-delivers (3.5×) because these 8-bit kernels are
+low arithmetic-intensity and partly memory-bandwidth-bound — wider lanes help
+sub-linearly once bandwidth, not compute, is the limit. The decoded output is
+byte-identical across all three (the kernels do the same saturating integer
+math; SIMD just runs more lanes), verified by `make test` /
+`fuzz_usm_variants`.
+
+Reproduce: `make MARCH=x86-64 MULTIVERSION=1` (or `-v3` / `-v4`) builds the
+selected baseline; the variant equivalence is checked by
+`tests/test_usm_pool_variants.c`.
