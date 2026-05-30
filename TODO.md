@@ -59,7 +59,7 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| ARCH-4 | low | S | `plane_set_t` on `stripe_worker_t` (`scaler_zimg.c:73,119-129`) carries three roles: scratch geometry (`.lines_*`, priv-level only), the worker's scratch view (`src`/`dst`), and per-frame VLC picture pointers (`vlc_src`). The parallel copy-in widened this overload by adding `vlc_src` | Mild SRP smell. Could split `plane_geom_t` (pitch+lines) vs `plane_ptrs_t` (y/u/v+pitch). Low value unless a third consumer appears. |
+| ARCH-4 | keep | S | `plane_set_t` on `stripe_worker_t` carries three roles: scratch geometry (`.lines_*`, priv-level only), the worker's scratch view (`src`/`dst`), and per-frame VLC picture pointers (`vlc_src`/`vlc_dst`) | DECISION (2026-05-30): keep. A `plane_geom_t`{pitch,lines} / `plane_ptrs_t`{y,u,v,pitch} split duplicates `pitch` across both types and ripples through `point_workers_planes`, the copy helpers, scratch alloc, and every worker field — for an overload whose only cost is two unused `int`s (`lines_*`) carried in the worker views. Net more types/code, marginal clarity. Per AGENTS.md (SOLID only when it helps). Revisit if a third consumer with different geometry needs appears. |
 
 ## decoupling
 
@@ -69,7 +69,7 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| PAT-2 | open | S | `zimg_process` (`scaler_zimg.c:757`) is an implicit pipeline (copy-in → point → dispatch → copy-out) with `if (dst_zerocopy)` scattered across phases | Documenting as a Template Method (fixed skeleton, zerocopy-varying steps) would make the two output paths explicit. Low value; keep unless a third output mode appears. |
+| PAT-2 | keep | S | `zimg_process` is an implicit pipeline (point → dispatch) with the zerocopy variation handled per side | DECISION (2026-05-30): keep. The "scattered branches" no longer exist: `zimg_process` is a flat linear skeleton, and the zerocopy variation is a single offset ternary per side (`WORKER_SRC_OFF` vs `WORKER_VLC_SRC_OFF`) plus per-worker `copy_in`/`copy_out` flags consumed inside `worker_main`. A Template-Method vtable would add fn-pointer indirection for two static paths with no real branching to hide. Per AGENTS.md (patterns only when they improve clarity). Revisit if a third output mode appears. |
 
 PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 0f92daa.
 
@@ -108,13 +108,13 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| BUILD-2 | partial | S | cppcheck excludes `autoupscale.c` and `scaler_zimg.c` (can't parse VLC's macro headers); shipped `.so` analysis gap | Partially addressed: CI builds with `-Werror`, runtime harness exists, and `scan-build` target added for static analysis. `-fanalyzer` remains deferred (noisy). |
+| (none open) | | | BUILD-2 RESOLVED: the cppcheck gap on `autoupscale.c`/`scaler_zimg.c` (cppcheck can't parse VLC's macro headers) is now covered by `make scan-build` — the clang static analyzer DOES parse VLC headers and runs over those exact TUs with `--status-bugs` (CI-gating). Verified clean ("No bugs found", 2026-05-30). Combined with gcc+clang `-Werror` and the ASan/UBSan/TSan harness, the `.so` analysis gap is closed. `-fanalyzer` stays deferred (noisy on VLC headers; scan-build supersedes the need). |
 
 ## observability
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| OBS-4 | low | M | The serial copy-out path (PERF-5) ships with zero runtime visibility — `log_zimg_open` reports geometry/scratch once at open, nothing per-frame | Deferred: needs a per-frame metric channel through the scaler `process()` API (e.g. `last_copyout_ns` on `scaler_ctx_t`) plus hot-path timing guarded on zerocopy-off. Re-scoped S→M; low value vs. interface change. OBS-3 (periodic frames/dropped/EWMA `msg_Dbg`) DONE — commit pending. |
+| (none open) | | | OBS-4 OBSOLETE: it assumed a SERIAL copy-out tail, but PERF-5 (commit b4b86b3) made copy-out PARALLEL — each worker copies its own stripe inside `worker_main`, folded into the per-frame dispatch the workers all complete before the barrier. There is no separable serial copy-out cost to surface; total per-frame time (incl. parallel copy-out) is already visible via OBS-3's EWMA. Measuring it would need per-worker hot-path timing + a max-reduction for negligible value. Closed, not deferred. |
 
 ## wiring gaps
 
