@@ -53,7 +53,7 @@ under "Audit picks deliberately rejected".
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
 | DUP-3 | keep | S | Worker-pool lifecycle (lazy-init flags, aligned_alloc + memset, sem_init, spawn loop with `constructed`, sticky `lazy_init_failed`) duplicated between `scaler_zimg.c` and `usm_pool.c`; per-worker `_Alignas(64)` struct + rationale comment copy-pasted | DECISION (2026-05-30): keep. A shared scaffold needs a type-erased pool (void* element + per-worker construct/destroy callbacks) since the worker structs and per-worker work differ (per-stripe zimg graphs vs scratch rows). The common part is ~15 lines of alloc+memset+spawn; hiding it behind a callback interface across a module boundary adds indirection while the real work stays divergent — net clarity loss. Per AGENTS.md (SOLID only when it improves clarity). |
-| DUP-5 | open | S | Args-valid checks parallel: `usm_pool.c` (`usm_pool_validate_args`) vs `usm.h` (`up_usm__args_valid`) — both null dst/src + stride<width | Marginal: the pool variant also checks its own ptr and uses the stored `p->width`, while `up_usm__args_valid` validates full dims; not cleanly mergeable without threading width/height through. Keep. |
+| DUP-5 | keep | S | Args-valid checks parallel: `usm_pool.c` (`usm_pool_validate_args`) vs `usm.h` (`up_usm__args_valid`) — both null dst/src + stride<width | Marginal: the pool variant also checks its own ptr and uses the stored `p->width`, while `up_usm__args_valid` validates full dims; not cleanly mergeable without threading width/height through. Keep. |
 
 ## architecture/modularity/SOLID
 
