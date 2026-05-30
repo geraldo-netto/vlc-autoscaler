@@ -54,6 +54,7 @@
 #include <zimg.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -92,13 +93,16 @@ typedef struct
                                         * test on `thread` is not portable —
                                         * mirror usm_worker_t and gate join/
                                         * signal on this flag instead. */
-    /* should_exit (main->worker) and result (worker->main) are plain ints
-     * shared across threads. They are race-free ONLY because of the
-     * sem_post(go)/sem_wait(done) handshake around every dispatch: those
-     * POSIX-semaphore ops are full memory barriers, giving the writes
-     * happens-before the reads. Keep that handshake on every path or these
-     * must become _Atomic. */
-    int                should_exit;
+    /* should_exit is _Atomic because the close path writes it TWICE
+     * concurrently: zimg_signal_all_workers_exit batches a write+sem_post to
+     * every worker, then release_worker_resources writes it again before the
+     * join. The second write races with the worker's read of the first (the
+     * sem only orders the first signal) — a real data race TSan flags. Both
+     * writes store the same value, so relaxed atomicity is enough to make it
+     * defined; the sem still drives the actual wakeup. (result, by contrast,
+     * stays a plain int: single writer (worker) / single reader (main) with
+     * the sem_post(done)/sem_wait(done) handshake between them.) */
+    _Atomic int        should_exit;
 
     /* Persistent: one graph + one tmp buffer per worker. */
     zimg_filter_graph *graph;

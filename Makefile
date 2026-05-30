@@ -153,7 +153,7 @@ endif
 
 PLUGIN_OBJS += $(USM_OBJS)
 
-.PHONY: all plugin test fuzz fuzz-smoke analyze install uninstall clean info bench bench-flatskip
+.PHONY: all plugin test fuzz fuzz-smoke analyze install uninstall clean info bench bench-flatskip test-zimg stress-zimg bench-zimg
 
 all: plugin
 
@@ -404,6 +404,56 @@ stress: $(BUILD)/stress_usm_pool $(BUILD)/stress_usm_pool_tsan
 	@echo
 	@echo "=== usm_pool stress (ThreadSanitizer) ==="
 	@$(BUILD)/stress_usm_pool_tsan
+
+# --------- zimg backend harness (requires libzimg + VLC headers) ---------
+# scaler_zimg.c is VLC-typed but never touches VLC's picture pool/logging at
+# runtime, so these link a private copy compiled under sanitizers against real
+# VLC + zimg headers and drive open/process/close on hand-built pictures (see
+# tests/zimg_test_util.h). Kept OUT of `make test` (which stays VLC-free);
+# run explicitly. Built only when libzimg was detected.
+ifdef HAVE_ZIMG
+ZIMG_H_CFLAGS  := -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS)
+ZIMG_H_LIBS    := $(VLC_LIBS) $(ZIMG_LIBS) -lpthread
+ZIMG_H_DEPS    := tests/zimg_test_util.h src/scaler_zimg.c src/scaler.h \
+                  src/zimg_helpers.h src/scaler_zimg_chroma.h \
+                  src/upscale_logic.h src/threading.h
+
+$(BUILD)/test_scaler_zimg: tests/test_scaler_zimg.c $(ZIMG_H_DEPS) | $(BUILD)
+	$(CC) -O2 $(ZIMG_H_CFLAGS) -fsanitize=address,undefined -o $@ \
+	    $< src/scaler_zimg.c -fsanitize=address,undefined $(ZIMG_H_LIBS)
+
+$(BUILD)/test_scaler_zimg_tsan: tests/test_scaler_zimg.c $(ZIMG_H_DEPS) | $(BUILD)
+	$(CLANG) -O1 $(ZIMG_H_CFLAGS) -fsanitize=thread -o $@ \
+	    $< src/scaler_zimg.c -fsanitize=thread $(ZIMG_H_LIBS)
+
+$(BUILD)/bench_scaler_zimg: tests/bench_scaler_zimg.c $(ZIMG_H_DEPS) | $(BUILD)
+	$(CC) -O2 $(ZIMG_H_CFLAGS) -o $@ $< src/scaler_zimg.c $(ZIMG_H_LIBS)
+
+test-zimg: $(BUILD)/test_scaler_zimg
+	@echo
+	@echo "=== scaler_zimg invariants (ASan + UBSan) ==="
+	@$(BUILD)/test_scaler_zimg
+
+stress-zimg: $(BUILD)/test_scaler_zimg $(BUILD)/test_scaler_zimg_tsan
+	@echo
+	@echo "=== scaler_zimg invariants (ASan + UBSan) ==="
+	@$(BUILD)/test_scaler_zimg
+	@echo
+	@echo "=== scaler_zimg invariants (ThreadSanitizer) ==="
+	@$(BUILD)/test_scaler_zimg_tsan
+
+bench-zimg: $(BUILD)/bench_scaler_zimg
+	@echo "threads,chroma,src,dst,frames,zc,us_per_frame"
+	@$(BUILD)/bench_scaler_zimg 1  i420 854 480 1920 1080 200 1
+	@$(BUILD)/bench_scaler_zimg 2  i420 854 480 1920 1080 200 1
+	@$(BUILD)/bench_scaler_zimg 4  i420 854 480 1920 1080 200 1
+	@$(BUILD)/bench_scaler_zimg 8  i420 854 480 1920 1080 200 1
+	@$(BUILD)/bench_scaler_zimg 16 i420 854 480 1920 1080 200 1
+	@$(BUILD)/bench_scaler_zimg 8  i420 640 360 1280 720  200 1
+else
+test-zimg stress-zimg bench-zimg:
+	@echo "libzimg not detected (pkg-config zimg); zimg harness unavailable."
+endif
 
 # --------- micro-benchmark ---------
 # Wall-clock us/frame for the USM pool at -O3 (matches the production
