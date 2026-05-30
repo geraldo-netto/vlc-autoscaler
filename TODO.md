@@ -158,6 +158,7 @@ ERR-1 (sem leak on partial spawn) DONE — fixed during the PERF-2 rewrite (comm
 | DEAD-3 | open | S | `up_usm__pass2_combine` (`usm.h:228`) reachable only via `up_usm_apply_plane` | inline/keep with WIRE-2. |
 | DEAD-4 | open | S | `up_usm__apply_identity` (`usm.h:142`) reachable only via `up_usm_apply_plane`; usm_pool.c references it only in a comment (has its own `usm_pool_identity`) | keep with WIRE-2; logic duplicated at `usm_pool.c:387` — dedup target (see DUP-1). |
 | DEAD-5 | open | S | `up_usm__args_valid` (`usm.h:251`) reachable only via `up_usm_apply_plane` | inline/keep with WIRE-2. |
+| DEAD-7 | open | S | `scaler_zimg.c` `construct_workers` partial-build retry + `teardown_constructed_workers` are unreachable in practice: `zimg_open` clamps stripes to >=16 dst rows and source-stripe degeneracy is all-or-nothing, so `0 < constructed < n` never occurs (found while pushing zimg coverage) | keep: cheap defensive net against future stripe-bounds changes; document as belt-and-suspenders, or delete if the clamp invariant is asserted instead. Not a correctness bug. |
 
 DEAD-6 (orphaned bench_usm_pool.c) DONE — wired as `make bench` / `make bench-flatskip` and its timing loop fixed (commit cc71221).
 
@@ -171,10 +172,19 @@ now only on scope, not on lack of a safety net.
 
 | id | effort | description | why parked |
 |----|--------|-------------|------------|
-| PERF-1 | M | Parallelize `zimg_copy_in` (serial source memcpy each frame) across the worker pool | Harness exists now. Still note the file header's warning that worker threads reading VLC's pool-managed SOURCE buffers segfaulted in the field — the parallel copy-in must read from the scratch/VLC src exactly as the existing serial copy does; validate with stress-zimg + bench-zimg before/after. |
 | SCAL-3 | S | 2D/column tiling for very wide/short zimg frames | Column tiling subdivides WIDTH; horizontal resampling across a column-tile boundary risks visible vertical seams (horizontal-stripe-only design avoids this). Needs zimg halo/overlap; the harness only checks full-write/determinism/zerocopy, NOT seam-free quality — would need a perceptual/reference check added. Low priority for typical content. |
 | SCAL-2 (zimg half) | S | Replace zimg's per-frame N sem_post/sem_wait with a counting barrier | Unblocked by the harness (TSan covers the race surface). USM half already done (commit cc71221). |
 
-Note: CON-1 (commit 8aa9104) only documented should_exit/result as sem-safe;
-the zimg harness's TSan build then caught a real double-write race on
-should_exit in the close path, fixed by making it `_Atomic` (commit 1c53e19).
+PERF-1 (parallel copy-in) DONE — commit b0d327f, measured -12% to -23% at
+4-16 threads, validated by the harness under ASan/UBSan/TSan.
+
+CON-1 fully resolved: commit 8aa9104 only documented should_exit/result as
+sem-safe; the zimg harness's TSan build caught a real double-write race on
+should_exit (close path signalled twice). Fixed properly in commit 3a35a23 by
+signalling each worker exactly once (signal-then-reap), so should_exit stays a
+plain sem-synchronized int — matching usm_pool's pattern (the interim _Atomic
+in 1c53e19 was reverted).
+
+Coverage note: pure-logic files are 100% (gated). scaler_zimg.c is exercised
+to ~94% by `make coverage-zimg` (was 0%); the rest needs a live VLC logger
+(log_zimg_open) or fault injection and is intentionally ungated.
