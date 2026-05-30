@@ -93,12 +93,15 @@ int up_usm_pool_apply(usm_pool_t *pool,
 void up_usm_pool_destroy(usm_pool_t *pool);
 
 /*
- * Name of the active SIMD variant chosen at .so load time:
- *   "avx512" / "avx2" / "sse2" — for diagnostic logging.
- *
- * In MULTIVERSION=0 builds (single-baseline plugin), this symbol is
- * provided as a weak alias for compatibility. The variant string then
- * reflects the build-time -march level.
+ * Name of the active SIMD variant, for diagnostic logging. Exactly one
+ * strong definition is linked, depending on build mode (ABI-1):
+ *   - MULTIVERSION=1: usm_pool_dispatch.c sets it at .so load to the chosen
+ *     variant ("avx512" / "avx2" / "sse2") via __builtin_cpu_supports().
+ *   - MULTIVERSION=0: usm_pool.c (compiled without USM_VARIANT) defines it as
+ *     "default" — the single baseline reflects the build-time -march level,
+ *     which the user already chose, so no runtime detection is done.
+ * The two definitions are mutually exclusive (guarded by USM_VARIANT), so
+ * there is no clash and no weak alias is involved.
  */
 extern const char *up_usm_pool_variant_name;
 

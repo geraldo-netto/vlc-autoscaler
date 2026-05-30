@@ -46,6 +46,16 @@
 
 #include <stdint.h>
 
+/* This dispatcher only makes sense on x86-64: it selects between SSE2 / AVX2 /
+ * AVX-512 variant objects (built at x86 -march levels) via __builtin_cpu_*,
+ * which exists only on x86 gcc/clang. The Makefile only compiles this TU for
+ * MULTIVERSION=1, and only with x86 marches; fail loudly if it is ever fed to
+ * another architecture instead of silently mis-wiring the SSE2 fallback
+ * (PORT-2). Non-x86 targets build MULTIVERSION=0 (single usm_pool.o). */
+#if !defined(__x86_64__)
+#  error "usm_pool_dispatch.c is x86-64 only; build with MULTIVERSION=0 elsewhere"
+#endif
+
 /* Forward declarations: each lives in its own variant .o */
 extern usm_pool_t *up_usm_pool_create_sse2(int n_threads, int width, int height,
                                            int stripe_min_rows);
