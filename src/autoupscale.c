@@ -142,17 +142,18 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
     "byte-identical to the copy-out path in our testing but cannot be " \
     "fully verified across every VLC build configuration.")
 
-#define ZEROCOPY_SRC_TEXT N_("Read VLC's source picture directly (experimental)")
+#define ZEROCOPY_SRC_TEXT N_("Read VLC's source picture directly")
 #define ZEROCOPY_SRC_LONGTEXT N_( \
-    "1 = on (experimental): zimg worker threads read VLC's source picture " \
+    "1 = on (default): zimg worker threads read VLC's source picture " \
     "directly, skipping the copy-in to scratch and ~half the per-frame " \
-    "scratch memory. 0 = off (default, safe): the source is copied to " \
-    "plugin-owned scratch first. The direct-read path is the symmetric twin " \
-    "of zerocopy-dst (which is on by default and writes VLC's destination " \
-    "picture directly); it is off by default because reading VLC's " \
-    "pool-managed source buffers from worker threads was historically " \
-    "unreliable. Try it for the memory saving; set back to 0 if you see " \
-    "garbled output or instability.")
+    "scratch memory. The symmetric twin of zerocopy-dst (which writes VLC's " \
+    "destination picture directly). 0 = off (safe fallback): the source is " \
+    "copied to plugin-owned scratch first, then the worker graphs read the " \
+    "scratch. Set to 0 if you see garbled output, crashes, or instability - " \
+    "reading VLC's pool-managed source buffers from worker threads has been " \
+    "verified byte-identical to the copy-in path in our harness but, like " \
+    "zerocopy-dst, cannot be fully verified across every VLC build " \
+    "configuration.")
 
 #define USM_STRIPE_MIN_ROWS_TEXT N_("Minimum rows per USM stripe")
 #define USM_STRIPE_MIN_ROWS_LONGTEXT N_( \
@@ -235,7 +236,7 @@ vlc_module_begin()
                             THREADS_TEXT, THREADS_LONGTEXT, false )
     add_integer_with_range( CFG_PREFIX "zerocopy-dst", 1, 0, 1,
                             ZEROCOPY_DST_TEXT, ZEROCOPY_DST_LONGTEXT, false )
-    add_integer_with_range( CFG_PREFIX "zerocopy-src", 0, 0, 1,
+    add_integer_with_range( CFG_PREFIX "zerocopy-src", 1, 0, 1,
                             ZEROCOPY_SRC_TEXT, ZEROCOPY_SRC_LONGTEXT, false )
     add_integer_with_range( CFG_PREFIX "content-probe", 1, 0, 1,
                             PROBE_TEXT, PROBE_LONGTEXT, false )

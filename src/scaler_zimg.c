@@ -11,22 +11,23 @@
  * Each side of the resample can either go through a persistent, page-aligned
  * scratch buffer or touch VLC's picture directly:
  *
- *   - SOURCE. Default: each worker copies its own source stripe from VLC's
- *     source picture into the scratch source buffer (PERF-1, parallel), then
- *     its graph reads the scratch. Opt-in `zerocopy-src`: the graph reads
- *     VLC's source picture directly (no copy, no scratch src).
+ *   - SOURCE. Default `zerocopy-src=1`: each worker's graph reads VLC's
+ *     source picture directly (no copy, no scratch src). `zerocopy-src=0`:
+ *     each worker copies its own source stripe into scratch first (PERF-1,
+ *     parallel) and the graph reads the scratch.
  *   - DEST. Default `zerocopy-dst=1`: each worker's graph writes VLC's
  *     destination picture directly (no copy, no scratch dst). `zerocopy-dst=0`:
  *     the graph writes scratch and each worker copies its own dst stripe out
  *     to VLC's picture (PERF-5, parallel).
  *
- * So in the default config the only per-frame copy is the parallel source
- * copy-in (small — source is the pre-upscale frame). Pointing graphs at VLC's
- * pool-managed buffers from worker threads was historically unreliable, which
- * is why source defaults to copy; the dest zero-copy default proves the
- * pattern works, and a per-frame pre-flight check (zimg_pic_ok) drops a frame
- * rather than read/write a malformed picture out of bounds. The four
- * src×dst copy/zero-copy combinations are held byte-identical by the test
+ * So in the default config there is NO per-frame copy and no per-frame scratch
+ * — worker graphs read and write VLC's pictures directly. Pointing graphs at
+ * VLC's pool-managed buffers from worker threads was historically unreliable;
+ * the dest zero-copy default proved the pattern works, source zero-copy is the
+ * symmetric twin, and a per-frame pre-flight check (zimg_pic_ok) drops a frame
+ * rather than read/write a malformed picture out of bounds. Either side can be
+ * set back to copy via its option if a particular VLC build misbehaves. The
+ * four src×dst copy/zero-copy combinations are held byte-identical by the test
  * harness (tests/test_scaler_zimg.c).
  *
  * THREADING
@@ -188,9 +189,9 @@ typedef struct
     bool              dst_zerocopy;
 
     /* Source zero-copy: when true, worker graphs read the VLC source picture
-     * directly (no copy-in, no scratch src). Symmetric to dst_zerocopy.
-     * Experimental, opt-in via autoupscale-zerocopy-src; default off — see
-     * the COPY-IN/COPY-OUT note at the top of this file. */
+     * directly (no copy-in, no scratch src). Symmetric to dst_zerocopy and,
+     * like it, ON by default (autoupscale-zerocopy-src) — set the option to 0
+     * to fall back to copy-in. See the COPY-IN/COPY-OUT note at the top. */
     bool              src_zerocopy;
 
     /* One-shot guard so the per-frame picture-geometry check (pre-flight)
@@ -694,19 +695,21 @@ static void construct_workers(zimg_priv_t *p, const scaler_ctx_t *ctx,
 static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
 {
     if (!log_obj) return;
-    size_t src_mb = ((size_t)p->src.lines_y * p->src.pitch_y
-                   + 2 * (size_t)p->src.lines_c * p->src.pitch_c) >> 20;
+    /* Only scratch that is actually allocated (the copy side) counts. */
+    size_t src_mb = p->src_zerocopy ? 0
+        : (((size_t)p->src.lines_y * p->src.pitch_y
+          + 2 * (size_t)p->src.lines_c * p->src.pitch_c) >> 20);
     size_t dst_mb = p->dst_zerocopy ? 0
         : (((size_t)p->dst.lines_y * p->dst.pitch_y
           + 2 * (size_t)p->dst.lines_c * p->dst.pitch_c) >> 20);
     msg_Info(log_obj,
-             "zimg: %d worker thread%s, %dx%d -> %dx%d, "
-             "scratch %zu MB (%s)",
+             "zimg: %d worker thread%s, %dx%d -> %dx%d, scratch %zu MB "
+             "(src %s, dst %s)",
              p->n_threads, p->n_threads == 1 ? "" : "s",
              p->src_w, p->src_h, p->dst_w, p->dst_h,
              src_mb + dst_mb,
-             p->dst_zerocopy ? "copy-in/zero-copy-out"
-                             : "copy-in/copy-out");
+             p->src_zerocopy ? "zero-copy" : "copy",
+             p->dst_zerocopy ? "zero-copy" : "copy");
 }
 
 /*
