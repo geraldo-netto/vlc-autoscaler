@@ -67,6 +67,7 @@
 
 #include <pthread.h>
 #include <semaphore.h>
+#include <stdalign.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -97,7 +98,7 @@ typedef struct usm_worker_s {
      * array (one element per cache line) keeps every per-worker write
      * off neighboring workers' cache lines. C11 disallows _Alignas on a
      * typedef name itself, hence placing it here. */
-    _Alignas(64) pthread_t  thread;
+    alignas(64) pthread_t  thread;
     sem_t      go;
     sem_t     *done;          /* shared, owned by pool */
     bool       thread_started;

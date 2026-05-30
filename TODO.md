@@ -23,7 +23,7 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| MEM-2 | open | S | Ensure `aligned_alloc` size is a multiple of alignment | C11 requirement; check `usm_pool.c` and `scaler_zimg.c` calls to avoid UB. |
+| (none found) | | | All `aligned_alloc` seams verified C11-conformant: sizes are multiples of alignment by construction — `up_round_up_pitch` rounds pitches to `UP_PITCH_ALIGN` (so `lines*pitch` is a multiple), scratch/worker blocks round explicitly or via `_Alignas(64)`, and VLC picture pitches never reach `aligned_alloc`. | |
 
 ## performance
 
@@ -79,7 +79,7 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| REL-3 | open | S | Runtime probe of zimg version and features | Verify library capabilities at Open() to fail gracefully if the environment changes. |
+| (none open) | | | REL-3 (runtime zimg API major-version probe in `zimg_open`, fails graceful on ABI mismatch) DONE — commit pending. | |
 
 ## error handling
 
@@ -92,7 +92,7 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
 | PORT-3 | no-action | S | `perfmon.h:96` EWMA update right-shifts a signed `diff` | Well-defined arithmetic shift on every twos-complement target (all real ABIs); already documented in the file. No change unless a non-twos-complement target appears. Kept as a known, accepted item. |
-| PORT-4 | open | S | Use `stdalign.h` for `_Alignas` / `alignas` compatibility | Improve portability across C11-compliant compilers. |
+| (none open beyond PORT-3) | | | PORT-4 (`<stdalign.h>` + `alignas` over the `_Alignas` keyword in `usm_pool.c`/`scaler_zimg.c`) DONE — commit pending. | |
 
 ## resource management
 
@@ -116,8 +116,7 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| OBS-3 | open | S | No counters for frames processed/dropped, USM-skipped, or achieved fps; only signal is the one-shot perf advisory (`autoupscale.c:550`) | Add periodic `msg_Dbg` (every N seconds) with processed/dropped counts and current EWMA so long-run behavior is observable. |
-| OBS-4 | low | S | The serial copy-out path (PERF-5) ships with zero runtime visibility — `log_zimg_open` reports geometry/scratch once at open, nothing per-frame | When OBS-3's periodic counters land, include a copy-out-µs accumulator (zerocopy-off only) so the serial tail is observable. |
+| OBS-4 | low | M | The serial copy-out path (PERF-5) ships with zero runtime visibility — `log_zimg_open` reports geometry/scratch once at open, nothing per-frame | Deferred: needs a per-frame metric channel through the scaler `process()` API (e.g. `last_copyout_ns` on `scaler_ctx_t`) plus hot-path timing guarded on zerocopy-off. Re-scoped S→M; low value vs. interface change. OBS-3 (periodic frames/dropped/EWMA `msg_Dbg`) DONE — commit pending. |
 
 ## wiring gaps
 

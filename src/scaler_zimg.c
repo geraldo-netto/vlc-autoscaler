@@ -61,6 +61,7 @@
 #include <zimg.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <stdalign.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -92,7 +93,7 @@ typedef struct
      * writes invalidate each other's lines on every frame. Same fix as
      * usm_worker_t in usm_pool.c. C11 disallows _Alignas on a typedef
      * name, hence on the first member. */
-    _Alignas(64) pthread_t  thread;
+    alignas(64) pthread_t  thread;
     sem_t              go;
     sem_t             *done;          /* shared with parent */
     bool               thread_started; /* true iff pthread_create succeeded;
@@ -783,6 +784,23 @@ static int zimg_lazy_init(zimg_priv_t *p)
  */
 static int zimg_open(scaler_ctx_t *ctx)
 {
+    /* REL-3: fail gracefully if the runtime libzimg is a different ABI major
+     * than the headers we built against. zimg keeps source/ABI compat within
+     * a major version (a higher minor only adds features), so only a major
+     * mismatch is fatal. */
+    unsigned z_major = 0, z_minor = 0;
+    zimg_get_api_version(&z_major, &z_minor);
+    if (z_major != ZIMG_API_VERSION_MAJOR) {
+        if (ctx->log_obj)
+            msg_Err((vlc_object_t *)ctx->log_obj,
+                    "AutoUpscale: libzimg API v%u.%u incompatible with "
+                    "built-against v%u.%u (major mismatch)",
+                    z_major, z_minor,
+                    (unsigned)ZIMG_API_VERSION_MAJOR,
+                    (unsigned)ZIMG_API_VERSION_MINOR);
+        return -1;
+    }
+
     unsigned sub_w, sub_h;
     int swap;
     if (!ChromaToZimg(ctx->chroma, &sub_w, &sub_h, &swap))

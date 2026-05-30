@@ -315,6 +315,10 @@ struct filter_sys_t
     int                process_fail_logged;
 
     uint64_t           frame_count;
+
+    /* OBS-3: periodic long-run visibility (frames processed/dropped + EWMA). */
+    uint64_t           dropped_count;
+    int64_t            next_stats_ns;
 };
 
 /* How many frames to observe before deciding. At 30fps this is 2 seconds
@@ -757,6 +761,28 @@ static void ApplyUsmIfEnabled( filter_sys_t *p_sys, picture_t *p_out )
         p_sys->usm_amount_q8 );
 }
 
+/* OBS-3: every OBS_STATS_INTERVAL_NS, log a one-line long-run summary so
+ * sustained behavior is observable beyond the one-shot perf advisory. CCN 3. */
+#define OBS_STATS_INTERVAL_NS (5 * 1000000000LL)
+static void MaybeLogStats( filter_t *p_filter, filter_sys_t *p_sys,
+                           int64_t now_ns )
+{
+    if( p_sys->next_stats_ns == 0 )
+    {
+        p_sys->next_stats_ns = now_ns + OBS_STATS_INTERVAL_NS;
+        return;
+    }
+    if( now_ns < p_sys->next_stats_ns )
+        return;
+    p_sys->next_stats_ns = now_ns + OBS_STATS_INTERVAL_NS;
+    msg_Dbg( p_filter,
+             "AutoUpscale: frames=%llu dropped=%llu ewma=%ldus%s",
+             (unsigned long long)p_sys->frame_count,
+             (unsigned long long)p_sys->dropped_count,
+             (long)up_perfmon_ewma_us( &p_sys->perfmon ),
+             p_sys->usm_skip_sharp ? " usm=skipped(sharp)" : "" );
+}
+
 /* Record one frame's elapsed work into the perfmon and emit the one-time
  * advisory if perfmon decides the budget has been blown. CCN 2. */
 static void RecordPerf( filter_t *p_filter, filter_sys_t *p_sys,
@@ -768,9 +794,11 @@ static void RecordPerf( filter_t *p_filter, filter_sys_t *p_sys,
 
     /* OBS-5: Update observability variables */
     p_sys->frame_count++;
-    var_SetInteger( p_filter, "autoupscale-ewma-us", 
+    var_SetInteger( p_filter, "autoupscale-ewma-us",
                     (int64_t)up_perfmon_ewma_us( &p_sys->perfmon ) );
     var_SetInteger( p_filter, "autoupscale-frames", p_sys->frame_count );
+
+    MaybeLogStats( p_filter, p_sys, t_end );
 }
 
 static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
@@ -800,6 +828,7 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
                       "dropping frame(s) (this is logged only once)",
                       p_sys->scaler.backend->name );
         }
+        p_sys->dropped_count++;
         picture_Release( p_out );
         picture_Release( p_in );
         return NULL;
