@@ -76,21 +76,13 @@ static inline size_t up_usm_workspace_size(int width, int height)
  *
  * The inner pixel loop is the hottest in the entire plugin. With
  * -O2 + restrict, gcc reports "Loop costings not worthwhile" and
- * declines to vectorize, while clang -O2 emits 16-wide SIMD. We
- * pin -O3 here to force gcc's vectorizer on; that's a ~3x speedup
- * on this kernel alone at 1080p+. The pragma is scoped to this one
- * function so other code keeps -O2 codegen untouched.
- *
- * Why O3 and not __attribute__((optimize))? On gcc, the function
- * attribute disables always_inline for the attributed function,
- * which would defeat the inline declaration above. The pragma form
- * leaves inlining decisions intact. The guard keeps clang silent under
- * -Wall (-Wunknown-pragmas would warn otherwise); clang -O2 already
- * vectorizes these loops without help, so the guard costs nothing. */
-#if defined(__GNUC__) && !defined(__clang__)
-# pragma GCC push_options
-# pragma GCC optimize("O3")
-#endif
+ * declines to vectorize; -O3 turns the vectorizer on (~3x at 1080p+),
+ * and clang -O2 already emits 16-wide SIMD. We rely on the build
+ * compiling the only production caller (usm_pool.c) at -O3 — the
+ * Makefile's USM_POOL_CFLAGS substitutes -O2->-O3 for that TU, and the
+ * benches do the same — rather than a per-function `#pragma GCC
+ * optimize("O3")`, which is brittle across gcc versions and silently
+ * no-ops if the function isn't inlined as expected (PERF-4). */
 static inline void up_usm__hblur_row(uint8_t *restrict out,
                                      const uint8_t *restrict in,
                                      int width)
@@ -109,9 +101,6 @@ static inline void up_usm__hblur_row(uint8_t *restrict out,
     /* Right edge: replicate in[width-1] for the missing in[width]. */
     out[width-1] = (uint8_t)(((int)in[width-2] + (int)in[width-1] * 3 + 2) >> 2);
 }
-#if defined(__GNUC__) && !defined(__clang__)
-# pragma GCC pop_options
-#endif
 
 /*
  * Apply unsharp mask to a single 8-bit plane.
@@ -195,15 +184,11 @@ static inline void up_usm__pass1_hblur(
  * (up_row, mid, dn_row) and the per-pixel detail = src - blur is added
  * back at amount_q8/256 strength, with [0,255] clamping. CCN 4.
  *
- * Hottest pixel loop in the project (called height× per frame). Same
- * pragma trick as up_usm__hblur_row above: gcc -O2 declines to vectorize
- * even with restrict, but gcc -O3 + clang -O2 both emit 16-byte SIMD.
- * We pin O3 here to force gcc's vectorizer; verified ~3x speedup at 1080p+.
+ * Hottest pixel loop in the project (called height× per frame). Like
+ * up_usm__hblur_row above, it relies on the production TU (usm_pool.c)
+ * being compiled at -O3 for gcc's vectorizer rather than a per-function
+ * pragma (PERF-4); gcc -O3 and clang -O2 both emit 16-byte SIMD here.
  */
-#if defined(__GNUC__) && !defined(__clang__)
-# pragma GCC push_options
-# pragma GCC optimize("O3")
-#endif
 static inline void up_usm__combine_row(
     uint8_t       *restrict dst_row,
     const uint8_t *restrict src_row,
@@ -224,9 +209,6 @@ static inline void up_usm__combine_row(
         dst_row[x] = (uint8_t)sharpened;
     }
 }
-#if defined(__GNUC__) && !defined(__clang__)
-# pragma GCC pop_options
-#endif
 
 /*
  * Internal: pass 2 of the USM. For each row y, picks workspace rows
