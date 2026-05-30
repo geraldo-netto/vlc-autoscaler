@@ -313,6 +313,8 @@ struct filter_sys_t
     /* One-shot guard so a persistently failing backend logs once instead of
      * spamming the log every frame (OBS-1). */
     int                process_fail_logged;
+
+    uint64_t           frame_count;
 };
 
 /* How many frames to observe before deciding. At 30fps this is 2 seconds
@@ -409,13 +411,17 @@ static void ConfigureScaler( scaler_ctx_t *sc,
                              vlc_fourcc_t chroma, int algo,
                              int src_w, int src_h, up_dims_t target )
 {
+    int threads = var_InheritInteger( p_filter, CFG_PREFIX "threads" );
+    if( threads < 0 ) threads = 0;
+    if( threads > UP_THREADS_MAX ) threads = UP_THREADS_MAX;
+
     sc->backend      = be;
     sc->src_w        = src_w;
     sc->src_h        = src_h;
     sc->dst_w        = target.width;
     sc->dst_h        = target.height;
     sc->algo         = algo;
-    sc->threads_pref = var_InheritInteger( p_filter, CFG_PREFIX "threads" );
+    sc->threads_pref = threads;
     sc->zimg.min_stripe_lines = var_InheritInteger( p_filter,
         CFG_PREFIX "zimg-stripe-lines" );
     sc->zimg.zerocopy = var_InheritInteger( p_filter, CFG_PREFIX "zerocopy-dst" );
@@ -494,23 +500,47 @@ static void SetOutputFormat( filter_t *p_filter, vlc_fourcc_t chroma,
     p_filter->fmt_out.video.i_y_offset       = 0;
 }
 
+static void ClampConfig( int *preset, int *algo, int *backend, int *usm, int *skip )
+{
+    /* SEC-2: Clamp config inputs to prevent resource exhaustion or logic errors. */
+    if( *preset < 0 ) *preset = 0; else if( *preset > UP_TARGET_MAX ) *preset = UP_TARGET_MAX;
+    if( *algo < 0 ) *algo = 0; else if( *algo > UP_ALGO_MAX ) *algo = UP_ALGO_MAX;
+    if( *backend < 0 ) *backend = 0; 
+    else if( *backend > SCALER_BACKEND_MAX ) *backend = SCALER_BACKEND_MAX;
+    if( *usm < 0 ) *usm = 0; else if( *usm > UP_USM_AMOUNT_MAX ) *usm = UP_USM_AMOUNT_MAX;
+    if( *skip < 0 ) *skip = 0;
+}
+
 static int Open( vlc_object_t *p_this )
 {
     filter_t *p_filter = (filter_t *)p_this;
 
+#if defined(__x86_64__)
+    /* BUILD-5: Check CPU features if the compiler was allowed to emit modern ISA.
+     * Fails gracefully before hitting a SIGILL on older hardware. */
+#if defined(__AVX512F__)
+    if (!__builtin_cpu_supports("avx512f")) {
+        msg_Err(p_this, "AutoUpscale: CPU lacks AVX-512F required by this build");
+        return VLC_EGENERIC;
+    }
+#elif defined(__AVX2__)
+    if (!__builtin_cpu_supports("avx2")) {
+        msg_Err(p_this, "AutoUpscale: CPU lacks AVX2 required by this build");
+        return VLC_EGENERIC;
+    }
+#endif
+#endif
+
     int src_w, src_h;
     ResolveInputDims( p_filter, &src_w, &src_h );
 
-    const int skip_above   = var_InheritInteger( p_filter,
-                                                 CFG_PREFIX "skip-above" );
-    const int preset       = var_InheritInteger( p_filter,
-                                                 CFG_PREFIX "target" );
-    const int algo         = var_InheritInteger( p_filter,
-                                                 CFG_PREFIX "algo" );
-    const int backend_pref = var_InheritInteger( p_filter,
-                                                 CFG_PREFIX "backend" );
-    const int usm_pct      = var_InheritInteger( p_filter,
-                                                 CFG_PREFIX "usm" );
+    int skip_above   = var_InheritInteger( p_filter, CFG_PREFIX "skip-above" );
+    int preset       = var_InheritInteger( p_filter, CFG_PREFIX "target" );
+    int algo         = var_InheritInteger( p_filter, CFG_PREFIX "algo" );
+    int backend_pref = var_InheritInteger( p_filter, CFG_PREFIX "backend" );
+    int usm_pct      = var_InheritInteger( p_filter, CFG_PREFIX "usm" );
+
+    ClampConfig( &preset, &algo, &backend_pref, &usm_pct, &skip_above );
 
     int cores;
     unsigned long mem_mb;
@@ -548,6 +578,10 @@ static int Open( vlc_object_t *p_this )
     InitUsmPool( p_sys, p_filter, chroma, target, cores, usm_pct );
     InitProbeAndPerfmon( p_sys, p_filter, chroma, algo, usm_pct );
     SetOutputFormat( p_filter, chroma, target );
+
+    /* OBS-5: Expose performance and frame stats via VLC variables */
+    var_Create( p_filter, "autoupscale-ewma-us", VLC_VAR_INTEGER );
+    var_Create( p_filter, "autoupscale-frames", VLC_VAR_INTEGER );
 
     p_filter->p_sys           = p_sys;
     p_filter->pf_video_filter = Filter;
@@ -731,6 +765,12 @@ static void RecordPerf( filter_t *p_filter, filter_sys_t *p_sys,
     int64_t elapsed_ns = (t_start > 0 && t_end > t_start) ? t_end - t_start : 0;
     if( up_perfmon_record_ns( &p_sys->perfmon, elapsed_ns ) )
         EmitPerfAdvisory( p_filter, p_sys );
+
+    /* OBS-5: Update observability variables */
+    p_sys->frame_count++;
+    var_SetInteger( p_filter, "autoupscale-ewma-us", 
+                    (int64_t)up_perfmon_ewma_us( &p_sys->perfmon ) );
+    var_SetInteger( p_filter, "autoupscale-frames", p_sys->frame_count );
 }
 
 static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
@@ -788,4 +828,8 @@ static void Close( vlc_object_t *p_this )
         up_usm_pool_destroy( p_sys->usm_pool );
         free( p_sys );
     }
+
+    /* OBS-5: pair the var_Create in Open(). */
+    var_Destroy( p_filter, "autoupscale-ewma-us" );
+    var_Destroy( p_filter, "autoupscale-frames" );
 }
