@@ -18,7 +18,9 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| (none open) | | | UB-1/PORT-1 (`pthread_t != 0`) and UB-2 (unbounded `>> sub_h`) fixed in commit 8aa9104. | |
+| UB-3 | open | S | `scaler_zimg.c:238` (`worker_copy_in_stripe`) and `:757` (`copy_planes_to_pic`) shift `1 << w->sub_w` / `1 << sub_w` with an UNCLAMPED `sub_w`; the UB-2 fix clamped `sub_h < 8` but left `sub_w` unguarded | Not reachable today (ChromaToZimg yields sub_w ∈ {0,1}; unsupported chromas rejected at open) — same defensive-consistency gap UB-2 closed for sub_h. Clamp `w->sub_w = (sub_w < 8u) ? sub_w : 0u` at `init_stripe_worker`, and the priv `sub_w` for the copy-out site. |
+
+(UB-1/PORT-1 and UB-2 fixed in commit 8aa9104.)
 
 ## memory management
 
@@ -30,7 +32,10 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| (none open) | | | PERF-4 (per-function O3 pragma removed; usm_pool.c TU already -O3, codegen proven identical 287==287 vector ops) DONE — commit 4714938. | |
+| PERF-5 | open | M | `scaler_zimg.c:839` `zimg_copy_out`/`copy_planes_to_pic` — copy-IN was parallelized into the workers (PERF-1) but copy-OUT is still a serial main-thread memcpy of all 3 planes on the zerocopy-OFF path: workers finish, then main serially copies the full dst (~125µs/1080p) while every worker idles | Asymmetric with PERF-1. Fold copy-out into the workers too (per-worker dst stripe, point at VLC dst via a per-frame pointer set like `zimg_zerocopy_point_workers`). Only matters when zerocopy-dst=0 (non-default); validate with the harness + a zc=0 bench (see BUILD-6). |
+| PERF-6 | info | S | `scaler_zimg.c:871-874` `zimg_process` walks the worker array TWICE per frame in zerocopy mode (`zimg_point_workers_src` then `zimg_zerocopy_point_workers`), touching each worker cache line twice | Merge into one loop that sets `vlc_src` + dst pointers when `dst_zerocopy` is on. Trivial; removes a redundant n_threads pass on the hot path. Ties to DUP-7. |
+
+(PERF-4 per-function O3 pragma removed DONE — commit 4714938, codegen proven identical 287==287 vector ops.)
 
 PERF-1 (parallel copy-in) DONE — commit b0d327f. PERF-2 (fuse) DONE —
 commit cc71221. PERF-3 (probe visible width) DONE — commit 0f92daa.
@@ -61,6 +66,8 @@ CON-1 (document the sem barrier contract for should_exit/result) DONE — commit
 |----|--------|--------|-------------|-------|
 | DUP-3 | open | S | Worker-pool lifecycle (lazy-init flags, aligned_alloc + memset, sem_init, spawn loop with `constructed`, sticky `lazy_init_failed`) duplicated between `scaler_zimg.c:584` and `usm_pool.c:316`; per-worker `_Alignas(64)` struct + rationale comment copy-pasted | Small shared worker-pool scaffold; low priority since the two payloads (zimg graphs vs scratch rows) differ. |
 | DUP-5 | open | S | Args-valid checks parallel: `usm_pool.c` (`usm_pool_validate_args`) vs `usm.h` (`up_usm__args_valid`) — both null dst/src + stride<width | Marginal: the pool variant also checks its own ptr and uses the stored `p->width`, while `up_usm__args_valid` validates full dims; not cleanly mergeable without threading width/height through. Keep. |
+| DUP-6 | open | S | Chroma subsample round-up `(v + (1<<sub) - 1) >> sub` open-coded in 3 sites: `scaler_zimg.c:238` (`worker_copy_in_stripe` cw), `:757` (`copy_planes_to_pic` cw/ch), `tests/zimg_test_util.h:57` (`zt_pic_alloc`). zimg_helpers.h has the same math buried inside `up_plane_pitch`/`up_plane_lines` but exposes no bare helper | Add `static inline int up_chroma_dim(int v, int sub)` to zimg_helpers.h; call from all three sites (and from plane_pitch/lines). One definition for the rounding. |
+| DUP-7 | open | S | `scaler_zimg.c:776` `zimg_point_workers_src` and `:800` `zimg_zerocopy_point_workers` are structurally identical — same `swap`→`up_zimg_plane_idx` index map + same per-worker loop assigning `{y,u,v,pitch_y,pitch_c}` from `pic->p[idx]`; only the target sub-struct (`vlc_src` vs `dst`) differs. The new copy-in added the second copy | Extract one `point_workers_planes(p, pic, <which plane_set>)`. Ties to PERF-6 (merge the two per-frame loops). |
 
 DUP-1 (triplicated identity copy) + DUP-4 (amount clamp) DONE — commit 0711d5f.
 DUP-2 OBSOLETE: PERF-2 (cc71221) replaced the pool's two-phase loops with a
@@ -72,6 +79,7 @@ duplication is gone.
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
 | ARCH-1 | open | M | `scaler_zimg.c:608` `zimg_lazy_init` builds a `fake_ctx` (memset + copy 4 geometry fields) only to satisfy `construct_workers`/`try_spawn_one_worker`, which read only src/dst dims | Change the stripe helpers to take a small geometry struct (or `zimg_priv_t` directly), eliminating the fake-ctx and the scaler.h coupling. |
+| ARCH-4 | low | S | `plane_set_t` on `stripe_worker_t` (`scaler_zimg.c:73,119-129`) carries three roles: scratch geometry (`.lines_*`, priv-level only), the worker's scratch view (`src`/`dst`), and per-frame VLC picture pointers (`vlc_src`). The parallel copy-in widened this overload by adding `vlc_src` | Mild SRP smell. Could split `plane_geom_t` (pitch+lines) vs `plane_ptrs_t` (y/u/v+pitch). Low value unless a third consumer appears. |
 
 ARCH-2 (compile-time chroma fourcc cross-check vs VLC_CODEC_*) DONE — commit cb2efa9.
 
@@ -138,6 +146,8 @@ ABI-1 (false "weak alias" comment) DONE — commit ee09ed9 (corrected to describ
 | BUILD-1 | open | M | Generic object rule `Makefile:184` omits included headers (`content_probe.h`, `chroma_classify.h`, `zimg_helpers.h`, `scaler_zimg_chroma.h`, `scaler_pick_logic.h`) | Editing those headers does not rebuild dependent TUs → stale incremental builds. Add `-MMD -MP` + `-include $(OBJS:.o=.d)` for auto header deps. (M effort.) |
 | BUILD-2 | partial | S | cppcheck excludes `autoupscale.c` and `scaler_zimg.c` (can't parse VLC's macro headers); shipped `.so` analysis gap | Partially addressed: CI now builds the plugin under gcc AND clang `-Werror` and runs scaler_zimg.c through the ASan/UBSan/TSan harness (commit 47d2c40) — stronger than cppcheck for that file. cppcheck-on-VLC-TUs still out (header parsing); `-fanalyzer` deferred (noisy on VLC headers). |
 | BUILD-5 | open | S | `MARCH ?= native` + `MULTIVERSION ?= 0` (`Makefile:63,110`) makes the default `.so` non-portable and prone to SIGILL on a different CPU | Acceptable per the build-and-run model, but no runtime guard; a `__builtin_cpu_supports` self-check at Open() (or portable baseline for release artifacts) would fail gracefully. |
+| BUILD-6 | open | S | `bench-zimg` (`Makefile`) only ever runs with zc (zerocopy) = 1; never benchmarks zc=0, which is the ONLY path with serial work (copy-out, PERF-5) | The "vehicle for measuring PERF-1" can't see the copy-out cost it should measure. Add a zc=0 row (e.g. `bench_scaler_zimg 8 i420 854 480 1920 1080 200 0`). |
+| BUILD-7 | info | S | `bench` / `bench-zimg` binaries are built nowhere in CI (only `test-zimg`/`stress-zimg` are wired); a bench-only compile break (e.g. `zt_ctx_init` signature drift) lands silently | Add a compile-only `make build/bench_scaler_zimg` step to CI, or accept benches as dev-only and document it. (coverage-zimg correctly left out — informational, sub-100%.) |
 
 BUILD-3 (-Werror) + BUILD-4 (clang plugin build) DONE — commit 47d2c40; CI
 also now installs libzimg and runs the zimg harness (test-zimg / stress-zimg).
@@ -147,6 +157,7 @@ also now installs libzimg and runs the zimg harness (test-zimg / stress-zimg).
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
 | OBS-3 | open | S | No counters for frames processed/dropped, USM-skipped, or achieved fps; only signal is the one-shot perf advisory (`autoupscale.c:550`) | Add periodic `msg_Dbg` (every N seconds) with processed/dropped counts and current EWMA so long-run behavior is observable. |
+| OBS-4 | low | S | The serial copy-out path (PERF-5) ships with zero runtime visibility — `log_zimg_open` reports geometry/scratch once at open, nothing per-frame | When OBS-3's periodic counters land, include a copy-out-µs accumulator (zerocopy-off only) so the serial tail is observable. |
 
 OBS-1 (one-shot warn on process failure) + OBS-2 (msg_Err on lazy-init failure)
 DONE — commit fe9396f.
