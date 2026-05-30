@@ -33,6 +33,10 @@ typedef struct scaler_ctx_s
     int                     dst_w, dst_h;
     int                     algo;       /* UP_ALGO_* */
     int                     threads_pref; /* 0 = auto; >0 = explicit */
+    int                     pin_cpus;   /* SCAL-4: 1 = pin each scaler worker
+                                         * thread to a distinct CPU core (opt-in,
+                                         * Linux only). 0 = let the scheduler
+                                         * place threads (default). */
 
     /* Backend-specific tunables. Only the zimg backend reads these;
      * swscale ignores them. Grouped under a named member so the generic

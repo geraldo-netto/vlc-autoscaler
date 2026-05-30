@@ -129,6 +129,16 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
     "locality; the auto default reserves half the machine for the rest " \
     "of VLC and other libraries. Override if you measured otherwise.")
 
+#define PIN_TEXT        N_("Pin scaler worker threads to CPU cores")
+#define PIN_LONGTEXT    N_( \
+    "0 = off (default; let the OS scheduler place threads). 1 = pin each " \
+    "zimg scaler worker thread to a distinct CPU core (round-robin). " \
+    "Linux only; best-effort (ignored if it fails). Off by default because " \
+    "pinning can HURT on a typical desktop by fighting VLC's other threads " \
+    "and the scheduler's load balancing — enable only on a dedicated, " \
+    "high-core-count or NUMA transcode box where you measured a gain. Does " \
+    "not affect the USM sharpening pool.")
+
 #define ZEROCOPY_DST_TEXT N_("Write directly to VLC's destination picture")
 #define ZEROCOPY_DST_LONGTEXT N_( \
     "1 = on (default): worker threads write directly into VLC's " \
@@ -234,6 +244,8 @@ vlc_module_begin()
     add_integer_with_range( CFG_PREFIX "threads", UP_THREADS_AUTO,
                             0, UP_THREADS_MAX,
                             THREADS_TEXT, THREADS_LONGTEXT, false )
+    add_integer_with_range( CFG_PREFIX "pin-threads", 0, 0, 1,
+                            PIN_TEXT, PIN_LONGTEXT, false )
     add_integer_with_range( CFG_PREFIX "zerocopy-dst", 1, 0, 1,
                             ZEROCOPY_DST_TEXT, ZEROCOPY_DST_LONGTEXT, false )
     add_integer_with_range( CFG_PREFIX "zerocopy-src", 1, 0, 1,
@@ -426,6 +438,8 @@ static void ConfigureScaler( scaler_ctx_t *sc,
     sc->dst_h        = target.height;
     sc->algo         = algo;
     sc->threads_pref = threads;
+    sc->pin_cpus     = var_InheritInteger( p_filter,
+        CFG_PREFIX "pin-threads" ) ? 1 : 0;
     sc->zimg.min_stripe_lines = var_InheritInteger( p_filter,
         CFG_PREFIX "zimg-stripe-lines" );
     sc->zimg.zerocopy = var_InheritInteger( p_filter, CFG_PREFIX "zerocopy-dst" );

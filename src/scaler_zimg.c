@@ -52,6 +52,13 @@
  * Built only when HAVE_ZIMG is defined.
  *****************************************************************************/
 
+/* SCAL-4: pthread_setaffinity_np / CPU_SET need _GNU_SOURCE before any
+ * include. Defined unconditionally (harmless off-glibc, where the affinity
+ * helper compiles to a no-op). */
+#ifndef _GNU_SOURCE
+# define _GNU_SOURCE
+#endif
+
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
@@ -73,8 +80,29 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#if defined(__linux__)
+# include <sched.h>
+#endif
 
 #define ALIGN_DOWN_2(x) UP_ALIGN_DOWN_2(x)
+
+/*
+ * SCAL-4: best-effort pin one worker thread to a single CPU core. Opt-in
+ * (--autoupscale-pin-threads), Linux only — isolates the non-portable
+ * pthread_setaffinity_np here. Failure is ignored: pinning is an optimization,
+ * never a correctness requirement, and can fail benignly (CPU offline, cgroup
+ * cpuset, container limits). No-op on non-Linux. CCN 1. */
+static void pin_worker_to_cpu(pthread_t thread, int cpu)
+{
+#if defined(__linux__)
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET((size_t)cpu, &set);
+    (void)pthread_setaffinity_np(thread, sizeof set, &set);
+#else
+    (void)thread; (void)cpu;
+#endif
+}
 
 /* Bundled plane pointers + pitch + line counts for one side (src or dst).
  * Used both by the per-worker view (where lines_* are unused but cheap to
@@ -182,6 +210,10 @@ typedef struct
 
     int               yv12_swap_uv;
     unsigned          sub_w, sub_h;
+
+    /* SCAL-4: when set, pin worker i to CPU (i % cpus_online). */
+    bool              pin_cpus;
+    int               cpus_online;
 
     /* Scratch buffers + geometry. Sized + allocated on first Filter() call
      * (lazy init), pinned for the plugin lifetime after that. Open() is
@@ -584,6 +616,10 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
         return -1;
     }
     w->thread_started = true;
+    /* SCAL-4: best-effort pin (opt-in). Round-robin so worker count > core
+     * count still spreads evenly; failure is ignored inside the helper. */
+    if (p->pin_cpus && p->cpus_online > 0)
+        pin_worker_to_cpu(w->thread, worker_id % p->cpus_online);
     return 0;
 }
 
@@ -881,6 +917,14 @@ static int zimg_open(scaler_ctx_t *ctx)
     p->log_obj_saved = ctx->log_obj;
     p->dst_zerocopy  = (ctx->zimg.zerocopy != 0);
     p->src_zerocopy  = (ctx->zimg.src_zerocopy != 0);
+
+    /* SCAL-4: resolve the online-CPU count once so the per-worker pin is a
+     * cheap modulo. Guard >= 1 so the modulo is always well-defined. */
+    p->pin_cpus = (ctx->pin_cpus != 0);
+    if (p->pin_cpus) {
+        long n = sysconf(_SC_NPROCESSORS_ONLN);
+        p->cpus_online = (n > 0) ? (int)n : 1;
+    }
 
     ctx->priv = p;
     return 0;

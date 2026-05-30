@@ -316,6 +316,50 @@ static void test_extreme_ratio_no_crash(void)
     END();
 }
 
+/* Run one config with CPU pinning enabled (SCAL-4); fills `out`. Mirrors
+ * run_zimg but sets ctx.pin_cpus = 1. Returns 0 on success. */
+static int run_zimg_pinned(const struct zcfg *c, uint32_t seed, zt_pic_t *out)
+{
+    zt_pic_t src;
+    if (zt_pic_alloc(&src, c->chroma, c->sw, c->sh) != 0) return -2;
+    if (zt_pic_alloc(out, c->chroma, c->dw, c->dh) != 0) {
+        zt_pic_free(&src);
+        return -2;
+    }
+    zt_pic_fill(&src, seed);
+    zt_pic_memset(out, 0x00);
+
+    scaler_ctx_t ctx;
+    zt_ctx_init(&ctx, c->chroma, c->sw, c->sh, c->dw, c->dh, c->threads, 0);
+    ctx.pin_cpus = 1;
+    int rc = -2;
+    if (ctx.backend->open(&ctx) == 0) {
+        rc = ctx.backend->process(&ctx, &src.pic, &out->pic);
+        ctx.backend->close(&ctx);
+    }
+    zt_pic_free(&src);
+    return rc;
+}
+
+/* SCAL-4: pinning is an optimization only — output must be byte-identical to
+ * the unpinned path, and the pin/spawn/teardown must be crash- and race-free
+ * (this case is what the TSan harness exercises for the affinity code). */
+static void test_pin_cpus_matches(void)
+{
+    BEGIN("CPU pinning output byte-identical to unpinned (and race-free)");
+    for (size_t i = 0; i < NCFG; i++) {
+        zt_pic_t a, b;
+        int r0 = run_zimg(&CFGS[i], 0, 0, 0x00, 0xC0FFEEu, &a);
+        int r1 = run_zimg_pinned(&CFGS[i], 0xC0FFEEu, &b);
+        CHECK(r0 == 0 && r1 == 0);
+        if (r0 == 0 && r1 == 0)
+            CHECK(same_cfg(&CFGS[i], &a, &b));
+        zt_pic_free(&a);
+        zt_pic_free(&b);
+    }
+    END();
+}
+
 int main(void)
 {
     printf("Running scaler_zimg invariant tests (%zu configs)...\n", NCFG);
@@ -328,6 +372,7 @@ int main(void)
     test_open_rejects_unsupported();
     test_extreme_ratio_no_crash();
     test_construction_pthread_fail();
+    test_pin_cpus_matches();
     printf("\n%d tests run, %d failed\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

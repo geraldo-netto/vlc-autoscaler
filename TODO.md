@@ -140,7 +140,6 @@ now only on scope, not on lack of a safety net.
 | id | effort | description | why parked |
 |----|--------|-------------|------------|
 | SCAL-3 | S | 2D/column tiling for very wide/short zimg frames | Column tiling subdivides WIDTH; horizontal resampling across a column-tile boundary risks visible vertical seams (horizontal-stripe-only design avoids this). Needs zimg halo/overlap; the harness only checks full-write/determinism/zerocopy, NOT seam-free quality — would need a perceptual/reference check added. Low priority for typical content. |
-| SCAL-4 | M | Worker thread affinity / core pinning | Parked pending EVIDENCE: no NUMA/high-core throughput bench exists to prove a gain, and pinning short-lived per-frame workers can HARM by fighting VLC's own threads and the OS scheduler's load balancing on the typical desktop. Non-portable (`pthread_setaffinity_np`). Revisit with a real multi-socket bench before adding speculative pinning. |
 
 ## Pending validation
 
