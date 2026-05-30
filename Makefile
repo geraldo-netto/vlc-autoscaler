@@ -493,12 +493,17 @@ coverage: $(COV_TESTS)
 	@for t in $(COV_TESTS); do $$t > /dev/null 2>&1 || true; done
 	@# Invoke gcov from the project root so embedded relative source
 	@# paths resolve correctly (e.g. "tests/../src/upscale_logic.h").
-	@# Output the .gcov files into the cov build dir.
+	@# A header compiled into several test binaries (e.g. usm.h) yields a
+	@# usm.h.gcov per binary with the SAME name; emitting them all into one
+	@# dir would let the last clobber the rest and lose coverage proved by
+	@# another binary. Keep each binary's gcov set in its own subdir and let
+	@# coverage_report.sh union them per line.
+	@rm -rf $(COV_BUILD)/gcov && mkdir -p $(COV_BUILD)/gcov
 	@for gcda in $(COV_BUILD)/*.gcda; do \
 	    gcov -r -m -o $(COV_BUILD) "$$gcda" > /dev/null 2>&1 || true; \
+	    d=$(COV_BUILD)/gcov/$$(basename "$$gcda" .gcda); mkdir -p "$$d"; \
+	    mv ./*.gcov "$$d"/ 2>/dev/null || true; \
 	done
-	@# gcov emits .gcov in the CWD; move them into the build dir.
-	@mv ./*.gcov $(COV_BUILD)/ 2>/dev/null || true
 	@# Per-function coverage: re-run gcov with -f so each function's
 	@# summary is printed on stdout, then collected for the function-
 	@# level threshold check (independent of the per-file check below).

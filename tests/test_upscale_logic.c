@@ -722,6 +722,37 @@ static void test_aspect_invariant_smoke(void)
 
 /* ---------- main ---------- */
 
+/* Defensive return-0 branches not hit by the typical-input tests above:
+ * width rounding to 0 in compute, oversized source, no-net-upscale, an
+ * explicit target below the source, and compute failing inside plan. */
+static void test_plan_defensive_branches(void)
+{
+    BEGIN("defensive branches: compute<=0, oversized src, equal dims, target<=src");
+    up_dims_t out;
+
+    /* up_compute_target_dims: 1-wide source scaled down in width rounds to
+     * 0 -> return 0. */
+    CHECK(up_compute_target_dims(1, 1000, 2, &out) == 0);
+
+    /* up__plan_inputs_ok: a source dimension above UP_MAX_DIM bypasses. */
+    CHECK(up_plan_upscale(UP_MAX_DIM + 1, 480, 720, UP_TARGET_AUTO,
+                          8, 8192, &out) == 0);
+
+    /* up__plan_result_ok: output identical to source is not an upscale. */
+    up_dims_t same = { 640, 480 };
+    CHECK(up__plan_result_ok(640, 480, &same) == 0);
+
+    /* up_plan_upscale: explicit 720p preset on a 1080p source -> the
+     * decided target height is <= source height, so bypass. */
+    CHECK(up_plan_upscale(1920, 1080, 0, UP_TARGET_720P, 8, 8192, &out) == 0);
+
+    /* up_plan_upscale: input gate + target>src both pass, but the 1px-wide
+     * 719-tall source forced to 720p rounds the width to 0, so the inner
+     * up_compute_target_dims fails and plan returns 0. */
+    CHECK(up_plan_upscale(1, 719, 0, UP_TARGET_720P, 8, 8192, &out) == 0);
+    END();
+}
+
 int main(void)
 {
     printf("Running upscale_logic tests...\n");
@@ -766,6 +797,7 @@ int main(void)
     test_plan_anamorphic();
     test_plan_pathological_aspect_regression();
     test_aspect_invariant_smoke();
+    test_plan_defensive_branches();
 
     printf("\n%d tests run, %d failed\n", g_tests_run, g_tests_failed);
     return g_tests_failed == 0 ? 0 : 1;

@@ -33,32 +33,44 @@ if [[ ! -d "$COV_DIR" ]]; then
     exit 2
 fi
 
-# Aggregate executable lines and covered lines for each tracked file
-# across ALL .gcov files (each test executable contributes one .gcov
-# per included translation unit; we union them).
+# Aggregate executable/covered lines for each tracked file across ALL
+# .gcov files. A header compiled into N test binaries produces N same-named
+# .gcov files (kept in per-binary subdirs by `make coverage`); a line is
+# COVERED if any binary covered it and RUNNABLE if any binary marked it
+# executable. We therefore union PER LINE (keyed by line number), not by
+# summing counts — summing would multiply-count a header's lines once per
+# binary and report bogus totals.
 declare -A FILE_TOTAL FILE_COVERED
 
-shopt -s nullglob
-for f in "$COV_DIR"/*.gcov; do
-    base=$(basename "$f" .gcov)
-    keep=0
-    for t in "${TRACKED[@]}"; do
-        if [[ "$base" == "$t" ]]; then keep=1; break; fi
-    done
-    [[ $keep -eq 1 ]] || continue
+shopt -s nullglob globstar
+for t in "${TRACKED[@]}"; do
+    # Gather every .gcov for this source: legacy flat layout + per-binary
+    # subdirs written by the Makefile.
+    files=( "$COV_DIR/$t.gcov" "$COV_DIR"/gcov/*/"$t.gcov" )
+    present=()
+    for f in "${files[@]}"; do [[ -f "$f" ]] && present+=("$f"); done
+    [[ ${#present[@]} -gt 0 ]] || continue
 
     # gcov line format: "<count>:<lineno>:<source>"
-    # count=='-' means non-executable (decl/comment/blank)
-    # count=='#####' means uncovered
-    # count=='=====' means uncovered (block flow)
-    # count='<digit>+' means covered with that hit count
-    runnable=$(awk -F: 'NF>=3 { c=$1; gsub(/^ +/,"",c);
-        if (c != "-" && c != "") count++ } END { print count+0 }' "$f")
-    covered=$(awk -F: 'NF>=3 { c=$1; gsub(/^ +/,"",c);
-        if (c != "-" && c != "" && c != "#####" && c != "=====") count++ } END { print count+0 }' "$f")
+    #   '-'             non-executable (decl/comment/blank)
+    #   '#####'/'=====' executable but uncovered
+    #   '<digit>+'      covered with that hit count
+    read -r runnable covered < <(awk -F: '
+        NF>=3 {
+            ln=$2; gsub(/^ +/,"",ln);
+            c=$1;  gsub(/^ +/,"",c);
+            if (c=="-" || c=="") next;
+            run[ln]=1;
+            if (c!="#####" && c!="=====") cov[ln]=1;
+        }
+        END {
+            t=0; cv=0;
+            for (l in run) { t++; if (l in cov) cv++; }
+            print t, cv;
+        }' "${present[@]}")
 
-    FILE_TOTAL[$base]=$(( ${FILE_TOTAL[$base]:-0} + runnable ))
-    FILE_COVERED[$base]=$(( ${FILE_COVERED[$base]:-0} + covered ))
+    FILE_TOTAL[$t]=$(( runnable + 0 ))
+    FILE_COVERED[$t]=$(( covered + 0 ))
 done
 
 printf "%-30s %8s %8s %8s\n" "file" "lines" "covered" "pct"

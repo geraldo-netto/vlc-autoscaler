@@ -359,6 +359,21 @@ static void test_observe_accumulates(void)
     END();
 }
 
+/* Defensive stride < width guard in both metric functions: they pass the
+ * first validity gate (w/h above the block size, stride > 0) but a stride
+ * smaller than the width would read past row storage, so they bail with 0. */
+static void test_probe_stride_less_than_width(void)
+{
+    BEGIN("stride < width rejected by both metric functions");
+    static uint8_t buf[64 * 64];
+    memset(buf, 128, sizeof buf);
+    uint64_t n = 123;
+    CHECK(up_laplacian_variance(buf, 20, 40, 40, &n) == 0);
+    n = 123;
+    CHECK(up_block_edge_strength(buf, 20, 40, 40, &n) == 0);
+    END();
+}
+
 int main(void)
 {
     printf("Running content_probe tests...\n");
@@ -384,6 +399,7 @@ int main(void)
     test_skip_usm_safe_defaults();
 
     test_observe_accumulates();
+    test_probe_stride_less_than_width();
 
     printf("\n%d tests run, %d failed\n", g_tests_run, g_tests_failed);
     return g_tests_failed == 0 ? 0 : 1;

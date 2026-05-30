@@ -243,6 +243,21 @@ static void test_ewma_us_zero_during_warmup(void)
 
 /* ---------- main ---------- */
 
+/* up_perfmon_budget_us: 0 when disabled or NULL, budget_ns/1000 when on. */
+static void test_budget_us(void)
+{
+    BEGIN("budget_us: enabled returns budget_ns/1000; disabled/NULL return 0");
+    up_perfmon_t pm;
+    up_perfmon_init(&pm, 60);
+    CHECK(up_perfmon_budget_us(&pm) > 0);
+    CHECK_EQ(up_perfmon_budget_us(&pm), pm.budget_ns / 1000);
+    up_perfmon_t off;
+    up_perfmon_init(&off, 0);
+    CHECK_EQ(up_perfmon_budget_us(&off), 0);
+    CHECK_EQ(up_perfmon_budget_us(NULL), 0);
+    END();
+}
+
 int main(void)
 {
     printf("Running perfmon tests...\n");
@@ -258,6 +273,7 @@ int main(void)
     test_null_pm_safe();
     test_ewma_converges_to_constant();
     test_ewma_us_zero_during_warmup();
+    test_budget_us();
 
     printf("\n%d tests run, %d failed\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;

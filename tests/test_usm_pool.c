@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 
 /*
  * AddressSanitizer aborts the program when an allocation request
@@ -468,6 +469,42 @@ static void test_apply_lazy_init_oom_sticky(void)
     END();
 }
 
+/*
+ * Exercise the pthread_create-failure cleanup in usm_pool_spawn_worker:
+ * sem_init succeeds, then pthread_create fails and the slot's semaphore
+ * must be destroyed (not leaked) before lazy_init reports failure. We
+ * force the failure by dropping RLIMIT_NPROC so new threads can't start.
+ * Whether the pool comes up with a partial set or none at all, the result
+ * must be clean under ASan (no leaked semaphores, no crash). The frame is
+ * small and fully backed so a partially-spawned pool can still run safely.
+ */
+static void test_spawn_pthread_create_fail_clean(void)
+{
+    BEGIN("lazy_init survives pthread_create failure and frees the slot's sem");
+    enum { W = 64, H = 512 };
+    struct rlimit old;
+    if (getrlimit(RLIMIT_NPROC, &old) != 0) { END(); return; }
+    struct rlimit lim = old;
+    lim.rlim_cur = 1;   /* below the live thread count -> pthread_create EAGAIN */
+    if (setrlimit(RLIMIT_NPROC, &lim) != 0) { END(); return; }
+
+    uint8_t *src = calloc((size_t)W * H, 1);
+    uint8_t *dst = calloc((size_t)W * H, 1);
+    usm_pool_t *p = up_usm_pool_create(64, W, H, 0);
+    int rc = (src && dst && p)
+        ? up_usm_pool_apply(p, dst, W, src, W, up_usm_amount_pct_to_q8(30))
+        : -1;
+
+    setrlimit(RLIMIT_NPROC, &old);   /* restore before join/destroy */
+
+    /* -1 (no worker spawned, sticky) or 0 (partial pool ran) are both
+     * acceptable; the point is no leak/crash, which ASan enforces. */
+    CHECK(rc == -1 || rc == 0);
+    up_usm_pool_destroy(p);
+    free(src); free(dst);
+    END();
+}
+
 int main(void)
 {
     printf("Running usm_pool tests...\n");
@@ -494,6 +531,7 @@ int main(void)
     test_destroy_unused_pool();
     test_apply_null_pool();
     test_apply_invalid_strides();
+    test_spawn_pthread_create_fail_clean();
 
     printf("\n%d tests run, %d failed\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;
