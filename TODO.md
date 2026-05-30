@@ -12,7 +12,7 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| SEC-1 | open | S | `autoupscale.c:301` `(unsigned long)info.totalram * info.mem_unit` can overflow `unsigned long` on 32-bit hosts, producing a bogus `mem_mb` that drives the AUTO 720p/1080p decision | Compute in `uint64_t` and saturate before narrowing to `mem_mb`. |
+| (none open) | | | SEC-1 (32-bit `totalram*mem_unit` overflow) fixed in commit 83f5ee0 (uint64_t + saturate). | |
 
 ## undefined behavior
 
@@ -39,7 +39,6 @@ PERF-3 (probe visible width) DONE — commit 0f92daa. PERF-1 parked (below).
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| SCAL-1 | open | M | `scaler_zimg.c:635` + `autoupscale.c:401` zimg pool and USM pool each independently call `up_threads_decide()`; with USM on a frame can hold up to 2×(cores/2−2) worker threads | Share one thread budget across scale+USM, or subtract the USM count from the zimg budget. See RES-2. |
 | SCAL-2 | open | S | `scaler_zimg.c:732` per-frame dispatch issues N `sem_post`/`sem_wait` pairs per phase from the main thread; sync cost grows linearly with thread count | USM path HALVED in cc71221 (fused to one dispatch). zimg dispatch half remains: a counting barrier / futex gate would cut its per-frame syscalls. Parked with PERF-1 (no zimg test harness). |
 
 ## concurrency
@@ -60,11 +59,13 @@ CON-1 (document the sem barrier contract for should_exit/result) DONE — commit
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| DUP-1 | open | M | Identity-copy plane loop triplicated: `usm_pool.c:387` (`usm_pool_identity`), `usm.h:142` (`up_usm__apply_identity`), `zimg_helpers.h:121` (`up_copy_plane`) — same unified-stride-memcpy-else-per-row pattern | Have the first two delegate to `up_copy_plane` (header-only, no VLC deps); collapses 3 copies to 1. Ties to DEAD-4. |
-| DUP-2 | open | S | Pass-1 hblur / pass-2 combine row loops duplicated between single-threaded `usm.h` (`up_usm__pass1_hblur:171`, `up_usm__pass2_combine:228`) and threaded `usm_pool.c` (`usm_worker_phase0_hblur:177`, `usm_worker_phase1_combine:226`) | Worker phases could call the `up_usm__pass*` helpers over their own sub-range; single source for kernel orchestration. |
-| DUP-3 | open | S | Worker-pool lifecycle (lazy-init flags, aligned_alloc + memset, sem_init, spawn loop with `constructed`, sticky `lazy_init_failed`) duplicated between `scaler_zimg.c:584` and `usm_pool.c:316`; per-worker `_Alignas(64)` struct + rationale comment copy-pasted | Small shared worker-pool scaffold; low priority since payloads differ. |
-| DUP-4 | open | S | Amount clamp `[0, UP_USM_AMOUNT_Q8_MAX]` duplicated: `usm_pool.c:452` (`usm_pool_clamp_amount`) and inline `usm.h:273-274` (`up_usm_apply_plane`) | Extract `up_usm__clamp_amount_q8()` inline in usm.h, call from both. |
-| DUP-5 | open | S | Args-valid checks parallel: `usm_pool.c:441` (`usm_pool_validate_args`) vs `usm.h:251` (`up_usm__args_valid`) — both null dst/src + stride<width | Pool variant could reuse `up_usm__args_valid` (header-only). Minor. |
+| DUP-3 | open | S | Worker-pool lifecycle (lazy-init flags, aligned_alloc + memset, sem_init, spawn loop with `constructed`, sticky `lazy_init_failed`) duplicated between `scaler_zimg.c:584` and `usm_pool.c:316`; per-worker `_Alignas(64)` struct + rationale comment copy-pasted | Small shared worker-pool scaffold; low priority since the two payloads (zimg graphs vs scratch rows) differ. |
+| DUP-5 | open | S | Args-valid checks parallel: `usm_pool.c` (`usm_pool_validate_args`) vs `usm.h` (`up_usm__args_valid`) — both null dst/src + stride<width | Marginal: the pool variant also checks its own ptr and uses the stored `p->width`, while `up_usm__args_valid` validates full dims; not cleanly mergeable without threading width/height through. Keep. |
+
+DUP-1 (triplicated identity copy) + DUP-4 (amount clamp) DONE — commit 0711d5f.
+DUP-2 OBSOLETE: PERF-2 (cc71221) replaced the pool's two-phase loops with a
+fused rolling-buffer sweep, so it no longer mirrors usm.h's pass1/pass2 — the
+duplication is gone.
 
 ## architecture/modularity/SOLID
 
@@ -100,7 +101,7 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| ERR-2 | open | S | `scaler_swscale.c:116-118` `sws_scale` result only checked `rc > 0`; a short return (`0 < rc < ctx->dst_h`) is treated as full success | Validate `rc` against expected output slice height; fail on short writes so a partially-filled frame is never emitted. |
+| (none open) | | | ERR-2 / RES-1 (sws_scale short-return) fixed in commit 83f5ee0 (require `rc == ctx->dst_h`). | |
 
 ERR-1 (sem leak on partial spawn) DONE — fixed during the PERF-2 rewrite (commit cc71221) and now covered by the RLIMIT_NPROC test (commit 668650d).
 
@@ -115,8 +116,9 @@ ERR-1 (sem leak on partial spawn) DONE — fixed during the PERF-2 rewrite (comm
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| RES-1 | open | S | `scaler_swscale.c:118` `sws_scale` result treated as success only when `rc > 0`; a legitimate `0` return drops the frame (no leak — both pictures released — but a robustness gap) | Accept `rc >= 0`, or document why `0` cannot occur for a full-height scale. Overlaps ERR-2. |
-| RES-2 | open | M | `scaler_zimg.c` + `usm_pool.c` each filter instance spawns up to `UP_THREADS_MAX` (64) zimg workers + up to 64 USM workers + multi-MB scratch, with no process-wide cap across concurrent AutoUpscale instances | If multiple concurrent instances are possible, add an aggregate thread/memory budget; else document the per-instance bound as intentional. See SCAL-1. |
+| RES-2 | open | M | `scaler_zimg.c` + `usm_pool.c` each filter instance spawns up to `UP_THREADS_MAX` (64) zimg workers + up to 64 USM workers + multi-MB scratch, with no process-wide cap across concurrent AutoUpscale instances | If multiple concurrent instances are possible, add an aggregate thread/memory budget; else document the per-instance bound as intentional. NB the two pools run sequentially per frame (see rejected SCAL-1), so the cost is idle-thread address space, not CPU. |
+
+RES-1 (sws_scale `rc > 0`) DONE — folded into the ERR-2 fix (commit 83f5ee0).
 
 ## API/ABI stability
 
@@ -184,6 +186,14 @@ should_exit (close path signalled twice). Fixed properly in commit 3a35a23 by
 signalling each worker exactly once (signal-then-reap), so should_exit stays a
 plain sem-synchronized int — matching usm_pool's pattern (the interim _Atomic
 in 1c53e19 was reverted).
+
+## Audit picks deliberately rejected
+
+Kept here so future passes don't re-pick them.
+
+| id | why rejected |
+|----|--------------|
+| SCAL-1 | "zimg pool + USM pool double the live thread count and oversubscribe." Premise is wrong: the two pools run SEQUENTIALLY within a frame — `Filter()` runs `scaler.process()` (zimg workers) to completion, THEN `ApplyUsmIfEnabled()` (USM workers). They never execute concurrently, so the idle pool's workers consume zero CPU and negligible RSS (untouched stacks). The suggested "subtract the USM count from the zimg budget" would halve each phase's parallelism for no benefit. A true single shared pool is a large refactor for ~nil gain. The only residual cost (idle-thread address space across many concurrent instances) is tracked under RES-2. Decided 2026-05-30. |
 
 Coverage note: pure-logic files are 100% (gated). scaler_zimg.c is exercised
 to ~94% by `make coverage-zimg` (was 0%); the rest needs a live VLC logger
