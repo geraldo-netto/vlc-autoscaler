@@ -40,7 +40,7 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| CON-2 | open | M | `scaler_zimg.c:766` `zimg_lazy_init()` keys off non-atomic `lazy_init_done` on first `zimg_process()` with no guard against concurrent `Filter()` entry (TOCTOU) | Safe while VLC drives one instance serially; add assert/comment or `pthread_once` guard if ever shared across threads. |
+| (none open) | | | CON-2 RESOLVED by contract doc: the non-atomic `lazy_init_done`/`lazy_init_failed` check-then-act is sound under VLC's serial-per-instance `Filter()` contract, now stated at the field declaration with the pthread_once/`_Atomic` escape hatch if the scaler is ever shared across threads within one instance. | |
 
 ## code complexity
 
@@ -52,14 +52,13 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| DUP-3 | open | S | Worker-pool lifecycle (lazy-init flags, aligned_alloc + memset, sem_init, spawn loop with `constructed`, sticky `lazy_init_failed`) duplicated between `scaler_zimg.c:584` and `usm_pool.c:316`; per-worker `_Alignas(64)` struct + rationale comment copy-pasted | Small shared worker-pool scaffold; low priority since the two payloads (zimg graphs vs scratch rows) differ. |
+| DUP-3 | keep | S | Worker-pool lifecycle (lazy-init flags, aligned_alloc + memset, sem_init, spawn loop with `constructed`, sticky `lazy_init_failed`) duplicated between `scaler_zimg.c` and `usm_pool.c`; per-worker `_Alignas(64)` struct + rationale comment copy-pasted | DECISION (2026-05-30): keep. A shared scaffold needs a type-erased pool (void* element + per-worker construct/destroy callbacks) since the worker structs and per-worker work differ (per-stripe zimg graphs vs scratch rows). The common part is ~15 lines of alloc+memset+spawn; hiding it behind a callback interface across a module boundary adds indirection while the real work stays divergent — net clarity loss. Per AGENTS.md (SOLID only when it improves clarity). |
 | DUP-5 | open | S | Args-valid checks parallel: `usm_pool.c` (`usm_pool_validate_args`) vs `usm.h` (`up_usm__args_valid`) — both null dst/src + stride<width | Marginal: the pool variant also checks its own ptr and uses the stored `p->width`, while `up_usm__args_valid` validates full dims; not cleanly mergeable without threading width/height through. Keep. |
 
 ## architecture/modularity/SOLID
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| ARCH-1 | open | M | `scaler_zimg.c:608` `zimg_lazy_init` builds a `fake_ctx` (memset + copy 4 geometry fields) only to satisfy `construct_workers`/`try_spawn_one_worker`, which read only src/dst dims | Change the stripe helpers to take a small geometry struct (or `zimg_priv_t` directly), eliminating the fake-ctx and the scaler.h coupling. |
 | ARCH-4 | low | S | `plane_set_t` on `stripe_worker_t` (`scaler_zimg.c:73,119-129`) carries three roles: scratch geometry (`.lines_*`, priv-level only), the worker's scratch view (`src`/`dst`), and per-frame VLC picture pointers (`vlc_src`). The parallel copy-in widened this overload by adding `vlc_src` | Mild SRP smell. Could split `plane_geom_t` (pitch+lines) vs `plane_ptrs_t` (y/u/v+pitch). Low value unless a third consumer appears. |
 
 ## decoupling

@@ -187,7 +187,15 @@ typedef struct
      * successfully. lazy_init_failed sticks once the first attempt has
      * failed so we don't retry-allocate every frame. The algo and
      * log_obj are saved at Open() time so lazy_init can build graphs
-     * and emit its diagnostic message without needing the ctx. */
+     * and emit its diagnostic message without needing the ctx.
+     *
+     * CON-2: lazy_init_done / lazy_init_failed are PLAIN bools, read+written
+     * with no atomics or lock. This is sound only under the contract that a
+     * single filter instance's zimg_process() (driven by VLC's Filter()) is
+     * never entered concurrently — VLC calls a filter's pf_video_filter
+     * serially per instance. If this scaler is ever shared across threads
+     * within one instance, gate the first-frame init with pthread_once (or
+     * make these _Atomic) to close the check-then-act window. */
     bool              lazy_init_done;
     bool              lazy_init_failed;
     int               algo_saved;
@@ -507,7 +515,7 @@ static void init_priv_geometry(zimg_priv_t *p, const scaler_ctx_t *ctx,
  * cleanup of partial state via the worker's graph/tmp fields). CCN 5.
  */
 static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
-                              const scaler_ctx_t *ctx, int worker_id,
+                              int worker_id,
                               int src_y_start, int src_y_end,
                               int dst_y_start, int dst_y_end,
                               unsigned sub_w, unsigned sub_h,
@@ -517,8 +525,8 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
     w->src_y_end    = src_y_end;
     w->dst_y_start  = dst_y_start;
     w->dst_y_end    = dst_y_end;
-    w->src_w        = ctx->src_w;
-    w->dst_w        = ctx->dst_w;
+    w->src_w        = p->src_w;
+    w->dst_w        = p->dst_w;
     /* worker_main shifts row offsets by sub (`>> w->sub_h`); a value >= the
      * int width would be UB. Valid YUV chroma gives 0 or 1, but clamp both
      * exponents defensively so a malformed value can never reach the shift
@@ -535,8 +543,8 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
     w->dst = p->dst;
 
     w->graph = build_stripe_graph(
-        ctx->src_w, src_y_end - src_y_start,
-        ctx->dst_w, dst_y_end - dst_y_start,
+        p->src_w, src_y_end - src_y_start,
+        p->dst_w, dst_y_end - dst_y_start,
         sub_w, sub_h, filt);
     if (!w->graph) return -1;
 
@@ -623,7 +631,7 @@ static void teardown_constructed_workers(zimg_priv_t *p, int n)
  * -1 on degenerate stripe geometry or worker init failure. On failure
  * any partially-allocated graph/tmp inside `w` is released.
  */
-static int try_spawn_one_worker(zimg_priv_t *p, const scaler_ctx_t *ctx,
+static int try_spawn_one_worker(zimg_priv_t *p,
                                 int i, int n,
                                 unsigned sub_w, unsigned sub_h,
                                 zimg_resample_filter_e filt)
@@ -631,11 +639,11 @@ static int try_spawn_one_worker(zimg_priv_t *p, const scaler_ctx_t *ctx,
     stripe_worker_t *w = &p->workers[i];
 
     int sys, sye, dys, dye;
-    if (!up_compute_stripe_bounds(i, n, ctx->src_h, ctx->dst_h,
+    if (!up_compute_stripe_bounds(i, n, p->src_h, p->dst_h,
                                   &sys, &sye, &dys, &dye))
         return -1;
 
-    if (init_stripe_worker(w, p, ctx, i, sys, sye, dys, dye,
+    if (init_stripe_worker(w, p, i, sys, sye, dys, dye,
                            sub_w, sub_h, filt) != 0) {
         /* init_stripe_worker may have allocated graph or tmp before
          * failing. Release those without touching thread/sem (no thread
@@ -653,13 +661,13 @@ static int try_spawn_one_worker(zimg_priv_t *p, const scaler_ctx_t *ctx,
  * left in p->workers — caller may use it directly, OR tear it down
  * and retry with a smaller n.
  */
-static int try_construct_workers(zimg_priv_t *p, const scaler_ctx_t *ctx,
+static int try_construct_workers(zimg_priv_t *p,
                                  int n, unsigned sub_w, unsigned sub_h,
                                  zimg_resample_filter_e filt)
 {
     int constructed = 0;
     for (int i = 0; i < n; i++) {
-        if (try_spawn_one_worker(p, ctx, i, n, sub_w, sub_h, filt) != 0)
+        if (try_spawn_one_worker(p, i, n, sub_w, sub_h, filt) != 0)
             break;
         constructed++;
     }
@@ -681,7 +689,7 @@ static int try_construct_workers(zimg_priv_t *p, const scaler_ctx_t *ctx,
  * uses a strictly smaller `n`. Returns 0 on success (with at least
  * one worker covering the full height), -1 on total failure.
  */
-static void construct_workers(zimg_priv_t *p, const scaler_ctx_t *ctx,
+static void construct_workers(zimg_priv_t *p,
                               int n_threads, unsigned sub_w, unsigned sub_h,
                               zimg_resample_filter_e filt,
                               int *out_constructed)
@@ -690,7 +698,7 @@ static void construct_workers(zimg_priv_t *p, const scaler_ctx_t *ctx,
     int constructed = 0;
 
     while (n > 0) {
-        constructed = try_construct_workers(p, ctx, n, sub_w, sub_h, filt);
+        constructed = try_construct_workers(p, n, sub_w, sub_h, filt);
         /* Done either way: fully covered (constructed == n), or total
          * failure (constructed == 0) — nothing left to retry with. */
         if (constructed == n || constructed == 0) break;
@@ -776,15 +784,9 @@ static int zimg_lazy_init(zimg_priv_t *p)
     p->all_done_inited = true;
 
     int constructed = 0;
-    /* construct_workers needs ctx-shaped data: build a fake scaler_ctx_t
-     * with just the fields it reads (src/dst geometry). The priv struct
-     * has all of those already from init_priv_geometry. */
-    scaler_ctx_t fake_ctx;
-    memset(&fake_ctx, 0, sizeof fake_ctx);
-    fake_ctx.src_w = p->src_w; fake_ctx.src_h = p->src_h;
-    fake_ctx.dst_w = p->dst_w; fake_ctx.dst_h = p->dst_h;
-
-    construct_workers(p, &fake_ctx, p->n_threads, p->sub_w, p->sub_h,
+    /* ARCH-1: the worker-construction chain reads only src/dst geometry, all
+     * of which lives in the priv struct (init_priv_geometry) — no fake ctx. */
+    construct_workers(p, p->n_threads, p->sub_w, p->sub_h,
                       (zimg_resample_filter_e)p->algo_saved, &constructed);
     if (constructed == 0) return -1;
 
