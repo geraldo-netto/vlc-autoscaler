@@ -32,9 +32,15 @@
  *
  * THREADING
  *
- * N persistent worker threads spawned at Open(), one per stripe. Each
- * worker owns its zimg_filter_graph (built for that stripe's src_h/dst_h
- * dimensions) and its tmp buffer. Per-frame dispatch is O(1) syscalls on the
+ * N persistent worker threads spawned at Open(), one per grid cell. The frame
+ * is split into N_ROWS horizontal stripes; for frames too short for stripes
+ * alone to use every thread (very wide / short), the grid also tiles N_COLS
+ * columns (SCAL-3). A column tile reads the FULL-width source with zimg's
+ * active_region cropping its column window (so zimg reads cross-boundary halo
+ * — seam-free columns) and writes a per-worker tile-sized dst scratch that is
+ * copied into the destination sub-rectangle. With N_COLS == 1 this is the
+ * plain row-stripe path, byte-for-byte. Each worker owns its zimg_filter_graph
+ * and tmp buffer. Per-frame dispatch is O(1) syscalls on the
  * main thread (SCAL-2): the wake side bumps a shared "generation" under a
  * mutex and wakes all workers with ONE pthread_cond broadcast, and completion
  * is a counting barrier — workers decrement an atomic "pending", the last
@@ -85,6 +91,9 @@
 #endif
 
 #define ALIGN_DOWN_2(x) UP_ALIGN_DOWN_2(x)
+
+/* SCAL-3: a column tile narrower than this isn't worth its own zimg graph. */
+#define ZIMG_COL_MIN_WIDTH 64
 
 /*
  * SCAL-4: best-effort pin one worker thread to a single CPU core. Opt-in
@@ -160,15 +169,25 @@ typedef struct
     void              *tmp;
     size_t             tmp_size;
 
-    /* Stripe geometry (constant after Open). */
+    /* Cell geometry (constant after Open). A worker owns a row-stripe; with
+     * column tiling (SCAL-3) it also owns a column tile [src/dst_x_start ..
+     * + src/dst_w). With n_cols==1 the column spans the full width. */
     int                src_y_start;   /* in luma rows */
     int                src_y_end;     /* in luma rows (copy-in stripe) */
     int                dst_y_start;
     int                dst_y_end;     /* in luma rows (copy-out stripe) */
+    int                src_x_start;   /* luma column start (src), used by active_region */
+    int                dst_x_start;   /* luma column start (dst), copy-out placement */
     int                worker_id;
-    int                src_w;         /* luma width (copy-in stripe) */
-    int                dst_w;         /* luma width (copy-out stripe) */
+    int                src_w;         /* luma TILE width (src) */
+    int                dst_w;         /* luma TILE width (dst) */
     unsigned           sub_w, sub_h;
+
+    /* SCAL-3: true when this cell is a column tile. Then the graph reads the
+     * full-width source (active_region crops columns, with halo) and writes a
+     * per-worker tile-sized dst scratch (this struct OWNS w->dst.{y,u,v}),
+     * which worker_copy_out_tile() places into the VLC dst sub-rectangle. */
+    bool               col_tiled;
 
     /* Per-worker I/O mode (constant after Open):
      *   copy_in  = !src_zerocopy: worker memcpys VLC src -> scratch src.
@@ -210,6 +229,13 @@ typedef struct
 
     int               yv12_swap_uv;
     unsigned          sub_w, sub_h;
+
+    /* SCAL-3: worker grid. n_threads == n_rows * n_cols. n_cols > 1 (column
+     * tiling) engages only for frames too short for row-stripes alone to use
+     * every thread; then col_tiled forces source-direct read + per-tile dst
+     * scratch. Otherwise n_cols == 1 and this is the row-stripe path. */
+    int               n_rows, n_cols;
+    bool              col_tiled;
 
     /* SCAL-4: when set, pin worker i to CPU (i % cpus_online). */
     bool              pin_cpus;
@@ -368,6 +394,42 @@ static void worker_copy_out_stripe(stripe_worker_t *w)
         cw, crows);
 }
 
+/*
+ * SCAL-3: place a column tile's output. The graph wrote the tile-sized scratch
+ * w->dst (origin 0,0; tile pitch); copy it into the VLC dst sub-rectangle at
+ * [dst_x_start, dst_y_start). Disjoint cells -> no barrier. CCN 1.
+ */
+static void worker_copy_out_tile(stripe_worker_t *w)
+{
+    const int rows = w->dst_y_end - w->dst_y_start;
+    const int cx   = w->dst_x_start;
+    up_copy_plane(
+        w->vlc_dst.y + (size_t)w->dst_y_start * (size_t)w->vlc_dst.pitch_y + cx,
+        w->vlc_dst.pitch_y,
+        w->dst.y, w->dst.pitch_y,
+        w->dst_w, rows);
+
+    const int cs    = w->dst_y_start >> w->sub_h;
+    const int crows = (w->dst_y_end >> w->sub_h) - cs;
+    const int cw    = up_chroma_dim(w->dst_w, (int)w->sub_w);
+    const int cxc   = w->dst_x_start >> w->sub_w;
+    up_copy_plane(
+        w->vlc_dst.u + (size_t)cs * (size_t)w->vlc_dst.pitch_c + cxc, w->vlc_dst.pitch_c,
+        w->dst.u, w->dst.pitch_c, cw, crows);
+    up_copy_plane(
+        w->vlc_dst.v + (size_t)cs * (size_t)w->vlc_dst.pitch_c + cxc, w->vlc_dst.pitch_c,
+        w->dst.v, w->dst.pitch_c, cw, crows);
+}
+
+/* Place this worker's resampled output: a column tile copies its private dst
+ * scratch into the VLC dst sub-rect; a plain stripe copies out when dst is not
+ * zero-copy (else the graph already wrote VLC's picture). CCN 2. */
+static void worker_emit_output(stripe_worker_t *w)
+{
+    if (w->col_tiled)     worker_copy_out_tile(w);    /* SCAL-3 */
+    else if (w->copy_out) worker_copy_out_stripe(w);  /* PERF-5 */
+}
+
 /* SCAL-2: block until the main thread bumps *generation (new dispatch) or
  * sets should_exit. Returns true to run a frame, false to exit the loop.
  * Runs under *go_lock; cond_wait handles spurious wakeups via the predicate. */
@@ -410,9 +472,11 @@ static void *worker_main(void *arg)
 #pragma GCC diagnostic pop
 
         const int src_off_y = w->src_y_start;
-        const int dst_off_y = w->dst_y_start;
         const int src_off_c = w->src_y_start >> w->sub_h;
-        const int dst_off_c = w->dst_y_start >> w->sub_h;
+        /* A column tile writes its own tile scratch starting at row 0; a plain
+         * stripe writes into the shared/VLC full-frame dst at its row offset. */
+        const int dst_off_y = w->col_tiled ? 0 : w->dst_y_start;
+        const int dst_off_c = w->col_tiled ? 0 : (w->dst_y_start >> w->sub_h);
 
         const uint8_t *src_planes[3] = { w->src.y, w->src.u, w->src.v };
         uint8_t       *dst_planes[3] = { w->dst.y, w->dst.u, w->dst.v };
@@ -431,7 +495,7 @@ static void *worker_main(void *arg)
             w->graph, &sb, &db, w->tmp, NULL, NULL, NULL, NULL);
         w->result = (rc == 0) ? 0 : -1;
 
-        if (w->copy_out) worker_copy_out_stripe(w);  /* PERF-5: parallel copy-out */
+        worker_emit_output(w);
 
         /* SCAL-2: last worker to finish posts all_done exactly once. acq_rel
          * so the result writes above join the release sequence on *pending. */
@@ -443,8 +507,16 @@ static void *worker_main(void *arg)
 
 /* ---------- per-stripe graph builder ---------- */
 
+/*
+ * Build one cell's graph. `src_full_w` is the FULL source width of the buffer
+ * the graph will be handed; [act_left, act_left+act_width) is the source COLUMN
+ * window this cell resamples (SCAL-3). When the window spans the full width the
+ * active_region is left at its default (no crop) so the result is byte-identical
+ * to the row-stripe-only path. `dst_w` is the cell's TILE dst width.
+ */
 static zimg_filter_graph *build_stripe_graph(
-    int src_w, int src_stripe_h,
+    int src_full_w, int src_stripe_h,
+    int act_left, int act_width,
     int dst_w, int dst_stripe_h,
     unsigned sub_w, unsigned sub_h,
     zimg_resample_filter_e filt)
@@ -453,14 +525,28 @@ static zimg_filter_graph *build_stripe_graph(
     zimg_image_format_default(&src_fmt, ZIMG_API_VERSION);
     zimg_image_format_default(&dst_fmt, ZIMG_API_VERSION);
 
-    src_fmt.width        = src_w;
+    src_fmt.width        = src_full_w;
     src_fmt.height       = src_stripe_h;
     src_fmt.pixel_type   = ZIMG_PIXEL_BYTE;
     src_fmt.subsample_w  = sub_w;
     src_fmt.subsample_h  = sub_h;
     src_fmt.color_family = ZIMG_COLOR_YUV;
 
-    dst_fmt = src_fmt;
+    /* Column crop: zimg reads the active sub-window WITH halo from the full-
+     * width buffer (safe — buffer width matches src_fmt.width). Even act_left/
+     * width keep chroma exact. Skipped when the window is the whole width, so
+     * the non-tiled path keeps the default active_region byte-for-byte. */
+    if (act_left > 0 || act_width < src_full_w) {
+        src_fmt.active_region.left  = (double)act_left;
+        src_fmt.active_region.width = (double)act_width;
+    }
+
+    /* dst is a full tile image — keep its default (full) active_region; do NOT
+     * inherit the source column window. */
+    dst_fmt.pixel_type   = ZIMG_PIXEL_BYTE;
+    dst_fmt.subsample_w  = sub_w;
+    dst_fmt.subsample_h  = sub_h;
+    dst_fmt.color_family = ZIMG_COLOR_YUV;
     dst_fmt.width  = dst_w;
     dst_fmt.height = dst_stripe_h;
 
@@ -535,7 +621,10 @@ static int alloc_scratch_buffers(zimg_priv_t *p)
      * zero-copy on a side, the graph reads/writes the VLC picture directly and
      * the scratch stays NULL (set per-frame from the VLC picture instead). */
     if (!p->src_zerocopy && alloc_one_plane_set(&p->src) != 0) return -1;
-    if (!p->dst_zerocopy && alloc_one_plane_set(&p->dst) != 0) return -1;
+    /* Column tiling gives each worker its own tile dst scratch, so the shared
+     * priv-level dst scratch isn't used. */
+    if (!p->dst_zerocopy && !p->col_tiled && alloc_one_plane_set(&p->dst) != 0)
+        return -1;
     return 0;
 }
 
@@ -568,10 +657,47 @@ static void init_priv_geometry(zimg_priv_t *p, const scaler_ctx_t *ctx,
  * thread. Returns 0 on success, -1 on any failure (caller handles
  * cleanup of partial state via the worker's graph/tmp fields). CCN 5.
  */
+/* SCAL-3: allocate this column-tile worker's own dst scratch (tile_dst_w x
+ * dst_stripe_h). The graph writes here; worker_copy_out_tile places it into
+ * the VLC dst sub-rect. Returns 0 on success, -1 on alloc failure. CCN 1. */
+static int alloc_tile_dst(stripe_worker_t *w, const zimg_priv_t *p,
+                          int dst_stripe_h)
+{
+    w->dst.pitch_y = up_plane_pitch(w->dst_w, 0);
+    w->dst.pitch_c = up_plane_pitch(w->dst_w, p->sub_w);
+    w->dst.lines_y = up_plane_lines(dst_stripe_h, 0);
+    w->dst.lines_c = up_plane_lines(dst_stripe_h, p->sub_h);
+    return alloc_one_plane_set(&w->dst);
+}
+
+/* Build this cell's zimg graph (full-width source + active_region column crop;
+ * tile-width dst) and allocate its tmp buffer. Returns 0, or -1 on build/alloc
+ * failure (caller releases via release_worker_resources). CCN 4. */
+static int build_worker_graph_and_tmp(stripe_worker_t *w, const zimg_priv_t *p,
+                                      int src_stripe_h, int dst_stripe_h,
+                                      int src_x_start, int tile_src_w,
+                                      unsigned sub_w, unsigned sub_h,
+                                      zimg_resample_filter_e filt)
+{
+    w->graph = build_stripe_graph(p->src_w, src_stripe_h,
+                                  src_x_start, tile_src_w,
+                                  w->dst_w, dst_stripe_h, sub_w, sub_h, filt);
+    if (!w->graph) return -1;
+    if (zimg_filter_graph_get_tmp_size(w->graph, &w->tmp_size) != 0) return -1;
+    if (w->tmp_size > 0) {
+        w->tmp = aligned_alloc(UP_PITCH_ALIGN,
+            (w->tmp_size + UP_PITCH_ALIGN - 1) & ~(size_t)(UP_PITCH_ALIGN - 1));
+        if (!w->tmp) return -1;
+    }
+    return 0;
+}
+
 static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
                               int worker_id,
                               int src_y_start, int src_y_end,
                               int dst_y_start, int dst_y_end,
+                              int src_x_start, int src_x_end,
+                              int dst_x_start, int dst_x_end,
                               unsigned sub_w, unsigned sub_h,
                               zimg_resample_filter_e filt)
 {
@@ -579,8 +705,11 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
     w->src_y_end    = src_y_end;
     w->dst_y_start  = dst_y_start;
     w->dst_y_end    = dst_y_end;
-    w->src_w        = p->src_w;
-    w->dst_w        = p->dst_w;
+    w->src_x_start  = src_x_start;
+    w->dst_x_start  = dst_x_start;
+    w->col_tiled    = p->col_tiled;
+    w->src_w        = src_x_end - src_x_start;   /* TILE widths */
+    w->dst_w        = dst_x_end - dst_x_start;
     /* worker_main shifts row offsets by sub (`>> w->sub_h`); a value >= the
      * int width would be UB. Valid YUV chroma gives 0 or 1, but clamp both
      * exponents defensively so a malformed value can never reach the shift
@@ -598,20 +727,22 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
     w->all_done     = &p->all_done;
     w->worker_id    = worker_id;
     w->src = p->src;
-    w->dst = p->dst;
 
-    w->graph = build_stripe_graph(
-        p->src_w, src_y_end - src_y_start,
-        p->dst_w, dst_y_end - dst_y_start,
-        sub_w, sub_h, filt);
-    if (!w->graph) return -1;
-
-    if (zimg_filter_graph_get_tmp_size(w->graph, &w->tmp_size) != 0)
-        return -1;
-    if (w->tmp_size > 0) {
-        w->tmp = aligned_alloc(UP_PITCH_ALIGN, (w->tmp_size + UP_PITCH_ALIGN - 1) & ~(size_t)(UP_PITCH_ALIGN - 1));
-        if (!w->tmp) return -1;
+    /* dst buffer: a column tile writes its own tile-sized scratch (owned);
+     * otherwise it shares the priv-level dst scratch (or VLC dst in zerocopy,
+     * set per-frame). */
+    if (w->col_tiled) {
+        if (alloc_tile_dst(w, p, dst_y_end - dst_y_start) != 0) return -1;
+    } else {
+        w->dst = p->dst;
     }
+
+    if (build_worker_graph_and_tmp(w, p, src_y_end - src_y_start,
+                                   dst_y_end - dst_y_start,
+                                   src_x_start, src_x_end - src_x_start,
+                                   sub_w, sub_h, filt) != 0)
+        return -1;
+
     if (pthread_create(&w->thread, NULL, worker_main, w) != 0) {
         return -1;
     }
@@ -646,6 +777,12 @@ static void release_worker_resources(stripe_worker_t *w, bool had_thread)
         pthread_join(w->thread, NULL);
     if (w->graph) { zimg_filter_graph_free(w->graph); w->graph = NULL; }
     free(w->tmp); w->tmp = NULL;
+    /* SCAL-3: a column tile owns its dst scratch; the shared (non-tiled) dst
+     * is owned by the priv and freed in zimg_close. */
+    if (w->col_tiled) {
+        free(w->dst.y); free(w->dst.u); free(w->dst.v);
+        w->dst.y = w->dst.u = w->dst.v = NULL;
+    }
 }
 
 /*
@@ -688,94 +825,57 @@ static void teardown_constructed_workers(zimg_priv_t *p, int n)
 }
 
 /*
- * Try to spawn one stripe worker at index `i` covering its share of
- * [0, dst_h) when partitioned into `n` stripes. Returns 0 on success,
- * -1 on degenerate stripe geometry or worker init failure. On failure
- * any partially-allocated graph/tmp inside `w` is released.
+ * Spawn the worker for cell index `i` of the n_rows x n_cols grid (SCAL-3):
+ * row = i / n_cols owns a height stripe, col = i % n_cols owns a width tile.
+ * up_compute_stripe_bounds() partitions each axis (even-aligned, so column
+ * boundaries stay chroma-exact). Returns 0 on success, -1 on degenerate
+ * geometry or worker init failure (partial graph/tmp/tile-dst released here).
  */
-static int try_spawn_one_worker(zimg_priv_t *p,
-                                int i, int n,
+static int try_spawn_one_worker(zimg_priv_t *p, int i,
                                 unsigned sub_w, unsigned sub_h,
                                 zimg_resample_filter_e filt)
 {
     stripe_worker_t *w = &p->workers[i];
+    const int row = i / p->n_cols;
+    const int col = i % p->n_cols;
 
-    int sys, sye, dys, dye;
-    if (!up_compute_stripe_bounds(i, n, p->src_h, p->dst_h,
+    int sys, sye, dys, dye, sxs, sxe, dxs, dxe;
+    if (!up_compute_stripe_bounds(row, p->n_rows, p->src_h, p->dst_h,
                                   &sys, &sye, &dys, &dye))
+        return -1;
+    if (!up_compute_stripe_bounds(col, p->n_cols, p->src_w, p->dst_w,
+                                  &sxs, &sxe, &dxs, &dxe))
         return -1;
 
     if (init_stripe_worker(w, p, i, sys, sye, dys, dye,
-                           sub_w, sub_h, filt) != 0) {
-        /* init_stripe_worker may have allocated graph or tmp before
-         * failing. Release those without touching thread/sem (no thread
-         * was started since pthread_create is the last step). */
-        release_worker_resources(w, false);
+                           sxs, sxe, dxs, dxe, sub_w, sub_h, filt) != 0) {
+        release_worker_resources(w, false);   /* no thread started yet */
         return -1;
     }
     return 0;
 }
 
 /*
- * Try to construct exactly `n` stripe workers covering [0, dst_h).
- * Returns the number successfully built (≤ n). On partial build
- * (a stripe degenerated or worker init failed), the partial set is
- * left in p->workers — caller may use it directly, OR tear it down
- * and retry with a smaller n.
- */
-static int try_construct_workers(zimg_priv_t *p,
-                                 int n, unsigned sub_w, unsigned sub_h,
-                                 zimg_resample_filter_e filt)
-{
-    int constructed = 0;
-    for (int i = 0; i < n; i++) {
-        if (try_spawn_one_worker(p, i, n, sub_w, sub_h, filt) != 0)
-            break;
-        constructed++;
-    }
-    return constructed;
-}
-
-/*
- * Construct N stripe workers covering the full destination height.
- *
- * If try_construct_workers returns fewer than requested (a stripe
- * degenerated), we tear down the partial set and retry with the
- * smaller count. This is essential for correctness: without retry,
- * the LAST stripe of a partial construction would not extend to
- * dst_h (its end is computed against the original `n`, not the
- * realized count), leaving an unwritten band of rows at the bottom
- * of every output frame — visible as a black or garbage strip.
- *
- * The retry converges in at most a few iterations since each retry
- * uses a strictly smaller `n`. Returns 0 on success (with at least
- * one worker covering the full height), -1 on total failure.
+ * Construct all n_rows*n_cols grid cells. The grid (up_decide_tile_grid) makes
+ * every cell >= stripe_min rows and >= col_min cols, so geometry never
+ * degenerates; the only failure mode is an allocation / graph-build error,
+ * which retrying with fewer workers wouldn't fix. Build-all-or-nothing: on any
+ * cell failure, tear down the cells already built and report 0. The last row/
+ * col always ends at dst_h/dst_w, so a full build covers the frame exactly.
  */
 static void construct_workers(zimg_priv_t *p,
-                              int n_threads, unsigned sub_w, unsigned sub_h,
+                              unsigned sub_w, unsigned sub_h,
                               zimg_resample_filter_e filt,
                               int *out_constructed)
 {
-    int n = n_threads;
-    int constructed = 0;
-
-    while (n > 0) {
-        constructed = try_construct_workers(p, n, sub_w, sub_h, filt);
-        /* Done either way: fully covered (constructed == n), or total
-         * failure (constructed == 0) — nothing left to retry with. */
-        if (constructed == n || constructed == 0) break;
-
-        /* Partial build: the realized count is smaller than n, so
-         * the last stripe doesn't extend to dst_h. Tear down and
-         * retry with n = constructed so the new last stripe correctly
-         * closes the partition at dst_h. */
-        teardown_constructed_workers(p, constructed);
-        n = constructed;
-        constructed = 0;
+    for (int i = 0; i < p->n_threads; i++) {
+        if (try_spawn_one_worker(p, i, sub_w, sub_h, filt) != 0) {
+            teardown_constructed_workers(p, i);   /* tear down [0, i) */
+            *out_constructed = 0;
+            return;
+        }
     }
-
-    *out_constructed = constructed;
-    p->n_threads = constructed;
+    *out_constructed = p->n_threads;
 }
 
 /* Diagnostic log emitted once at Open(). CCN 2. */
@@ -786,17 +886,19 @@ static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
     size_t src_mb = p->src_zerocopy ? 0
         : (((size_t)p->src.lines_y * p->src.pitch_y
           + 2 * (size_t)p->src.lines_c * p->src.pitch_c) >> 20);
-    size_t dst_mb = p->dst_zerocopy ? 0
+    /* Column tiling uses per-worker tile dst scratch, not the shared p->dst. */
+    size_t dst_mb = (p->dst_zerocopy || p->col_tiled) ? 0
         : (((size_t)p->dst.lines_y * p->dst.pitch_y
           + 2 * (size_t)p->dst.lines_c * p->dst.pitch_c) >> 20);
     msg_Info(log_obj,
-             "zimg: %d worker thread%s, %dx%d -> %dx%d, scratch %zu MB "
-             "(src %s, dst %s)",
+             "zimg: %d worker thread%s (grid %dx%d), %dx%d -> %dx%d, "
+             "scratch %zu MB (src %s, dst %s)",
              p->n_threads, p->n_threads == 1 ? "" : "s",
+             p->n_rows, p->n_cols,
              p->src_w, p->src_h, p->dst_w, p->dst_h,
              src_mb + dst_mb,
              p->src_zerocopy ? "zero-copy" : "copy",
-             p->dst_zerocopy ? "zero-copy" : "copy");
+             p->col_tiled ? "tiled+copy" : (p->dst_zerocopy ? "zero-copy" : "copy"));
 }
 
 /*
@@ -858,7 +960,7 @@ static int zimg_lazy_init(zimg_priv_t *p)
     int constructed = 0;
     /* ARCH-1: the worker-construction chain reads only src/dst geometry, all
      * of which lives in the priv struct (init_priv_geometry) — no fake ctx. */
-    construct_workers(p, p->n_threads, p->sub_w, p->sub_h,
+    construct_workers(p, p->sub_w, p->sub_h,
                       (zimg_resample_filter_e)p->algo_saved, &constructed);
     if (constructed == 0) return -1;
 
@@ -899,17 +1001,20 @@ static int zimg_open(scaler_ctx_t *ctx)
 
     int n_threads = up_threads_decide(ctx->threads_pref, up_detect_cores());
 
-    /* Each stripe at least stripe_min_lines dst rows tall so kernel
-     * context is meaningful. Helper resolves the 0-sentinel to the
-     * compile-time default; see src/zimg_helpers.h. */
+    /* SCAL-3: pick a row x col worker grid. When the frame is too short for
+     * row-stripes alone to use every thread, tile columns. cols==1 => the plain
+     * row-stripe path. */
     int stripe_min_lines = up_zimg_stripe_min_lines(ctx->zimg.min_stripe_lines);
-    int max_threads_by_size = ctx->dst_h / stripe_min_lines;
-    if (max_threads_by_size < 1) max_threads_by_size = 1;
-    if (n_threads > max_threads_by_size) n_threads = max_threads_by_size;
+    int rows, cols;
+    up_decide_tile_grid(n_threads, ctx->dst_w, ctx->dst_h,
+                        stripe_min_lines, ZIMG_COL_MIN_WIDTH, &rows, &cols);
 
     zimg_priv_t *p = calloc(1, sizeof(*p));
     if (!p) return -1;
-    p->n_threads = n_threads;
+    p->n_rows    = rows;
+    p->n_cols    = cols;
+    p->col_tiled = (cols > 1);
+    p->n_threads = rows * cols;
     init_priv_geometry(p, ctx, sub_w, sub_h, swap);
 
     /* Save what zimg_lazy_init() needs that isn't already in priv. */
@@ -917,6 +1022,14 @@ static int zimg_open(scaler_ctx_t *ctx)
     p->log_obj_saved = ctx->log_obj;
     p->dst_zerocopy  = (ctx->zimg.zerocopy != 0);
     p->src_zerocopy  = (ctx->zimg.src_zerocopy != 0);
+
+    /* Column tiles read the full-width source directly (active_region crops,
+     * with halo) and write a per-worker tile dst scratch that is copied out.
+     * So force source-direct read + dst copy-out for the tiled path. */
+    if (p->col_tiled) {
+        p->src_zerocopy = true;
+        p->dst_zerocopy = false;
+    }
 
     /* SCAL-4: resolve the online-CPU count once so the per-worker pin is a
      * cheap modulo. Guard >= 1 so the modulo is always well-defined. */

@@ -70,6 +70,12 @@ static const struct zcfg CFGS[] = {
     { VLC_CODEC_I444, "I444 odd 853x481->1281x721 t8", 853, 481, 1281, 721, 8 },
     { VLC_CODEC_I420, "I420 tiny 64x64->128x128 t8",   64,  64,  128,  128, 8 },
     { VLC_CODEC_I420, "I420 clamp 100x16->200x32 t64", 100, 16,  200,  32, 64 },
+    /* SCAL-3: wide + short -> row stripes alone can't use all threads, so the
+     * grid tiles COLUMNS. dst_h/16 < threads triggers n_cols > 1. */
+    { VLC_CODEC_I420, "I420 wide 960x48->1920x96 t16",  960, 48, 1920, 96,  16 },
+    { VLC_CODEC_YV12, "YV12 wide 960x48->1920x96 t16",  960, 48, 1920, 96,  16 },
+    { VLC_CODEC_I422, "I422 wide 1280x64->2560x96 t16", 1280, 64, 2560, 96, 16 },
+    { VLC_CODEC_I444, "I444 wide 640x40->1920x80 t12",  640, 40, 1920, 80,  12 },
 };
 #define NCFG (sizeof(CFGS) / sizeof(CFGS[0]))
 

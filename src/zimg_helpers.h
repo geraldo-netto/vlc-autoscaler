@@ -190,4 +190,41 @@ static inline int up_compute_stripe_bounds(
     return (*dst_y_end > *dst_y_start) && (*src_y_end > *src_y_start);
 }
 
+/*
+ * SCAL-3: choose a (rows x cols) worker grid for `n_threads` workers given the
+ * destination geometry. Rows partition HEIGHT (the existing horizontal
+ * stripes); cols partition WIDTH (column tiles). Column tiling engages ONLY
+ * when the height cannot host enough row-stripes to use every thread (very
+ * wide / short frames) — otherwise cols stays 1 and the result is identical to
+ * the row-stripe-only path.
+ *
+ *   stripe_min: minimum dst rows per stripe (height floor, > 0).
+ *   col_min:    minimum dst cols per tile  (width floor,  > 0).
+ *
+ * up_compute_stripe_bounds() is reused verbatim for the column axis: it is a
+ * pure even-aligned 1D partition, and even column boundaries keep chroma
+ * subsampling exact. Writes *rows,*cols (each >= 1); rows*cols <= n_threads.
+ * CCN 7.
+ */
+static inline void up_decide_tile_grid(int n_threads, int dst_w, int dst_h,
+                                       int stripe_min, int col_min,
+                                       int *rows, int *cols)
+{
+    if (n_threads < 1) n_threads = 1;
+    int max_rows = (stripe_min > 0) ? dst_h / stripe_min : n_threads;
+    if (max_rows < 1) max_rows = 1;
+
+    int r = (n_threads < max_rows) ? n_threads : max_rows;
+    int c = 1;
+    if (r < n_threads) {                 /* height-bound: tile columns to fill */
+        int max_cols = (col_min > 0) ? dst_w / col_min : 1;
+        if (max_cols < 1) max_cols = 1;
+        c = n_threads / r;
+        if (c > max_cols) c = max_cols;
+        if (c < 1) c = 1;
+    }
+    *rows = r;
+    *cols = c;
+}
+
 #endif /* AUTOUPSCALE_ZIMG_HELPERS_H */

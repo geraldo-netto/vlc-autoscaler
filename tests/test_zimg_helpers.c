@@ -377,6 +377,36 @@ static void test_stripe_bounds_ratio_preservation(void)
     END();
 }
 
+/* SCAL-3 grid: rows*cols <= n, cols>1 only when height-bound. */
+static void test_decide_tile_grid(void)
+{
+    BEGIN("up_decide_tile_grid");
+    int r, c;
+
+    /* Tall enough: pure row striping, no columns. */
+    up_decide_tile_grid(8, 1920, 1080, 16, 64, &r, &c);
+    CHECK_EQ(r, 8); CHECK_EQ(c, 1);
+
+    /* n_threads <= max_rows (1080/16=67): still cols==1. */
+    up_decide_tile_grid(16, 1920, 1080, 16, 64, &r, &c);
+    CHECK_EQ(r, 16); CHECK_EQ(c, 1);
+
+    /* Wide + short: 96/16 = 6 rows max < 16 threads -> tile columns.
+     * cols = 16/6 = 2, capped by 1920/64 = 30. */
+    up_decide_tile_grid(16, 1920, 96, 16, 64, &r, &c);
+    CHECK_EQ(r, 6); CHECK_EQ(c, 2);
+    CHECK(r * c <= 16);
+
+    /* Column cap by width: dst_w=80 -> max_cols=80/64=1, so cols stays 1. */
+    up_decide_tile_grid(16, 80, 96, 16, 64, &r, &c);
+    CHECK_EQ(r, 6); CHECK_EQ(c, 1);
+
+    /* Degenerate inputs clamp to >=1. */
+    up_decide_tile_grid(0, 0, 0, 16, 64, &r, &c);
+    CHECK(r >= 1 && c >= 1);
+    END();
+}
+
 int main(void)
 {
     printf("Running zimg_helpers tests...\n");
@@ -411,6 +441,7 @@ int main(void)
     test_stripe_bounds_ratio_preservation();
 
     test_zimg_stripe_min_lines_boundaries();
+    test_decide_tile_grid();
 
     printf("\n%d tests run, %d failed\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;
