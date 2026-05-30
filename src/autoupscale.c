@@ -282,6 +282,10 @@ struct filter_sys_t
      * any positive value is the lap_mean cutoff above which USM is
      * skipped after the probe completes. */
     int                usm_sharp_threshold;
+
+    /* One-shot guard so a persistently failing backend logs once instead of
+     * spamming the log every frame (OBS-1). */
+    int                process_fail_logged;
 };
 
 /* How many frames to observe before deciding. At 30fps this is 2 seconds
@@ -719,6 +723,14 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
 
     if( p_sys->scaler.backend->process( &p_sys->scaler, p_in, p_out ) != 0 )
     {
+        if( !p_sys->process_fail_logged )
+        {
+            p_sys->process_fail_logged = 1;
+            msg_Warn( p_filter,
+                      "AutoUpscale: %s backend failed to process a frame; "
+                      "dropping frame(s) (this is logged only once)",
+                      p_sys->scaler.backend->name );
+        }
         picture_Release( p_out );
         picture_Release( p_in );
         return NULL;

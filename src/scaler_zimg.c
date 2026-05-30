@@ -855,6 +855,14 @@ static int zimg_process(scaler_ctx_t *ctx,
         if (p->lazy_init_failed) return -1;
         if (zimg_lazy_init(p) != 0) {
             p->lazy_init_failed = true;
+            /* OBS-2: the expensive setup (workers + scratch + per-stripe
+             * graphs) ran at first frame, after the cheap Open() succeeded;
+             * say so once, otherwise every frame is dropped silently. */
+            if (p->log_obj_saved)
+                msg_Err((vlc_object_t *)p->log_obj_saved,
+                        "zimg: worker/scratch init failed (%dx%d -> %dx%d); "
+                        "AutoUpscale will drop frames",
+                        p->src_w, p->src_h, p->dst_w, p->dst_h);
             return -1;
         }
         p->lazy_init_done = true;
