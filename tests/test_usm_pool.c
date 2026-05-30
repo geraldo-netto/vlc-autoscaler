@@ -415,24 +415,32 @@ static void test_create_stripe_min_rows_boundaries(void)
 /*
  * Coverage for the lazy-init failure paths in usm_pool.c.
  *
- * When `up_usm_pool_apply` first runs (lazy init), it allocates a
- * width*height workspace via `aligned_alloc`. Passing pathological
- * dimensions whose product exceeds available virtual memory causes
- * the allocation to return NULL — exercising the
- * `lazy_init_failed = true` sticky path. The pool must:
+ * When `up_usm_pool_apply` first runs (lazy init), it allocates the
+ * shared rolling-scratch block (USM_POOL_SCRATCH_ROWS * width bytes per
+ * worker) via `aligned_alloc`. Sizing that request past available
+ * virtual memory (and past ASan's ~1 TB allocator cap) makes the
+ * allocation return NULL — exercising the `lazy_init_failed = true`
+ * sticky path. The pool must:
  *   1. return -1 from the first apply()
  *   2. continue to return -1 from subsequent apply() calls without
  *      re-attempting the allocation (the "sticky" contract)
  *   3. destroy cleanly without leaking the partial state
+ *
+ * Scratch is now only 3*width per worker (the old design allocated a
+ * full width*height workspace), so a single worker on an INT_MAX-wide
+ * frame is "only" ~6 GB and might succeed. We request many workers on a
+ * very tall frame so 3 * n_threads * INT_MAX deterministically exceeds
+ * the cap; create() keeps all of them because height/stripe_min is huge.
+ * The scratch alloc fails before any worker thread is spawned.
  */
 static void test_apply_lazy_init_oom_sticky(void)
 {
     BEGIN("apply: lazy_init OOM -> sticky failure across subsequent calls");
 
-    /* INT_MAX × INT_MAX = ~4.6e18 bytes — guaranteed to exceed
-     * available virtual memory on any 64-bit Linux configuration. */
-    usm_pool_t *p = up_usm_pool_create(1, INT_MAX, INT_MAX, 0);
-    /* create() doesn't allocate the workspace — only the small priv
+    /* 3 * 512 * INT_MAX ≈ 3.3 TB — past ASan's ~1 TB cap and past any
+     * real machine's memory, so aligned_alloc deterministically fails. */
+    usm_pool_t *p = up_usm_pool_create(512, INT_MAX, INT_MAX, 0);
+    /* create() doesn't allocate the scratch — only the small priv
      * struct — so it must succeed. */
     CHECK(p != NULL);
     if (!p) { END(); return; }

@@ -106,10 +106,16 @@ static int run_warmup(usm_pool_t *pool, uint8_t *src, uint8_t *dst,
 static int run_timed(usm_pool_t *pool, uint8_t *src, uint8_t *dst,
                      const struct bench_args *a, int amount, double *us_per_frame)
 {
+    /* Fill the source ONCE before timing. The USM kernel's work is
+     * content-independent (only the opt-in flat-skip path branches on
+     * content), so regenerating a random frame each iteration would just
+     * fold the serial fill_xs cost into the measurement and swamp the
+     * thing we want to measure. Fill once, then time apply() only. */
+    fill_frame(src, a->width, a->height, a->mode, 0);
+
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     for (int i = 0; i < a->frames; i++) {
-        fill_frame(src, a->width, a->height, a->mode, i);
         if (up_usm_pool_apply(pool, dst, a->width, src, a->width, amount) != 0) {
             fprintf(stderr, "apply fail at frame %d\n", i); return 1;
         }

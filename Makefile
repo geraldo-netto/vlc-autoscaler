@@ -153,7 +153,7 @@ endif
 
 PLUGIN_OBJS += $(USM_OBJS)
 
-.PHONY: all plugin test fuzz fuzz-smoke analyze install uninstall clean info
+.PHONY: all plugin test fuzz fuzz-smoke analyze install uninstall clean info bench bench-flatskip
 
 all: plugin
 
@@ -404,6 +404,39 @@ stress: $(BUILD)/stress_usm_pool $(BUILD)/stress_usm_pool_tsan
 	@echo
 	@echo "=== usm_pool stress (ThreadSanitizer) ==="
 	@$(BUILD)/stress_usm_pool_tsan
+
+# --------- micro-benchmark ---------
+# Wall-clock us/frame for the USM pool at -O3 (matches the production
+# USM_POOL_CFLAGS optimization level). No sanitizers — this measures
+# real throughput. `bench` runs the default kernel; `bench-flatskip`
+# builds the SAME source with USM_POOL_FLAT_SKIP=1 so the per-stripe
+# flat-detection path is actually compiled and exercised — the call
+# site that opt-in feature exists for — and prints a rand-vs-flat
+# comparison so the skip's payoff is visible.
+BENCH_CFLAGS := -O3 $(MARCH_FLAG) $(WARN)
+
+$(BUILD)/bench_usm_pool: tests/bench_usm_pool.c src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
+	$(CC) $(BENCH_CFLAGS) -o $@ $< src/usm_pool.c -lpthread
+$(BUILD)/bench_usm_pool_flatskip: tests/bench_usm_pool.c src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
+	$(CC) $(BENCH_CFLAGS) -DUSM_POOL_FLAT_SKIP=1 -o $@ $< src/usm_pool.c -lpthread
+
+bench: $(BUILD)/bench_usm_pool
+	@echo "threads,width,height,frames,amount,fill,us_per_frame"
+	@$(BUILD)/bench_usm_pool 1 1920 1080 300 30 rand
+	@$(BUILD)/bench_usm_pool 2 1920 1080 300 30 rand
+	@$(BUILD)/bench_usm_pool 4 1920 1080 300 30 rand
+	@$(BUILD)/bench_usm_pool 8 1920 1080 300 30 rand
+	@$(BUILD)/bench_usm_pool 4 1280 720 300 30 rand
+	@$(BUILD)/bench_usm_pool 8 3840 2160 100 30 rand
+
+bench-flatskip: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip
+	@echo "kernel,threads,width,height,frames,amount,fill,us_per_frame"
+	@printf "default,"  ; $(BUILD)/bench_usm_pool          8 1920 1080 300 30 flat
+	@printf "flatskip," ; $(BUILD)/bench_usm_pool_flatskip 8 1920 1080 300 30 flat
+	@printf "default,"  ; $(BUILD)/bench_usm_pool          8 1920 1080 300 30 mixed
+	@printf "flatskip," ; $(BUILD)/bench_usm_pool_flatskip 8 1920 1080 300 30 mixed
+	@printf "default,"  ; $(BUILD)/bench_usm_pool          8 1920 1080 300 30 rand
+	@printf "flatskip," ; $(BUILD)/bench_usm_pool_flatskip 8 1920 1080 300 30 rand
 
 # --------- coverage ---------
 # Build the unit tests with gcov instrumentation, run them, then report

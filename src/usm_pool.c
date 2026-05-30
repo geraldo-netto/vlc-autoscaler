@@ -11,14 +11,21 @@
  *   workers, stripe i is [i*h/N, (i+1)*h/N) using integer division;
  *   the last stripe absorbs any rounding remainder.
  *
- * - The shared workspace is sized width * height bytes. It's overwritten
- *   in pass 1 by all workers (each writing only its own rows) and read
- *   in pass 2 by all workers (each reading three rows centered on its
- *   own; the topmost and bottommost rows clamp at workspace edges).
+ * - FUSED SINGLE-PASS sweep. Earlier versions ran two dispatch phases
+ *   (all workers hblur into a shared width*height workspace; a barrier;
+ *   then all workers combine). That cost two sem round-trips per frame
+ *   and two full passes over the luma plane. We now fuse both into one
+ *   dispatch: each worker keeps THREE private rolling hblur row buffers
+ *   (the rows y-1, y, y+1 it currently needs) and combines on the fly.
+ *   Boundary rows shared with a neighbour stripe are simply re-hblurred
+ *   locally — hblur is a deterministic per-row function, so the output
+ *   stays byte-identical to the single-threaded up_usm_apply_plane. The
+ *   private buffers also mean workers never read each other's memory, so
+ *   no inter-thread barrier is needed within a frame.
  *
- * - Pass-1-then-pass-2 ordering is enforced by the main thread waiting
- *   on all N pass-1 done signals before sending pass-2 go signals.
- *   No barrier primitive needed; semaphores already serialize.
+ * - The 3-row scratch is one pool-level allocation of 3*width bytes per
+ *   worker; far smaller than the old width*height workspace and the only
+ *   allocation that can fail in lazy init (sticky on failure).
  *
  * - The thread pool is lazy: created on the first apply() call so that
  *   probing-only Open/Close cycles (chain solver) cost nothing.
@@ -61,6 +68,7 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -71,14 +79,17 @@
 /* Workspace alignment - matches the rest of the plugin. */
 #define USM_POOL_ALIGN 64
 
+/* Each worker keeps this many rolling hblur row buffers (y-1, y, y+1). */
+#define USM_POOL_SCRATCH_ROWS 3
+
 /*
  * Cache-line-aligned to prevent false sharing between adjacent workers.
- * Each worker writes to its own `phase` and `sem_t.go.value` on every
- * dispatch; without padding, two workers whose structs share a 64-byte
- * cache line would invalidate each other's lines on every frame, costing
- * ~10s of ns/frame per worker pair. _Alignas(64) both aligns each instance
- * AND rounds sizeof up to a 64-byte multiple so an aligned_alloc'd array
- * keeps the per-element alignment.
+ * Each worker writes to its own `sem_t.go.value` on every dispatch and
+ * to its private scratch rows; without padding, two workers whose structs
+ * share a 64-byte cache line would invalidate each other's lines on every
+ * frame. _Alignas(64) both aligns each instance AND rounds sizeof up to a
+ * 64-byte multiple so an aligned_alloc'd array keeps the per-element
+ * alignment.
  */
 typedef struct usm_worker_s {
     /* _Alignas on the first member promotes the whole struct's alignment
@@ -96,20 +107,22 @@ typedef struct usm_worker_s {
     /* Per-worker constants set at lazy_init. */
     int        y_start, y_end;
     int        width, height;
-    uint8_t   *workspace;     /* shared buffer, owned by pool */
+    uint8_t   *scratch;       /* 3*width private rolling rows, owned by pool */
 
-    /* Per-frame state set by main thread before sem_post(go). */
-    int             phase;    /* 0 = hblur (pass 1), 1 = combine (pass 2) */
+    /* Per-frame state set by main thread before sem_post(go).
+     *
+     * The barrier that makes these reads race-free is the sem_post(go) /
+     * sem_wait(done) pair: the main thread writes every field below, then
+     * sem_post(go) (release); the worker sem_wait(go) (acquire) before
+     * reading them, runs, then sem_post(done) (release); the main thread
+     * sem_wait(done) (acquire) before the next frame. POSIX semaphores are
+     * full memory barriers, so plain (non-atomic) fields are correct as
+     * long as that post/wait handshake is preserved on every dispatch. */
     const uint8_t  *src;
     uint8_t        *dst;
     int             src_stride;
     int             dst_stride;
     int             amount_q8;
-
-    /* Set by phase 0; consumed by phase 1.
-     * 1 = stripe is visually flat → phase 2 short-circuits to identity.
-     * Only meaningful when USM_POOL_FLAT_SKIP is enabled. */
-    int             flat_skip;
 } usm_worker_t;
 
 /*
@@ -117,15 +130,16 @@ typedef struct usm_worker_s {
  *
  * Sum of |src[x+1] - src[x]| over a single sampled row inside the stripe.
  * Below ~2 average per-pixel delta the stripe carries no detail USM
- * could enhance, and combine_row's pass becomes net-loss noise
- * amplification. Skip combine entirely → identity copy of src→dst for
- * the stripe. Cost: O(width) per stripe vs O(width*stripe_height) for
- * combine, so even at 0% skip rate the overhead is <2% of phase 2.
+ * could enhance, and the combine pass becomes net-loss noise
+ * amplification. Skip the combine entirely → identity copy of src→dst for
+ * the stripe. Cost: O(width) per stripe vs O(width*stripe_height) for the
+ * full sweep, so even at 0% skip rate the overhead is <2% of the sweep.
  *
  * Disabled by default because it sacrifices byte-identity with the
  * single-threaded reference up_usm_apply_plane on near-flat-but-not-
  * exactly-flat content (per-pixel delta of up to a few LSB). Enabled
- * for bench tooling where perceptual equivalence is sufficient.
+ * for bench tooling (`make bench-flatskip`) where perceptual equivalence
+ * is sufficient — that is the call site the feature exists for.
  *
  * Conservative threshold: USM_FLAT_AVG_DELTA=2 means avg neighbour diff
  * < 2/255 ≈ 0.8%. Real video almost never hits this except for solid
@@ -147,6 +161,25 @@ static uint64_t up_usm__row_h_activity(const uint8_t *row, int w)
     }
     return s;
 }
+
+/* Identity-copy this worker's stripe (used when the stripe is flat). */
+static void usm_worker_copy_stripe(usm_worker_t *w)
+{
+    for (int y = w->y_start; y < w->y_end; y++) {
+        uint8_t       *d = w->dst + (size_t)y * (size_t)w->dst_stride;
+        const uint8_t *s = w->src + (size_t)y * (size_t)w->src_stride;
+        if (d != s) memcpy(d, s, (size_t)w->width);
+    }
+}
+
+/* True if the stripe's sampled middle row is visually flat. */
+static int usm_worker_stripe_is_flat(const usm_worker_t *w)
+{
+    int mid_y = w->y_start + (w->y_end - w->y_start) / 2;
+    uint64_t act = up_usm__row_h_activity(
+        w->src + (size_t)mid_y * (size_t)w->src_stride, w->width);
+    return act < (uint64_t)w->width * (uint64_t)USM_FLAT_AVG_DELTA;
+}
 #endif
 
 struct usm_pool_s {
@@ -157,7 +190,7 @@ struct usm_pool_s {
     usm_worker_t  *workers;
     sem_t          done;
     bool           done_inited;
-    uint8_t       *workspace;
+    uint8_t       *scratch;         /* 3*width per worker, contiguous block */
 
     bool           lazy_init_done;
     bool           lazy_init_failed;
@@ -165,77 +198,50 @@ struct usm_pool_s {
 
 /* ===========================================================================
  * Worker thread main loop. Receives work via sem_post(&w->go) and signals
- * completion via sem_post(w->done). Phases distinguished by w->phase.
- * Exits cleanly when the main thread sets should_exit = true and posts go.
+ * completion via sem_post(w->done). Exits cleanly when the main thread sets
+ * should_exit = true and posts go.
  * =========================================================================*/
 
-/* Pass 1: horizontal blur every row in our stripe into the shared
- * workspace. No reads of other workers' rows; no race because each
- * worker writes a disjoint row range. With USM_POOL_FLAT_SKIP, also
- * sample the middle row of the stripe to decide whether phase 2 can
- * short-circuit. */
-static void usm_worker_phase0_hblur(usm_worker_t *w)
+/*
+ * Fused single-pass sweep over this worker's stripe. Keeps three rolling
+ * private hblur row buffers (up = hblur(y-1), mid = hblur(y), dn =
+ * hblur(y+1)), combining each row as the window slides down. Boundary rows
+ * clamp (y-1 -> 0 at the top, y+1 -> height-1 at the bottom), matching
+ * up_usm__pass2_combine exactly. CCN 4.
+ */
+static void usm_worker_sweep(usm_worker_t *w)
 {
-    for (int y = w->y_start; y < w->y_end; y++) {
-        up_usm__hblur_row(
-            w->workspace + (size_t)y * (size_t)w->width,
-            w->src + (size_t)y * (size_t)w->src_stride,
-            w->width);
-    }
+    const int W = w->width;
+    const int H = w->height;
+    uint8_t *up  = w->scratch;
+    uint8_t *mid = w->scratch + (size_t)W;
+    uint8_t *dn  = w->scratch + (size_t)2 * (size_t)W;
 
-#if USM_POOL_FLAT_SKIP
-    {
-        int mid_y = w->y_start + (w->y_end - w->y_start) / 2;
-        uint64_t act = up_usm__row_h_activity(
-            w->src + (size_t)mid_y * (size_t)w->src_stride,
-            w->width);
-        w->flat_skip =
-            (act < (uint64_t)w->width * (uint64_t)USM_FLAT_AVG_DELTA);
-    }
-#endif
-}
+    int y = w->y_start;
+    int y_up = (y > 0) ? (y - 1) : 0;
+    up_usm__hblur_row(up,  w->src + (size_t)y_up * (size_t)w->src_stride, W);
+    up_usm__hblur_row(mid, w->src + (size_t)y    * (size_t)w->src_stride, W);
 
-#if USM_POOL_FLAT_SKIP
-/* Stripe was flat in phase 0 → identity copy is bit-identical within
- * rounding to combine output, since combine adds (src - hblur)*amount
- * where (src - hblur) ≈ 0 on flat areas. Saves one O(width*stripe_h)
- * pass of combine kernel.
- *
- * Only compiled when the flat-skip feature is on; otherwise the call
- * site in usm_worker_main is dead-coded by the constant-zero
- * `USM_POOL_FLAT_SKIP` and coverage would flag this function as
- * permanently 0%. */
-static void usm_worker_phase1_skip_copy(usm_worker_t *w)
-{
-    for (int y = w->y_start; y < w->y_end; y++) {
-        if (w->dst + (size_t)y * (size_t)w->dst_stride
-            != w->src + (size_t)y * (size_t)w->src_stride)
-            memcpy(
-                w->dst + (size_t)y * (size_t)w->dst_stride,
-                w->src + (size_t)y * (size_t)w->src_stride,
-                (size_t)w->width);
-    }
-}
-#endif
-
-/* Pass 2: combine workspace[y-1, y, y+1] with src to produce dst, on
- * each row in our stripe. Reads of workspace rows just above y_start
- * and just below y_end-1 belong to the neighboring workers but are
- * race-free because pass 1 fully completed before any pass 2 work
- * began. */
-static void usm_worker_phase1_combine(usm_worker_t *w)
-{
-    for (int y = w->y_start; y < w->y_end; y++) {
-        int yu = (y > 0) ? (y - 1) : 0;
-        int yd = (y < w->height - 1) ? (y + 1) : (w->height - 1);
+    for (; y < w->y_end; y++) {
+        int y_dn = (y < H - 1) ? (y + 1) : (H - 1);
+        up_usm__hblur_row(dn, w->src + (size_t)y_dn * (size_t)w->src_stride, W);
         up_usm__combine_row(
             w->dst + (size_t)y * (size_t)w->dst_stride,
             w->src + (size_t)y * (size_t)w->src_stride,
-            w->workspace + (size_t)yu * (size_t)w->width,
-            w->workspace + (size_t)y  * (size_t)w->width,
-            w->workspace + (size_t)yd * (size_t)w->width,
-            w->width, w->amount_q8);
+            up, mid, dn, W, w->amount_q8);
+        uint8_t *t = up; up = mid; mid = dn; dn = t;
     }
+}
+
+static void usm_worker_run(usm_worker_t *w)
+{
+#if USM_POOL_FLAT_SKIP
+    if (usm_worker_stripe_is_flat(w)) {
+        usm_worker_copy_stripe(w);
+        return;
+    }
+#endif
+    usm_worker_sweep(w);
 }
 
 static void *usm_worker_main(void *arg)
@@ -244,23 +250,14 @@ static void *usm_worker_main(void *arg)
     for (;;) {
         sem_wait(&w->go);
         if (w->should_exit) break;
-
-        if (w->phase == 0)
-            usm_worker_phase0_hblur(w);
-#if USM_POOL_FLAT_SKIP
-        else if (w->flat_skip)
-            usm_worker_phase1_skip_copy(w);
-#endif
-        else
-            usm_worker_phase1_combine(w);
-
+        usm_worker_run(w);
         sem_post(w->done);
     }
     return NULL;
 }
 
 /* ===========================================================================
- * Lazy initialization: workspace alloc + worker spawn. Called on the first
+ * Lazy initialization: scratch alloc + worker spawn. Called on the first
  * apply() invocation that actually has work to do (amount_q8 > 0). Returns
  * 0 on success, -1 on any allocation/spawn failure (caller sets the sticky
  * lazy_init_failed flag in that case). On partial failure (some workers
@@ -274,11 +271,39 @@ static int usm_pool_init_done_sem(usm_pool_t *p)
     return 0;
 }
 
+/*
+ * Total bytes for the shared scratch block: USM_POOL_SCRATCH_ROWS rolling
+ * rows of `width` bytes for each of `n` workers. Returns 0 on overflow or
+ * invalid input so the caller treats it as an allocation failure. CCN 3.
+ */
+static size_t usm_pool_scratch_bytes(int n, int width)
+{
+    if (n <= 0 || width <= 0) return 0;
+    size_t per = (size_t)USM_POOL_SCRATCH_ROWS * (size_t)width;
+    if (per / (size_t)USM_POOL_SCRATCH_ROWS != (size_t)width) return 0;
+    if (per > SIZE_MAX / (size_t)n) return 0;
+    return per * (size_t)n;
+}
+
+/* Allocate the shared worker scratch block (3*width per worker). Returns
+ * 0 on success, -1 on overflow or allocation failure. CCN 3. */
+static int usm_pool_alloc_scratch(usm_pool_t *p)
+{
+    size_t bytes = usm_pool_scratch_bytes(p->n_threads_pref, p->width);
+    if (bytes == 0) return -1;
+    size_t aligned_bytes =
+        (bytes + (USM_POOL_ALIGN - 1)) & ~(size_t)(USM_POOL_ALIGN - 1);
+    if (aligned_bytes < bytes) return -1;   /* round-up overflow */
+    p->scratch = aligned_alloc(USM_POOL_ALIGN, aligned_bytes);
+    return p->scratch ? 0 : -1;
+}
+
 static int usm_pool_spawn_worker(usm_pool_t *p, int i, int n)
 {
     usm_worker_t *w = &p->workers[i];
     w->done      = &p->done;
-    w->workspace = p->workspace;
+    w->scratch   = p->scratch + (size_t)i
+                 * (size_t)USM_POOL_SCRATCH_ROWS * (size_t)p->width;
     w->width     = p->width;
     w->height    = p->height;
     w->y_start   = (int)((int64_t)i * p->height / n);
@@ -289,8 +314,14 @@ static int usm_pool_spawn_worker(usm_pool_t *p, int i, int n)
     if (sem_init(&w->go, 0, 0) != 0) return -1;
     w->go_inited = true;
 
-    if (pthread_create(&w->thread, NULL, usm_worker_main, w) != 0)
+    if (pthread_create(&w->thread, NULL, usm_worker_main, w) != 0) {
+        /* sem_init succeeded but the thread did not start: destroy the
+         * semaphore here so the slot (which falls outside the shrunk
+         * n_threads and is therefore skipped by destroy) leaks nothing. */
+        sem_destroy(&w->go);
+        w->go_inited = false;
         return -1;
+    }
     w->thread_started = true;
     return 0;
 }
@@ -313,30 +344,24 @@ static void usm_pool_repartition_stripes(usm_worker_t *workers, int n,
     }
 }
 
-static int usm_pool_lazy_init(usm_pool_t *p)
+/* Allocate the worker array (one cache-line-aligned slot each) and zero
+ * it. Returns 0 on success, -1 on failure. CCN 2. */
+static int usm_pool_alloc_workers(usm_pool_t *p)
 {
-    /* aligned_alloc requires size to be a multiple of alignment per
-     * C11 (glibc relaxes this; ASan does not). Round up. */
-    size_t plane_bytes = (size_t)p->width * (size_t)p->height;
-    size_t aligned_bytes =
-        (plane_bytes + (USM_POOL_ALIGN - 1)) & ~(size_t)(USM_POOL_ALIGN - 1);
-    p->workspace = aligned_alloc(USM_POOL_ALIGN, aligned_bytes);
-    if (!p->workspace) return -1;
-
     /* aligned_alloc not calloc: usm_worker_t carries _Alignas(64) so each
      * element sits on its own cache line; calloc returns malloc-default
      * (16) alignment which would defeat the layout. sizeof is already a
      * multiple of 64 thanks to _Alignas, satisfying aligned_alloc's C11
      * size constraint. Manual memset replaces calloc's zero-init. */
-    {
-        size_t total = (size_t)p->n_threads_pref * sizeof(*p->workers);
-        p->workers = aligned_alloc(64, total);
-        if (!p->workers) return -1;
-        memset(p->workers, 0, total);
-    }
+    size_t total = (size_t)p->n_threads_pref * sizeof(*p->workers);
+    p->workers = aligned_alloc(64, total);
+    if (!p->workers) return -1;
+    memset(p->workers, 0, total);
+    return 0;
+}
 
-    if (usm_pool_init_done_sem(p) != 0) return -1;
-
+static int usm_pool_spawn_all(usm_pool_t *p)
+{
     int constructed = 0;
     for (int i = 0; i < p->n_threads_pref; i++) {
         if (usm_pool_spawn_worker(p, i, p->n_threads_pref) != 0) break;
@@ -347,11 +372,19 @@ static int usm_pool_lazy_init(usm_pool_t *p)
     /* Repartition unconditionally. When constructed == n_threads_pref
      * this is idempotent (same math the spawn loop just used). When
      * constructed < n_threads_pref it re-balances stripes across the
-     * actually-spawned workers; the unused slots stay zeroed (calloc)
-     * and are skipped by destroy. */
+     * actually-spawned workers; the unused slots stay zeroed and are
+     * skipped by destroy. */
     usm_pool_repartition_stripes(p->workers, constructed, p->height);
     p->n_threads = constructed;
     return 0;
+}
+
+static int usm_pool_lazy_init(usm_pool_t *p)
+{
+    if (usm_pool_alloc_scratch(p) != 0) return -1;
+    if (usm_pool_alloc_workers(p) != 0) return -1;
+    if (usm_pool_init_done_sem(p) != 0) return -1;
+    return usm_pool_spawn_all(p);
 }
 
 /* ===========================================================================
@@ -424,16 +457,15 @@ static void usm_pool_set_per_frame(usm_pool_t *p,
 }
 
 /*
- * Dispatch one phase to all workers and wait for all to finish.
- * Returns after the N-th sem_wait(&done), which means every worker
- * has completed its row range for the requested phase.
+ * Dispatch the (single) fused sweep to all workers and wait for all to
+ * finish. Returns after the N-th sem_wait(&done), which means every worker
+ * has completed its row range. One dispatch per frame (the old two-phase
+ * design did two).
  */
-static void usm_pool_run_phase(usm_pool_t *p, int phase)
+static void usm_pool_run(usm_pool_t *p)
 {
-    for (int i = 0; i < p->n_threads; i++) {
-        p->workers[i].phase = phase;
+    for (int i = 0; i < p->n_threads; i++)
         sem_post(&p->workers[i].go);
-    }
     for (int i = 0; i < p->n_threads; i++)
         sem_wait(&p->done);
 }
@@ -480,7 +512,7 @@ int up_usm_pool_apply(usm_pool_t *p,
 
     amount_q8 = usm_pool_clamp_amount(amount_q8);
 
-    /* Identity fast path: no thread activity, no workspace alloc. */
+    /* Identity fast path: no thread activity, no scratch alloc. */
     if (amount_q8 == 0) {
         usm_pool_identity(dst, dst_stride, src, src_stride,
                           p->width, p->height);
@@ -490,8 +522,7 @@ int up_usm_pool_apply(usm_pool_t *p,
     if (usm_pool_ensure_init(p) != 0) return -1;
 
     usm_pool_set_per_frame(p, dst, dst_stride, src, src_stride, amount_q8);
-    usm_pool_run_phase(p, 0);  /* pass 1: hblur into workspace */
-    usm_pool_run_phase(p, 1);  /* pass 2: combine workspace + src -> dst */
+    usm_pool_run(p);
     return 0;
 }
 
@@ -517,6 +548,6 @@ void up_usm_pool_destroy(usm_pool_t *p)
         free(p->workers);
     }
     if (p->done_inited) sem_destroy(&p->done);
-    free(p->workspace);
+    free(p->scratch);
     free(p);
 }
