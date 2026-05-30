@@ -29,7 +29,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential clang cppcheck pkg-config python3-pip \
             libvlccore-dev libvlc-dev \
-            libswscale-dev libavutil-dev
+            libswscale-dev libavutil-dev libzimg-dev
           # lizard is used by `make analyze` (complexity gate, CCN<=10).
           # --break-system-packages is needed on Ubuntu 24.04+ runners
           # (PEP 668); the runner is single-purpose so the warning is
@@ -40,17 +40,34 @@ jobs:
       - name: Show toolchain info
         run: make info
 
-      - name: Build the VLC plugin
-        run: make plugin
+      - name: Build the VLC plugin (gcc, -Werror)
+        run: make plugin EXTRA_CFLAGS=-Werror
+
+      # BUILD-4: also compile the shipped plugin under clang so clang-only
+      # warnings and codegen don't go untested. -Wno-unreachable-code-generic-
+      # assoc suppresses a false positive from VLC's own _Generic macros
+      # (var_GetChecked), not our code.
+      - name: Build the VLC plugin (clang, -Werror)
+        run: |
+          make clean
+          make plugin CC=clang \
+            EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
+          make clean
 
       - name: Unit tests (ASan + UBSan)
         run: make test
+
+      - name: zimg backend invariants (ASan + UBSan)
+        run: make test-zimg
 
       - name: Smoke fuzz (100k iterations under ASan + UBSan)
         run: make fuzz-smoke
 
       - name: Concurrency stress (usm_pool, ASan + TSan, ~70s)
         run: make stress
+
+      - name: zimg backend stress (ASan + UBSan + TSan)
+        run: make stress-zimg
 
       - name: Line coverage (gcov, fails any tracked file or function < 80%)
         run: make coverage
