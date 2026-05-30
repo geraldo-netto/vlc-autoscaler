@@ -87,6 +87,17 @@ typedef struct
     _Alignas(64) pthread_t  thread;
     sem_t              go;
     sem_t             *done;          /* shared with parent */
+    bool               thread_started; /* true iff pthread_create succeeded;
+                                        * pthread_t is opaque, so a "== 0"
+                                        * test on `thread` is not portable —
+                                        * mirror usm_worker_t and gate join/
+                                        * signal on this flag instead. */
+    /* should_exit (main->worker) and result (worker->main) are plain ints
+     * shared across threads. They are race-free ONLY because of the
+     * sem_post(go)/sem_wait(done) handshake around every dispatch: those
+     * POSIX-semaphore ops are full memory barriers, giving the writes
+     * happens-before the reads. Keep that handshake on every path or these
+     * must become _Atomic. */
     int                should_exit;
 
     /* Persistent: one graph + one tmp buffer per worker. */
@@ -379,7 +390,10 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
 {
     w->src_y_start  = src_y_start;
     w->dst_y_start  = dst_y_start;
-    w->sub_h        = sub_h;
+    /* worker_main shifts row offsets by sub_h (`>> w->sub_h`); a value >=
+     * the int width would be UB. Valid YUV chroma gives 0 or 1, but clamp
+     * defensively so a malformed sub_h can never reach the shift. */
+    w->sub_h        = (sub_h < 8u) ? sub_h : 0u;
     w->done         = &p->done;
     w->worker_id    = worker_id;
     w->src = p->src;
@@ -402,6 +416,7 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
         sem_destroy(&w->go);
         return -1;
     }
+    w->thread_started = true;
     return 0;
 }
 
@@ -412,8 +427,8 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
  *
  * `had_thread` lets the caller indicate whether the thread field is a
  * valid pthread handle that needs joining (true) or a stub left over from
- * a failed pthread_create (false). We can't tell from `w->thread` alone
- * because pthread_t is opaque.
+ * a failed pthread_create (false). Callers pass w->thread_started; we
+ * can't infer it from `w->thread` alone because pthread_t is opaque.
  *
  * After return, all dynamic resources owned by `w` are released; the
  * struct itself is NOT zeroed (caller decides whether to reuse the slot).
@@ -439,9 +454,7 @@ static void teardown_constructed_workers(zimg_priv_t *p, int n)
 {
     for (int i = 0; i < n; i++) {
         stripe_worker_t *w = &p->workers[i];
-        bool had_thread = (w->thread != 0);
-        release_worker_resources(w, had_thread);
-        w->thread = 0;
+        release_worker_resources(w, w->thread_started);
         memset(w, 0, sizeof *w);
     }
 }
@@ -795,7 +808,7 @@ static void zimg_signal_all_workers_exit(zimg_priv_t *p)
 {
     for (int i = 0; i < p->n_threads; i++) {
         stripe_worker_t *w = &p->workers[i];
-        if (w->thread) {
+        if (w->thread_started) {
             w->should_exit = 1;
             sem_post(&w->go);
         }
@@ -811,7 +824,7 @@ static void zimg_close(scaler_ctx_t *ctx)
         zimg_signal_all_workers_exit(p);
         for (int i = 0; i < p->n_threads; i++) {
             stripe_worker_t *w = &p->workers[i];
-            release_worker_resources(w, w->thread != 0);
+            release_worker_resources(w, w->thread_started);
         }
         free(p->workers);
     }
