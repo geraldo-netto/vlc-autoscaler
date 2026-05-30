@@ -29,6 +29,7 @@
 #include "zimg_test_util.h"
 
 #include <stdio.h>
+#include <sys/resource.h>
 
 static int g_run = 0, g_fail = 0, g_cur_fail = 0;
 static const char *g_cur = NULL;
@@ -166,12 +167,128 @@ static void test_zerocopy_matches_copyout(void)
     END();
 }
 
+/* supports(): planar YUV yes, packed/semiplanar no. Covers zimg_supports
+ * (the backend never calls it directly in the other tests). */
+static void test_supports(void)
+{
+    BEGIN("supports(): planar YUV yes, RGB/NV12 no");
+    const scaler_backend_t *be = &scaler_backend_zimg_impl;
+    CHECK(be->supports(VLC_CODEC_I420, UP_ALGO_LANCZOS));
+    CHECK(be->supports(VLC_CODEC_YV12, UP_ALGO_LANCZOS));
+    CHECK(be->supports(VLC_CODEC_I422, UP_ALGO_LANCZOS));
+    CHECK(be->supports(VLC_CODEC_I444, UP_ALGO_LANCZOS));
+    CHECK(!be->supports(VLC_CODEC_NV12, UP_ALGO_LANCZOS));
+    CHECK(!be->supports(VLC_CODEC_RGBA, UP_ALGO_LANCZOS));
+    END();
+}
+
+/* Every resample algorithm builds a graph and processes (covers the
+ * AlgoToZimg mapping arms; the config tests all run Lanczos). */
+static void test_all_algos(void)
+{
+    BEGIN("all resample algos build + process");
+    const int algos[] = { UP_ALGO_FAST_BILINEAR, UP_ALGO_BICUBIC,
+                          UP_ALGO_LANCZOS, UP_ALGO_SPLINE36 };
+    for (size_t i = 0; i < sizeof(algos) / sizeof(algos[0]); i++) {
+        zt_pic_t src, dst;
+        int ok = zt_pic_alloc(&src, VLC_CODEC_I420, 640, 360) == 0
+              && zt_pic_alloc(&dst, VLC_CODEC_I420, 1280, 720) == 0;
+        CHECK(ok);
+        if (ok) {
+            zt_pic_fill(&src, 0x99u);
+            scaler_ctx_t ctx;
+            zt_ctx_init(&ctx, VLC_CODEC_I420, 640, 360, 1280, 720, 4, 1);
+            ctx.algo = algos[i];
+            CHECK(ctx.backend->open(&ctx) == 0);
+            CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic) == 0);
+            ctx.backend->close(&ctx);
+        }
+        zt_pic_free(&src);
+        zt_pic_free(&dst);
+    }
+    END();
+}
+
+/* Drop RLIMIT_NPROC so worker pthread_create fails: lazy_init must clean up
+ * (sem destroyed, graph/tmp freed) and the backend must fail gracefully and
+ * stay failed (sticky), with no leak/crash under ASan. Covers the
+ * construction error + lazy-init-failed + process-failure paths. */
+static void test_construction_pthread_fail(void)
+{
+    BEGIN("worker construction survives pthread_create failure (RLIMIT_NPROC)");
+    struct rlimit old;
+    if (getrlimit(RLIMIT_NPROC, &old) != 0) { END(); return; }
+    struct rlimit lim = old;
+    lim.rlim_cur = 1;
+    if (setrlimit(RLIMIT_NPROC, &lim) != 0) { END(); return; }
+
+    zt_pic_t src, dst;
+    int ok = zt_pic_alloc(&src, VLC_CODEC_I420, 854, 480) == 0
+          && zt_pic_alloc(&dst, VLC_CODEC_I420, 1920, 1080) == 0;
+    int rc1 = -1, rc2 = -1;
+    scaler_ctx_t ctx;
+    zt_ctx_init(&ctx, VLC_CODEC_I420, 854, 480, 1920, 1080, 16, 1);
+    if (ok && ctx.backend->open(&ctx) == 0) {
+        zt_pic_fill(&src, 0x33u);
+        rc1 = ctx.backend->process(&ctx, &src.pic, &dst.pic);
+        rc2 = ctx.backend->process(&ctx, &src.pic, &dst.pic);  /* sticky */
+        ctx.backend->close(&ctx);
+    }
+    setrlimit(RLIMIT_NPROC, &old);   /* restore before any later test */
+
+    CHECK(ok);
+    CHECK(rc1 == -1);   /* no workers spawned -> lazy init failed */
+    CHECK(rc2 == -1);   /* sticky */
+    zt_pic_free(&src);
+    zt_pic_free(&dst);
+    END();
+}
+
+/* open() rejects a chroma the backend can't handle (the ChromaToZimg gate). */
+static void test_open_rejects_unsupported(void)
+{
+    BEGIN("open() rejects an unsupported chroma");
+    scaler_ctx_t ctx;
+    zt_ctx_init(&ctx, VLC_CODEC_NV12, 640, 360, 1280, 720, 4, 1);
+    CHECK(ctx.backend->open(&ctx) != 0);
+    END();
+}
+
+/* An extreme src->dst ratio collapses stripe 0's source range to zero rows,
+ * so worker construction fails the stripe-bounds check and lazy init reports
+ * failure without crashing. Covers the degenerate-stripe path. */
+static void test_degenerate_stripe_geometry(void)
+{
+    BEGIN("extreme ratio collapses a stripe -> graceful failure, no crash");
+    zt_pic_t src, dst;
+    int ok = zt_pic_alloc(&src, VLC_CODEC_I420, 100, 8) == 0
+          && zt_pic_alloc(&dst, VLC_CODEC_I420, 1920, 1080) == 0;
+    int rc = 0;
+    scaler_ctx_t ctx;
+    zt_ctx_init(&ctx, VLC_CODEC_I420, 100, 8, 1920, 1080, 64, 1);
+    if (ok && ctx.backend->open(&ctx) == 0) {
+        zt_pic_fill(&src, 0x55u);
+        rc = ctx.backend->process(&ctx, &src.pic, &dst.pic);
+        ctx.backend->close(&ctx);
+    }
+    CHECK(ok);
+    CHECK(rc == -1);
+    zt_pic_free(&src);
+    zt_pic_free(&dst);
+    END();
+}
+
 int main(void)
 {
     printf("Running scaler_zimg invariant tests (%zu configs)...\n", NCFG);
     test_full_write();
     test_determinism();
     test_zerocopy_matches_copyout();
+    test_supports();
+    test_all_algos();
+    test_open_rejects_unsupported();
+    test_degenerate_stripe_geometry();
+    test_construction_pthread_fail();
     printf("\n%d tests run, %d failed\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

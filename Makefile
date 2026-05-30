@@ -153,7 +153,7 @@ endif
 
 PLUGIN_OBJS += $(USM_OBJS)
 
-.PHONY: all plugin test fuzz fuzz-smoke analyze install uninstall clean info bench bench-flatskip test-zimg stress-zimg bench-zimg
+.PHONY: all plugin test fuzz fuzz-smoke analyze install uninstall clean info bench bench-flatskip test-zimg stress-zimg bench-zimg coverage-zimg
 
 all: plugin
 
@@ -442,6 +442,23 @@ stress-zimg: $(BUILD)/test_scaler_zimg $(BUILD)/test_scaler_zimg_tsan
 	@echo "=== scaler_zimg invariants (ThreadSanitizer) ==="
 	@$(BUILD)/test_scaler_zimg_tsan
 
+# Informational line coverage for scaler_zimg.c via the harness. NOT part of
+# the gated `coverage` target (which stays VLC-free and is held to 100%):
+# scaler_zimg.c cannot reach 100% in a unit harness — log_zimg_open's msg_Info
+# needs a live VLC logger object, the partial-construction retry is unreachable
+# given zimg_open's stripe clamp, and a couple of zimg-internal failure returns
+# need fault injection. The harness covers every other path (~94%).
+coverage-zimg:
+	@rm -rf $(BUILD)/covz && mkdir -p $(BUILD)/covz
+	$(CC) -O0 -g --coverage $(ZIMG_H_CFLAGS) -o $(BUILD)/covz/tz \
+	    tests/test_scaler_zimg.c src/scaler_zimg.c --coverage $(ZIMG_H_LIBS)
+	@$(BUILD)/covz/tz >/dev/null 2>&1 || true
+	@gcov -m -o $(BUILD)/covz $(BUILD)/covz/tz-scaler_zimg.gcda >/dev/null 2>&1 || true
+	@awk -F: 'NF>=2{c=$$1;gsub(/[ \t]/,"",c); if(c!="-"&&c!=""){t++; if(c=="#####"||c=="=====")u++}} \
+	    END{printf "scaler_zimg.c: %d/%d lines = %.1f%% (harness; informational)\n", t-u, t, (t-u)*100.0/t}' \
+	    scaler_zimg.c.gcov
+	@rm -f *.gcov
+
 bench-zimg: $(BUILD)/bench_scaler_zimg
 	@echo "threads,chroma,src,dst,frames,zc,us_per_frame"
 	@$(BUILD)/bench_scaler_zimg 1  i420 854 480 1920 1080 200 1
@@ -451,7 +468,7 @@ bench-zimg: $(BUILD)/bench_scaler_zimg
 	@$(BUILD)/bench_scaler_zimg 16 i420 854 480 1920 1080 200 1
 	@$(BUILD)/bench_scaler_zimg 8  i420 640 360 1280 720  200 1
 else
-test-zimg stress-zimg bench-zimg:
+test-zimg stress-zimg bench-zimg coverage-zimg:
 	@echo "libzimg not detected (pkg-config zimg); zimg harness unavailable."
 endif
 
