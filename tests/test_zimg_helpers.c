@@ -401,9 +401,23 @@ static void test_decide_tile_grid(void)
     up_decide_tile_grid(16, 80, 96, 16, 64, &r, &c);
     CHECK_EQ(r, 6); CHECK_EQ(c, 1);
 
-    /* Degenerate inputs clamp to >=1. */
+    /* Degenerate / invalid inputs clamp to >=1 and never overflow the budget.
+     * -1, 0, 1, INT_MAX, INT_MIN for each param; the fuzzer sweeps the full
+     * cross-product, these pin the contract as a regression guard. */
     up_decide_tile_grid(0, 0, 0, 16, 64, &r, &c);
+    CHECK(r == 1 && c == 1);
+    up_decide_tile_grid(-1, 1920, 96, 16, 64, &r, &c);   /* n<1 -> 1 cell */
+    CHECK(r == 1 && c == 1);
+    up_decide_tile_grid(1, 1920, 96, 16, 64, &r, &c);    /* n==1 -> 1 cell */
+    CHECK(r == 1 && c == 1);
+    up_decide_tile_grid(16, 1920, 96, -1, 64, &r, &c);   /* stripe_min<=0 */
+    CHECK(r >= 1 && c >= 1 && (long long)r * c <= 16);
+    up_decide_tile_grid(16, 1920, 96, 16, 0, &r, &c);    /* col_min<=0 -> cols 1 */
+    CHECK(r >= 1 && c == 1);
+    up_decide_tile_grid(INT_MAX, INT_MAX, INT_MAX, 16, 64, &r, &c);
     CHECK(r >= 1 && c >= 1);
+    up_decide_tile_grid(INT_MIN, INT_MIN, INT_MIN, INT_MIN, INT_MIN, &r, &c);
+    CHECK(r == 1 && c == 1);
     END();
 }
 

@@ -1035,8 +1035,13 @@ static int zimg_open(scaler_ctx_t *ctx)
      * cheap modulo. Guard >= 1 so the modulo is always well-defined. */
     p->pin_cpus = (ctx->pin_cpus != 0);
     if (p->pin_cpus) {
+        /* sysconf returns long; clamp to a sane positive int so the later
+         * `worker_id % cpus_online` is well-defined and the long->int store
+         * can't truncate a pathological value to <= 0. */
         long n = sysconf(_SC_NPROCESSORS_ONLN);
-        p->cpus_online = (n > 0) ? (int)n : 1;
+        if (n < 1) n = 1;
+        if (n > UP_THREADS_MAX * 64) n = UP_THREADS_MAX * 64;   /* 4096 cap */
+        p->cpus_online = (int)n;
     }
 
     ctx->priv = p;

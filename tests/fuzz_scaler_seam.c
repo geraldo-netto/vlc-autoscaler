@@ -117,11 +117,14 @@ static void run_one(const uint8_t *data, size_t size)
 {
     if (size < 16) return;
     uint32_t chroma = CHROMAS[data[0] % (sizeof CHROMAS / sizeof *CHROMAS)];
-    int sw = pick(data + 1, 16, 512) & ~1;      /* even dims keep chroma valid */
-    int sh = pick(data + 5, 16, 512) & ~1;
-    int dw = pick(data + 9, sw, sw * 2) & ~1;   /* upscale (or equal) */
-    int dh = pick(data + 12, sh, sh * 2) & ~1;
-    int threads = pick(data + 9, 2, 16);        /* reuse bytes; >=2 to tile */
+    /* Down to 2px to exercise degenerate cells / tiny stripes; even keeps
+     * subsampled chroma valid. The backend must stay memory-safe (and either
+     * fail gracefully or hold the seam bound) for any of these. */
+    int sw = pick(data + 1, 2, 512) & ~1;
+    int sh = pick(data + 5, 2, 512) & ~1;
+    int dw = pick(data + 9, sw, sw * 3) & ~1;   /* upscale (or equal) */
+    int dh = pick(data + 12, sh, sh * 3) & ~1;
+    int threads = pick(data + 9, 2, 32);        /* >=2 to tile; >cores stresses */
     if (sw < 2 || sh < 2 || dw < 2 || dh < 2) return;
 
     zt_pic_t ref, tiled;
