@@ -207,6 +207,12 @@ signalling each worker exactly once (signal-then-reap), so should_exit stays a
 plain sem-synchronized int — matching usm_pool's pattern (the interim _Atomic
 in 1c53e19 was reverted).
 
+## Pending validation
+
+| id | what | why it matters |
+|----|------|----------------|
+| VAL-1 | Real-VLC validation of source zero-copy now default-ON (commit 2236264). Run actual VLC across I420/YV12/I422/I444 sub-720p sources + the threads/zerocopy options; confirm no crash, no garbled output. | The harness proves byte-identity on malloc'd pictures but CANNOT reproduce the documented VLC-pool segfault history. The pre-flight guard (zimg_pic_ok) catches null/bad-pitch geometry, not deeper pool/lifecycle issues. If it misbehaves on a real VLC build, revert the default with `--autoupscale-zerocopy-src=0` (one-line flag flip) pending a fix. Dst zero-copy (also default-ON) shares the same caveat but has shipped longer. |
+
 ## Audit picks deliberately rejected
 
 Kept here so future passes don't re-pick them.
