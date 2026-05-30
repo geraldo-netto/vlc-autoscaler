@@ -18,9 +18,7 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| UB-3 | open | S | `scaler_zimg.c:238` (`worker_copy_in_stripe`) and `:757` (`copy_planes_to_pic`) shift `1 << w->sub_w` / `1 << sub_w` with an UNCLAMPED `sub_w`; the UB-2 fix clamped `sub_h < 8` but left `sub_w` unguarded | Not reachable today (ChromaToZimg yields sub_w ∈ {0,1}; unsupported chromas rejected at open) — same defensive-consistency gap UB-2 closed for sub_h. Clamp `w->sub_w = (sub_w < 8u) ? sub_w : 0u` at `init_stripe_worker`, and the priv `sub_w` for the copy-out site. |
-
-(UB-1/PORT-1 and UB-2 fixed in commit 8aa9104.)
+| (none open) | | | UB-1/PORT-1, UB-2 fixed in 8aa9104; UB-3 (`sub_w` now clamped at `init_stripe_worker` like `sub_h`) fixed in commit b4b86b3. | |
 
 ## memory management
 
@@ -32,10 +30,13 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| PERF-5 | open | M | `scaler_zimg.c:839` `zimg_copy_out`/`copy_planes_to_pic` — copy-IN was parallelized into the workers (PERF-1) but copy-OUT is still a serial main-thread memcpy of all 3 planes on the zerocopy-OFF path: workers finish, then main serially copies the full dst (~125µs/1080p) while every worker idles | Asymmetric with PERF-1. Fold copy-out into the workers too (per-worker dst stripe, point at VLC dst via a per-frame pointer set like `zimg_zerocopy_point_workers`). Only matters when zerocopy-dst=0 (non-default); validate with the harness + a zc=0 bench (see BUILD-6). |
-| PERF-6 | info | S | `scaler_zimg.c:871-874` `zimg_process` walks the worker array TWICE per frame in zerocopy mode (`zimg_point_workers_src` then `zimg_zerocopy_point_workers`), touching each worker cache line twice | Merge into one loop that sets `vlc_src` + dst pointers when `dst_zerocopy` is on. Trivial; removes a redundant n_threads pass on the hot path. Ties to DUP-7. |
+| (none open) | | | PERF-5 (parallel copy-out, measured 1.16-1.40x on zc=0) and PERF-6 (single per-frame pointer loop) DONE — commit b4b86b3. PERF-4 DONE — commit 4714938. | |
 
-(PERF-4 per-function O3 pragma removed DONE — commit 4714938, codegen proven identical 287==287 vector ops.)
+New in b4b86b3: source zero-copy (`--autoupscale-zerocopy-src`, default off,
+experimental — needs real-VLC validation before any default flip) and a
+per-frame pre-flight picture guard (`zimg_pic_ok`, drops a malformed frame +
+warns once). The pre-flight is a GUARD, not a full auto-fallback to copy-out
+(that would need scratch-dst kept allocated; deferred).
 
 PERF-1 (parallel copy-in) DONE — commit b0d327f. PERF-2 (fuse) DONE —
 commit cc71221. PERF-3 (probe visible width) DONE — commit 0f92daa.
@@ -66,8 +67,10 @@ CON-1 (document the sem barrier contract for should_exit/result) DONE — commit
 |----|--------|--------|-------------|-------|
 | DUP-3 | open | S | Worker-pool lifecycle (lazy-init flags, aligned_alloc + memset, sem_init, spawn loop with `constructed`, sticky `lazy_init_failed`) duplicated between `scaler_zimg.c:584` and `usm_pool.c:316`; per-worker `_Alignas(64)` struct + rationale comment copy-pasted | Small shared worker-pool scaffold; low priority since the two payloads (zimg graphs vs scratch rows) differ. |
 | DUP-5 | open | S | Args-valid checks parallel: `usm_pool.c` (`usm_pool_validate_args`) vs `usm.h` (`up_usm__args_valid`) — both null dst/src + stride<width | Marginal: the pool variant also checks its own ptr and uses the stored `p->width`, while `up_usm__args_valid` validates full dims; not cleanly mergeable without threading width/height through. Keep. |
-| DUP-6 | open | S | Chroma subsample round-up `(v + (1<<sub) - 1) >> sub` open-coded in 3 sites: `scaler_zimg.c:238` (`worker_copy_in_stripe` cw), `:757` (`copy_planes_to_pic` cw/ch), `tests/zimg_test_util.h:57` (`zt_pic_alloc`). zimg_helpers.h has the same math buried inside `up_plane_pitch`/`up_plane_lines` but exposes no bare helper | Add `static inline int up_chroma_dim(int v, int sub)` to zimg_helpers.h; call from all three sites (and from plane_pitch/lines). One definition for the rounding. |
-| DUP-7 | open | S | `scaler_zimg.c:776` `zimg_point_workers_src` and `:800` `zimg_zerocopy_point_workers` are structurally identical — same `swap`→`up_zimg_plane_idx` index map + same per-worker loop assigning `{y,u,v,pitch_y,pitch_c}` from `pic->p[idx]`; only the target sub-struct (`vlc_src` vs `dst`) differs. The new copy-in added the second copy | Extract one `point_workers_planes(p, pic, <which plane_set>)`. Ties to PERF-6 (merge the two per-frame loops). |
+
+DUP-6 (up_chroma_dim shared across copy-in/out, plane sizing, harness) and
+DUP-7 (single point_workers_planes via offsetof for all four pointer-sets)
+DONE — commit b4b86b3.
 
 DUP-1 (triplicated identity copy) + DUP-4 (amount clamp) DONE — commit 0711d5f.
 DUP-2 OBSOLETE: PERF-2 (cc71221) replaced the pool's two-phase loops with a
