@@ -54,7 +54,6 @@
 #include <zimg.h>
 #include <pthread.h>
 #include <semaphore.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -93,16 +92,16 @@ typedef struct
                                         * test on `thread` is not portable —
                                         * mirror usm_worker_t and gate join/
                                         * signal on this flag instead. */
-    /* should_exit is _Atomic because the close path writes it TWICE
-     * concurrently: zimg_signal_all_workers_exit batches a write+sem_post to
-     * every worker, then release_worker_resources writes it again before the
-     * join. The second write races with the worker's read of the first (the
-     * sem only orders the first signal) — a real data race TSan flags. Both
-     * writes store the same value, so relaxed atomicity is enough to make it
-     * defined; the sem still drives the actual wakeup. (result, by contrast,
-     * stays a plain int: single writer (worker) / single reader (main) with
-     * the sem_post(done)/sem_wait(done) handshake between them.) */
-    _Atomic int        should_exit;
+    /* should_exit (main->worker) and result (worker->main) are plain ints,
+     * race-free because of the sem handshake. should_exit is written EXACTLY
+     * ONCE per worker — by signal_worker_exit(), before its sem_post(go) —
+     * and the worker reads it after sem_wait(go) (acquire pairs with that
+     * release). release_worker_resources() only joins; it does NOT re-signal,
+     * so there is no concurrent second write. result is single-writer
+     * (worker) / single-reader (main) across the sem_post(done)/sem_wait(done)
+     * handshake. Keep signal-once-then-join on every teardown path or these
+     * would need to become _Atomic. */
+    int                should_exit;
 
     /* Persistent: one graph + one tmp buffer per worker. */
     zimg_filter_graph *graph;
@@ -434,19 +433,37 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
  * a failed pthread_create (false). Callers pass w->thread_started; we
  * can't infer it from `w->thread` alone because pthread_t is opaque.
  *
+ * A started worker MUST already have been told to exit via
+ * signal_worker_exit() before this joins it — this function does NOT signal,
+ * so should_exit is written exactly once (see the struct comment) and never
+ * races the worker's read of it.
+ *
  * After return, all dynamic resources owned by `w` are released; the
  * struct itself is NOT zeroed (caller decides whether to reuse the slot).
  */
 static void release_worker_resources(stripe_worker_t *w, bool had_thread)
 {
     if (had_thread) {
-        w->should_exit = true;
-        sem_post(&w->go);
         pthread_join(w->thread, NULL);
         sem_destroy(&w->go);
     }
     if (w->graph) { zimg_filter_graph_free(w->graph); w->graph = NULL; }
     free(w->tmp); w->tmp = NULL;
+}
+
+/*
+ * Tell a started worker to finish its loop: write should_exit, then post its
+ * go semaphore — exactly once. The worker reads should_exit only after its
+ * sem_wait(go) (which acquires this release), so the single write is race-
+ * free without atomics. No-op if the worker never started. Always pair with
+ * a later release_worker_resources() that joins.
+ */
+static void signal_worker_exit(stripe_worker_t *w)
+{
+    if (w->thread_started) {
+        w->should_exit = 1;
+        sem_post(&w->go);
+    }
 }
 
 /*
@@ -456,6 +473,11 @@ static void release_worker_resources(stripe_worker_t *w, bool had_thread)
  */
 static void teardown_constructed_workers(zimg_priv_t *p, int n)
 {
+    /* Signal every worker first (batched wakeups), THEN join — same
+     * signal-once-then-reap order as zimg_close, so should_exit is written
+     * exactly once per worker. */
+    for (int i = 0; i < n; i++)
+        signal_worker_exit(&p->workers[i]);
     for (int i = 0; i < n; i++) {
         stripe_worker_t *w = &p->workers[i];
         release_worker_resources(w, w->thread_started);
@@ -810,13 +832,8 @@ static int zimg_process(scaler_ctx_t *ctx,
  */
 static void zimg_signal_all_workers_exit(zimg_priv_t *p)
 {
-    for (int i = 0; i < p->n_threads; i++) {
-        stripe_worker_t *w = &p->workers[i];
-        if (w->thread_started) {
-            w->should_exit = 1;
-            sem_post(&w->go);
-        }
-    }
+    for (int i = 0; i < p->n_threads; i++)
+        signal_worker_exit(&p->workers[i]);
 }
 
 static void zimg_close(scaler_ctx_t *ctx)
