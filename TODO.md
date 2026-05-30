@@ -164,10 +164,17 @@ DEAD-6 (orphaned bench_usm_pool.c) DONE — wired as `make bench` / `make bench-
 ## Open — parked
 
 Deferred deliberately; why-not-now recorded so a future pass doesn't treat
-them as forgotten.
+them as forgotten. The zimg test/bench harness blocker is now REMOVED
+(commit 1c53e19: `make test-zimg` / `stress-zimg` / `bench-zimg`), so these
+can now be implemented with ASan/UBSan/TSan + throughput validation. Parked
+now only on scope, not on lack of a safety net.
 
 | id | effort | description | why parked |
 |----|--------|-------------|------------|
-| PERF-1 | M | Parallelize `zimg_copy_in` (serial source memcpy each frame) across the worker pool | scaler_zimg.c has NO automated test/bench harness (needs libzimg + real VLC pictures), and the file header documents that worker threads reading VLC's pool-managed source buffers is exactly what segfaulted in the field. Changing the copy model blind is unsafe. Needs a zimg correctness + throughput harness first. |
-| SCAL-3 | S | 2D/column tiling for very wide/short zimg frames | Column tiling subdivides the WIDTH dimension; horizontal resampling across a column-tile boundary produces visible vertical seams (the horizontal-stripe-only design exists precisely to avoid this). Needs zimg overlap/halo handling + an image-quality harness to validate no seams. Finding itself rates it low priority for typical content. |
-| SCAL-2 (zimg half) | S | Replace zimg's per-frame N sem_post/sem_wait with a counting barrier | Same blocker as PERF-1: no zimg test harness. The USM half is already done (single fused dispatch, commit cc71221). |
+| PERF-1 | M | Parallelize `zimg_copy_in` (serial source memcpy each frame) across the worker pool | Harness exists now. Still note the file header's warning that worker threads reading VLC's pool-managed SOURCE buffers segfaulted in the field — the parallel copy-in must read from the scratch/VLC src exactly as the existing serial copy does; validate with stress-zimg + bench-zimg before/after. |
+| SCAL-3 | S | 2D/column tiling for very wide/short zimg frames | Column tiling subdivides WIDTH; horizontal resampling across a column-tile boundary risks visible vertical seams (horizontal-stripe-only design avoids this). Needs zimg halo/overlap; the harness only checks full-write/determinism/zerocopy, NOT seam-free quality — would need a perceptual/reference check added. Low priority for typical content. |
+| SCAL-2 (zimg half) | S | Replace zimg's per-frame N sem_post/sem_wait with a counting barrier | Unblocked by the harness (TSan covers the race surface). USM half already done (commit cc71221). |
+
+Note: CON-1 (commit 8aa9104) only documented should_exit/result as sem-safe;
+the zimg harness's TSan build then caught a real double-write race on
+should_exit in the close path, fixed by making it `_Atomic` (commit 1c53e19).
