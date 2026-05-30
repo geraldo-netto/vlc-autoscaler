@@ -214,7 +214,10 @@ static inline void up_decide_tile_grid(int n_threads, int dst_w, int dst_h,
     int max_rows = (stripe_min > 0) ? dst_h / stripe_min : n_threads;
     if (max_rows < 1) max_rows = 1;
 
-    int r = (n_threads < max_rows) ? n_threads : max_rows;
+    /* r = min(n_threads, max_rows). Written as an explicit clamp (not a
+     * ternary) so static analysis can see r may end up < n_threads. */
+    int r = n_threads;
+    if (r > max_rows) r = max_rows;
     int c = 1;
     if (r < n_threads) {                 /* height-bound: tile columns to fill */
         int max_cols = (col_min > 0) ? dst_w / col_min : 1;
