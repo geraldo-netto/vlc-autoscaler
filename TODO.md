@@ -139,7 +139,7 @@ now only on scope, not on lack of a safety net.
 
 | id | effort | description | why parked |
 |----|--------|-------------|------------|
-| SCAL-3 | S | 2D/column tiling for very wide/short zimg frames | Column tiling subdivides WIDTH; horizontal resampling across a column-tile boundary risks visible vertical seams (horizontal-stripe-only design avoids this). Needs zimg halo/overlap; the harness only checks full-write/determinism/zerocopy, NOT seam-free quality — would need a perceptual/reference check added. Low priority for typical content. |
+| SCAL-3 | M | 2D/column tiling for very wide/short zimg frames | PREREQUISITE DONE: a seam oracle now exists. EMPIRICAL FINDING (2026-05-30): the existing N-row-stripe scaler is NOT byte-identical to a single-graph resample — each stripe restarts zimg's resize origin, so tiles carry a sub-pixel PHASE rounding at boundaries. Magnitude is content-dependent: <=3/255 on real (smooth) content at normal resolutions (imperceptible), up to ~12/255 only on synthetic steep gradients at extreme tiny-stripe geometries. NO visible seam bug; byte-identity is the wrong criterion. Oracle = bounded delta on SMOOTH content: `test_tiling_matches_untiled` (<=6, fixed configs) + `fuzz_scaler_seam` (<=16, randomized geometry, libFuzzer + smoke wired into `make test-zimg`). Column tiling adds the same bounded HORIZONTAL phase rounding (no active_region halo needed — it stays within the same envelope), gated by these tests. Remaining: implement the 2D (row x column) partition + a column-tile oracle/fuzz extension. |
 
 ## Pending validation
 

@@ -153,7 +153,7 @@ endif
 
 PLUGIN_OBJS += $(USM_OBJS)
 
-.PHONY: all plugin test fuzz fuzz-smoke analyze scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress-zimg bench-zimg coverage-zimg
+.PHONY: all plugin test fuzz fuzz-smoke fuzz-seam analyze scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress-zimg bench-zimg coverage-zimg
 
 all: plugin
 
@@ -435,10 +435,30 @@ $(BUILD)/test_scaler_zimg_tsan: tests/test_scaler_zimg.c $(ZIMG_H_DEPS) | $(BUIL
 $(BUILD)/bench_scaler_zimg: tests/bench_scaler_zimg.c $(ZIMG_H_DEPS) | $(BUILD)
 	$(CC) -O2 $(ZIMG_H_CFLAGS) -o $@ $< src/scaler_zimg.c $(ZIMG_H_LIBS)
 
-test-zimg: $(BUILD)/test_scaler_zimg
+# SCAL-3 seam fuzzer: randomized geometry/chroma/thread-count, asserts the
+# tiled-vs-single-graph seam stays <= SEAM_MAX_DELTA on smooth content.
+# Smoke variant (own main) runs in the standard harness; libFuzzer variant
+# (clang) explores the geometry space.
+$(BUILD)/fuzz_scaler_seam_smoke: tests/fuzz_scaler_seam.c $(ZIMG_H_DEPS) | $(BUILD)
+	$(CC) -O2 $(ZIMG_H_CFLAGS) -DFUZZ_MAIN -fsanitize=address,undefined -o $@ \
+	    $< src/scaler_zimg.c -fsanitize=address,undefined $(ZIMG_H_LIBS)
+
+$(BUILD)/fuzz_scaler_seam: tests/fuzz_scaler_seam.c $(ZIMG_H_DEPS) | $(BUILD)
+	$(CLANG) -O1 -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS) $(FUZZ_SAN) \
+	    -o $@ $< src/scaler_zimg.c $(FUZZ_SAN) $(ZIMG_H_LIBS)
+
+fuzz-seam: $(BUILD)/fuzz_scaler_seam_smoke
+	@echo
+	@echo "=== scaler_seam smoke (ASan+UBSan, randomized geometry) ==="
+	@$(BUILD)/fuzz_scaler_seam_smoke
+
+test-zimg: $(BUILD)/test_scaler_zimg $(BUILD)/fuzz_scaler_seam_smoke
 	@echo
 	@echo "=== scaler_zimg invariants (ASan + UBSan) ==="
 	@$(BUILD)/test_scaler_zimg
+	@echo
+	@echo "=== scaler_seam smoke (ASan + UBSan, randomized geometry) ==="
+	@$(BUILD)/fuzz_scaler_seam_smoke
 
 stress-zimg: $(BUILD)/test_scaler_zimg $(BUILD)/test_scaler_zimg_tsan
 	@echo

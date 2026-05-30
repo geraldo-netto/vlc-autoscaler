@@ -117,6 +117,30 @@ static size_t cmp_visible(const zt_pic_t *a, const zt_pic_t *b)
     return diff;
 }
 
+/* Like cmp_visible but also reports the max absolute per-byte delta and the
+ * count of "large" diffs (> 4) — distinguishes ±1 rounding noise from a real
+ * sub-pixel phase shift / seam. */
+static size_t cmp_visible_mag(const zt_pic_t *a, const zt_pic_t *b,
+                              int *max_delta, size_t *big_count)
+{
+    size_t diff = 0; int maxd = 0; size_t big = 0;
+    for (int k = 0; k < a->pic.i_planes; k++) {
+        const plane_t *pa = &a->pic.p[k];
+        const plane_t *pb = &b->pic.p[k];
+        for (int y = 0; y < pa->i_visible_lines; y++) {
+            const uint8_t *ra = pa->p_pixels + (size_t)y * (size_t)pa->i_pitch;
+            const uint8_t *rb = pb->p_pixels + (size_t)y * (size_t)pb->i_pitch;
+            for (int x = 0; x < pa->i_visible_pitch; x++) {
+                int d = (int)ra[x] - (int)rb[x];
+                if (d < 0) d = -d;
+                if (d) { diff++; if (d > maxd) maxd = d; if (d > 4) big++; }
+            }
+        }
+    }
+    *max_delta = maxd; *big_count = big;
+    return diff;
+}
+
 /* True if a and b match over their visible region; names the config on diff
  * so a failure points at the offending workload. */
 static int same_cfg(const struct zcfg *c, const zt_pic_t *a, const zt_pic_t *b)
@@ -316,6 +340,94 @@ static void test_extreme_ratio_no_crash(void)
     END();
 }
 
+/* Smooth 2D gradient — realistic low-frequency content, unlike the xorshift
+ * noise of zt_pic_fill. A sub-pixel phase error shows up as a SMALL delta here
+ * (proportional to the local slope), vs a huge delta on noise. */
+static void zt_pic_fill_smooth(zt_pic_t *tp)
+{
+    for (int k = 0; k < tp->pic.i_planes; k++) {
+        plane_t *p = &tp->pic.p[k];
+        for (int y = 0; y < p->i_visible_lines; y++) {
+            uint8_t *row = p->p_pixels + (size_t)y * (size_t)p->i_pitch;
+            int vy = p->i_visible_lines > 1
+                   ? y * 128 / (p->i_visible_lines - 1) : 0;
+            for (int x = 0; x < p->i_visible_pitch; x++) {
+                int vx = p->i_visible_pitch > 1
+                       ? x * 127 / (p->i_visible_pitch - 1) : 0;
+                row[x] = (uint8_t)(vx + vy);
+            }
+        }
+    }
+}
+
+/* Run one config with an explicit worker-thread count (overriding c->threads),
+ * copy-out path, no zero-copy. Fills `out`. Returns 0 on success. Used by the
+ * SCAL-3 seam oracle: threads=1 is the single-graph untiled reference.
+ * smooth=1 uses a gradient (realistic), smooth=0 uses noise (worst case). */
+static int run_zimg_threads_in(const struct zcfg *c, int threads, int smooth,
+                               uint32_t seed, zt_pic_t *out)
+{
+    zt_pic_t src;
+    if (zt_pic_alloc(&src, c->chroma, c->sw, c->sh) != 0) return -2;
+    if (zt_pic_alloc(out, c->chroma, c->dw, c->dh) != 0) {
+        zt_pic_free(&src);
+        return -2;
+    }
+    if (smooth) zt_pic_fill_smooth(&src);
+    else        zt_pic_fill(&src, seed);
+    zt_pic_memset(out, 0x00);
+
+    scaler_ctx_t ctx;
+    zt_ctx_init(&ctx, c->chroma, c->sw, c->sh, c->dw, c->dh, threads, 0);
+    int rc = -2;
+    if (ctx.backend->open(&ctx) == 0) {
+        rc = ctx.backend->process(&ctx, &src.pic, &out->pic);
+        ctx.backend->close(&ctx);
+    }
+    zt_pic_free(&src);
+    return rc;
+}
+
+/*
+ * SCAL-3 SEAM ORACLE. A tiled resample (N stripes) is NOT byte-identical to
+ * the single-graph (threads=1) resample: each tile restarts zimg's resize
+ * coordinate origin, so tile output carries a sub-pixel PHASE rounding at the
+ * boundary. On real (low-frequency) content that rounding is bounded to a few
+ * code values out of 255 — imperceptible; only on uncorrelated NOISE does a
+ * sub-pixel shift blow up to large per-pixel deltas.
+ *
+ * So the seam criterion is NOT byte-identity but a bounded delta on SMOOTH
+ * content: maxdelta <= SEAM_MAX_DELTA. This is the gate that must pass before
+ * (and after) column tiling is added — column tiles add the same bounded
+ * horizontal phase rounding and must stay under the same ceiling.
+ */
+#define SEAM_MAX_DELTA 6
+static void test_tiling_matches_untiled(void)
+{
+    BEGIN("tiled vs single-graph seam <= 6 (SEAM_MAX_DELTA) on smooth content");
+    static const int TCOUNTS[] = { 2, 4, 8, 16 };
+    for (size_t i = 0; i < NCFG; i++) {
+        zt_pic_t ref;
+        if (run_zimg_threads_in(&CFGS[i], 1, 1, 0, &ref) != 0) { CHECK(0); continue; }
+        for (size_t t = 0; t < sizeof TCOUNTS / sizeof *TCOUNTS; t++) {
+            zt_pic_t tiled;
+            int r = run_zimg_threads_in(&CFGS[i], TCOUNTS[t], 1, 0, &tiled);
+            CHECK(r == 0);
+            if (r == 0) {
+                int maxd = 0; size_t big = 0;
+                cmp_visible_mag(&ref, &tiled, &maxd, &big);
+                if (maxd > SEAM_MAX_DELTA)
+                    printf("    [%s] t=%d SMOOTH seam maxdelta=%d (>%d) big=%zu\n",
+                           CFGS[i].name, TCOUNTS[t], maxd, SEAM_MAX_DELTA, big);
+                CHECK(maxd <= SEAM_MAX_DELTA);
+            }
+            zt_pic_free(&tiled);
+        }
+        zt_pic_free(&ref);
+    }
+    END();
+}
+
 /* Run one config with CPU pinning enabled (SCAL-4); fills `out`. Mirrors
  * run_zimg but sets ctx.pin_cpus = 1. Returns 0 on success. */
 static int run_zimg_pinned(const struct zcfg *c, uint32_t seed, zt_pic_t *out)
@@ -373,6 +485,7 @@ int main(void)
     test_extreme_ratio_no_crash();
     test_construction_pthread_fail();
     test_pin_cpus_matches();
+    test_tiling_matches_untiled();
     printf("\n%d tests run, %d failed\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
