@@ -237,7 +237,9 @@ vlc --autoupscale-threads=24 \
 - `--autoupscale-zerocopy-dst=0` — workers write to scratch buffers,
   then copy out to VLC's destination picture. Slightly slower than
   the default zero-copy path but eliminates a class of edge-case bugs
-  (see Recipe 9).
+  (see Recipe 9). Its source-side companion is `--autoupscale-zerocopy-src=0`
+  (copy each source stripe into scratch first); set both for the most
+  conservative path.
 
 **Cost:**
 - USM at 50% costs ~2.5× the default 20%
@@ -364,9 +366,13 @@ vlc --autoupscale-threads=16 \
 
 ### Step 3: Disable zero-copy
 
+Both the source and destination sides default to zero-copy, so disable
+both to fully rule out the zero-copy paths:
+
 ```sh
 vlc --autoupscale-threads=16 \
     --autoupscale-zerocopy-dst=0 \
+    --autoupscale-zerocopy-src=0 \
     --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,
                        venc=x264{preset=ultrafast,tune=zerolatency},
                        vfilter=autoupscale}:display' \
@@ -375,9 +381,10 @@ vlc --autoupscale-threads=16 \
 
 - **If symptom appears** → bug is in autoupscale's core path (not
   zerocopy-specific). Continue to step 4.
-- **If symptom is gone** → bug is in autoupscale's zero-copy destination
-  path. Workaround: set `--autoupscale-zerocopy-dst=0` always. File a
-  bug report with the verbose log; we'd want to investigate.
+- **If symptom is gone** → bug is in a zero-copy path. Narrow it by
+  re-enabling one side at a time (`zerocopy-dst=1` then `zerocopy-src=1`);
+  keep the offending side at 0 as a workaround. File a bug report with the
+  verbose log; we'd want to investigate.
 
 ### Step 4: Single thread, lowest target
 
@@ -653,6 +660,7 @@ vlc \
 | `--verbose=0` | Only show actual errors; hide warnings and debug. |
 | `--autoupscale-target=0` | AUTO mode — picks 720p or 1080p based on source. Never goes above 1080p in AUTO. |
 | `--autoupscale-threads=0` | Auto: `cores/2 − 2` workers. On a 32-core box that's 14 — leaves 18 cores for decoder, encoder, audio, OS. |
+| `--autoupscale-pin-threads=0` | Off by default. `1` pins each scaler worker to a distinct core (Linux, best-effort) — only worth it on a dedicated high-core/NUMA transcode box where you measured a gain; can hurt on a shared desktop. |
 | `--autoupscale-content-probe=1` | Diagnostic only — measures source content quality and logs an advisory if upscaling looks unhelpful. ~27 µs/frame for 60 frames at startup, then off. |
 | `#transcode{...}:display` | Re-encode in a single pipeline, then display. Avoids the recursion mode that `vfilter=` directly into display sometimes hits. |
 | `vcodec=h264,vb=10000,venc=x264{preset=ultrafast}` | x264 ultrafast preset — costs ~5-8 ms/frame, well under the 16.7 ms budget for 60 fps. |

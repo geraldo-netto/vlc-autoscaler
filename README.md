@@ -103,8 +103,10 @@ setup: enable once, leave it on, only sub-HD content is touched.
 | `--autoupscale-usm`                 | 0–200  | **20**  | Unsharp-mask amount (%) applied to luma post-upscale     |
 | `--autoupscale-backend`             | 0–2    | 0       | 0 = auto (zimg → swscale), 1 = zimg only, 2 = swscale only |
 | `--autoupscale-target-fps`          | 0–240  | 60      | Per-frame work over `1 / target_fps` triggers a one-time tuning hint. 0 disables monitoring. |
-| `--autoupscale-threads`             | 0–64   | 0       | Slice the frame into N horizontal stripes processed in parallel. 0 = auto (`cores/2 − 2`), 1 = single-threaded, 2..64 = explicit. |
+| `--autoupscale-threads`             | 0–64   | 0       | Number of zimg worker threads. The frame is sliced into N horizontal stripes processed in parallel; on very wide/short frames the workers also tile columns so all threads stay busy. 0 = auto (`cores/2 − 2`), 1 = single-threaded, 2..64 = explicit. |
+| `--autoupscale-pin-threads`         | 0–1    | 0       | 1 = pin each zimg worker thread to a distinct CPU core (round-robin, Linux only, best-effort). Off by default — pinning can hurt on a typical desktop by fighting the scheduler; enable only on a dedicated high-core/NUMA transcode box where you measured a gain. Does not affect the USM pool. |
 | `--autoupscale-zerocopy-dst`        | 0–1    | **1**   | 1 = workers write directly into VLC's destination picture (default). Saves ~125 µs/frame at 1080p. Set to 0 to use the copy-out path if you see garbled output or crashes. |
+| `--autoupscale-zerocopy-src`        | 0–1    | **1**   | 1 = worker graphs read VLC's source picture directly (default; no copy-in). Set to 0 to copy each source stripe into scratch first if a particular VLC build misbehaves on the source-pool buffers. |
 | `--autoupscale-content-probe`       | 0–1    | **1**   | 1 = run the diagnostic content probe on the first ~60 frames to detect heavily-compressed soft sources where upscaling actively hurts. Logs a one-time advisory when triggered. Observe-only — never modifies output. 0 = skip the probe. |
 | `--autoupscale-usm-stripe-min-rows` | 0–256  | 0       | Minimum rows per USM worker stripe (0 = compile-time default 8). Smaller values let more workers fit on low-res frames at the cost of dispatch overhead. |
 | `--autoupscale-zimg-stripe-lines`   | 0–128  | 0       | Minimum dst lines per zimg worker stripe (0 = compile-time default 16). Same trade-off as above for the scaler backend. |
@@ -174,41 +176,45 @@ other libraries; the "− 2" is an extra absolute reserve. Override with
 `--autoupscale-threads=N` (1 keeps the single-threaded fast path; or set
 explicitly to a higher value if you measured otherwise on your hardware).
 
-**Implementation note:** the plugin maintains pinned, page-aligned
-scratch buffers and copy-in / copy-out per frame: VLC's source picture
-is `memcpy`'d into the scratch source, threaded zimg runs on the scratch
-buffers, the scratch destination is `memcpy`'d to VLC's output picture.
-A 480p I420 frame is ~615 KB in and a 1080p frame is ~3.1 MB out, so the
-copies cost a few hundred MB/s of memory bandwidth — invisible against
-modern memory's 50+ GB/s and dwarfed by the parallelism win.
+**Implementation note:** by default both sides are zero-copy — the
+threaded zimg graphs read VLC's source picture and write VLC's destination
+picture directly, with no per-frame `memcpy` and no per-frame scratch.
+Setting `--autoupscale-zerocopy-src=0` and/or `--autoupscale-zerocopy-dst=0`
+falls back to a pinned, page-aligned scratch buffer on that side (source
+`memcpy`'d in, and/or scratch destination `memcpy`'d out). A 480p I420 frame
+is ~615 KB and a 1080p frame ~3.1 MB, so a fallback copy costs a few hundred
+MB/s of memory bandwidth — invisible against modern memory's 50+ GB/s.
+(Column tiling, used on very wide/short frames, always copies each tile's
+output out of a small private scratch into the destination sub-rectangle.)
 
-The scratch path on the **source** side is mandatory: passing VLC's
-pool-managed picture buffers directly to per-stripe zimg graphs from
-worker threads is unreliable (we couldn't fully isolate the cause
-through instrumentation, but the pure pattern works in standalone tests
-and in-VLC self-tests on fresh buffers). The src memcpy trades a small
-bandwidth cost for correctness.
+Both sides default to **zero-copy** (`--autoupscale-zerocopy-src=1`,
+`--autoupscale-zerocopy-dst=1`): worker graphs read VLC's source picture
+and write VLC's destination picture directly, with no per-frame memcpy and
+no per-frame scratch. Skipping the copy-out alone saves ~125 µs/frame at
+1080p (~0.8% of a 60 fps budget); the copy-in saves a comparable amount.
 
-The scratch path on the **destination** side is opt-out via
-`--autoupscale-zerocopy-dst=1`. VLC's destination picture comes from
-`filter_NewPicture()`, which uses a different allocator than the
-source-pool buffers that crashed under the per-stripe pattern. With
-zero-copy enabled, workers write directly into the VLC dst picture and
-the final memcpy is skipped, saving ~125 µs/frame at 1080p
-(~0.8% of a 60 fps budget). This is opt-in because we can't fully
-verify it across every VLC configuration, and a misconfiguration here
-shows up as garbled output or a crash rather than a soft failure. The
-default is the safe copy-out path; turn zero-copy on if you've measured
-that the savings matter on your hardware and verified that playback is
-stable.
+Pointing per-stripe graphs at VLC's pool-managed buffers from worker
+threads was historically unreliable, so each side stays independently
+opt-out. The destination path proved the pattern works; the source path is
+its symmetric twin, and a per-frame pre-flight check (`zimg_pic_ok`) drops a
+malformed picture (null plane or pitch < width) rather than letting a worker
+read or write out of bounds. If a particular VLC build misbehaves — garbled
+output or a crash — set either side back to the copy path with
+`--autoupscale-zerocopy-src=0` and/or `--autoupscale-zerocopy-dst=0`. The
+four src×dst copy/zero-copy combinations are held byte-identical by the test
+harness.
 
 The swscale backend stays single-threaded (it's the universal-fallback
 backend; threading is a quality-tier-only nicety here).
 
-**Stripe boundary caveat:** each stripe's graph resamples independently
-with zimg's default boundary handling. For natural video content the
-effect is invisible; on stylized content with pixel-sharp horizontal
-lines a user can fall back to `--autoupscale-threads=1`.
+**Stripe boundary caveat:** each horizontal stripe's graph resamples its
+own source rows with zimg's default vertical boundary handling, so a
+stripe boundary carries a sub-pixel phase rounding (≤ a few code values on
+real content — invisible; only synthetic high-frequency patterns make it
+measurable). On stylized content with pixel-sharp horizontal lines a user
+can fall back to `--autoupscale-threads=1`. Column tiling (on very
+wide/short frames) does **not** add this: column tiles read cross-boundary
+halo via zimg's `active_region`, so column seams are exact.
 
 The USM (unsharp mask) post-pass compensates for any resampler's slight
 softening, applied as a 3×3 separable Gaussian high-pass on the luma
@@ -227,17 +233,18 @@ entirely.
 
 **Threaded USM.** USM uses the same worker count as the scaler
 (`--autoupscale-threads`). The luma plane is partitioned into N
-horizontal stripes; each worker hblurs its rows into a shared
-workspace (pass 1), then a synchronization barrier ensures the
-workspace is fully populated, and finally each worker combines
-`workspace[y-1, y, y+1]` with `src[y]` to produce `dst[y]` on its rows
-(pass 2). The pool is lazy: workers and workspace spawn on the first
-frame, not in `Open()`. When `--autoupscale-usm=0` the pool's identity
-fast path skips all thread activity, so disabling USM truly costs
-nothing. Each `usm_worker_t` is `_Alignas(64)` and the worker array
-is `aligned_alloc`'d so adjacent workers don't share a cache line —
-without this padding, two workers writing their `phase` and embedded
-`sem_t.go` on every dispatch invalidate each other's lines. At 1080p
+horizontal stripes; each worker sweeps its rows once with a private
+3-row rolling buffer, fusing the horizontal blur and the
+`combine(blur[y-1,y,y+1], src[y]) → dst[y]` step (PERF-2). There is no
+shared workspace and no mid-frame barrier — workers read neighbor source
+rows read-only and write only their own dst rows, so the sweep is
+race-free. The pool is lazy: workers and their private scratch spawn on
+the first frame, not in `Open()`. When `--autoupscale-usm=0` the pool's
+identity fast path skips all thread activity, so disabling USM truly costs
+nothing. Each `usm_worker_t` is `alignas(64)` and the worker array is
+`aligned_alloc`'d so adjacent workers don't share a cache line — without
+this padding, two workers touching their per-frame fields and embedded
+`sem_t go` on every dispatch would invalidate each other's lines. At 1080p
 luma on a modern x86 with AVX-512 this brings USM down to ~1.17 ms
 single-threaded and ~0.23 ms with 8 stripes — roughly 1.4% of a 60
 fps budget at 8 stripes. Output is bit-identical to the single-threaded

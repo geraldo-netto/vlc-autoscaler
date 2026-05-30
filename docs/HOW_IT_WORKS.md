@@ -276,12 +276,12 @@ historical hardcoded constants and are right for almost everyone.
 
 ### Threaded USM (`src/usm_pool.h`, `src/usm_pool.c`)
 
-The single-threaded path (`up_usm_apply_plane` in `usm.h`) processes
+The single-threaded reference (`up_usm_apply_plane` in `usm.h`) processes
 the luma plane in two passes: a horizontal blur that fills a workspace
-buffer, then a combine that reads three consecutive workspace rows
-plus the source row to produce each output row. The threaded pool
-parallelizes both passes across N workers using horizontal stripes
-and a barrier between passes.
+buffer, then a combine that reads three consecutive blurred rows plus the
+source row to produce each output row. The threaded pool computes the same
+result but **fuses** the two passes into one per-worker rolling-buffer
+sweep (PERF-2, commit cc71221) — no shared workspace, no mid-frame barrier.
 
 **Partition.** N workers, height H. Worker i owns rows
 `[i·H/N, (i+1)·H/N)` (last worker absorbs rounding remainder). N is
@@ -289,20 +289,18 @@ clamped to `H/8` so each stripe is at least 8 rows tall — below that,
 the kernel boundary handling dominates and threading hurts rather than
 helps.
 
-**Pass 1.** Each worker hblurs its own rows into a shared workspace.
-No row is written by more than one worker, so this phase is naturally
-race-free even though the workspace is shared.
+**Fused sweep.** Each worker keeps a private 3-row rolling buffer
+(`up`/`mid`/`dn`) of horizontally-blurred rows. It primes the buffer with
+the two rows above and at `y_start`, then for each `y` in its stripe: hblur
+the next row into `dn`, combine `up`/`mid`/`dn` with `src[y]` into `dst[y]`,
+and rotate the three pointers. Vertical edges clamp to `[0, H-1]`. The
+worker reads source rows just outside its stripe (read-only, shared `src`)
+and writes only its own `dst` rows, so the sweep is race-free with no
+barrier between workers.
 
-**Barrier.** The main thread `sem_wait`s the shared "done" semaphore N
-times after dispatching pass 1 (one wait per worker). Only when all N
-have signaled does the main thread dispatch pass 2. This guarantees
-the workspace is fully populated before any worker reads it.
-
-**Pass 2.** Each worker combines `workspace[y-1, y, y+1]` with `src[y]`
-to produce `dst[y]` for every y in its stripe. The workspace reads
-just above and below the worker's stripe boundary belong to neighbor
-workers, but those rows were finalized in pass 1 (which is fully
-complete) so the reads are race-free.
+**Dispatch.** One `sem_post` per worker (`go`); the main thread then
+`sem_wait`s the shared `done` semaphore N times. A single round-trip per
+frame — there is no longer a second pass to synchronize.
 
 **Lazy init.** Like the zimg backend, the USM pool's worker spawn and
 workspace allocation happen on the first `apply()` call rather than
@@ -326,14 +324,15 @@ Set the option to `0` to disable the feature entirely (USM keeps
 running regardless of source).
 
 **Optional flat-skip (compile-time).** The pool also has an opt-in
-per-stripe early-out (`-DUSM_POOL_FLAT_SKIP=1` at compile time): each
-worker samples its stripe's middle row in pass 1, and if horizontal
-activity is below `USM_FLAT_AVG_DELTA` (≈ 2/255 average neighbour
-difference) the pass-2 combine kernel is replaced by an identity copy.
-Defaults to off because the implicit byte-identity guarantee against
-the single-threaded reference is dropped (per-pixel delta of up to a
-few LSB on borderline-flat content). Useful for benchmarking and for
-content-specific builds where letterbox / fade-to-black dominate.
+per-stripe early-out (`-DUSM_POOL_FLAT_SKIP=1` at compile time): before
+the sweep, each worker samples its stripe's middle row's horizontal
+activity, and if it is below `USM_FLAT_AVG_DELTA` (≈ 2/255 average
+neighbour difference) the worker identity-copies its whole stripe instead
+of running the blur+combine sweep. Defaults to off because the implicit
+byte-identity guarantee against the single-threaded reference is dropped
+(per-pixel delta of up to a few LSB on borderline-flat content). Useful
+for benchmarking and for content-specific builds where letterbox /
+fade-to-black dominate.
 
 **Correctness verification.** The crucial invariant is that pool
 output equals single-threaded output bit-for-bit. This is enforced by
@@ -775,27 +774,45 @@ Users on small machines or who measured differently can override with
 
 ### Architecture
 
-At Open() the backend:
+`Open()` is deliberately cheap — it validates the chroma, computes the
+worker grid, and saves parameters, so VLC's chain-solver probing doesn't pay
+for thread spawns or megabytes of scratch. On the **first `Filter()`** the
+backend lazily:
 
-1. Decides N from the user pref + detected core count.
-2. Allocates pinned, page-aligned scratch buffers — one source view, one
-   destination view — sized for the current stream (`src_w × src_h` and
-   `dst_w × dst_h`, with subsampling and a small row of padding past the
-   visible image).
-3. Builds N independent `zimg_filter_graph` instances, each configured
-   for a sub-image of the destination (`src_h/N → dst_h/N` for that
-   stripe, dimensions aligned to 2 to satisfy chroma subsampling).
-4. Spawns N persistent worker threads, each blocked on its own `sem_t`.
+1. Decides the worker grid from the user pref + detected core count:
+   `N_ROWS` horizontal stripes, and — only when a frame is too short for
+   stripes alone to use every thread (very wide/short) — `N_COLS` column
+   tiles as well (`up_decide_tile_grid`). For normal frames `N_COLS == 1`.
+2. Allocates page-aligned scratch only for a side that COPIES. With the
+   default both-sides zero-copy nothing is allocated; a column tile instead
+   gets its own small tile-sized dst scratch.
+3. Builds one `zimg_filter_graph` per grid cell, configured for that cell's
+   sub-image — stripe height, and for a column tile a full-width source with
+   an `active_region` cropping its column window (so zimg reads cross-
+   boundary halo and the column seams are exact). Dimensions align to 2 for
+   chroma subsampling.
+4. Spawns the worker threads, which block on a shared condition variable.
 
-At each Filter() call the backend:
+At each `Filter()` call the backend:
 
-1. `memcpy`s VLC's source picture into the scratch source buffers.
-2. Sets each worker's per-frame state, then `sem_post`s their go semaphores.
-3. `sem_wait`s the shared "done" semaphore N times.
-4. `memcpy`s the scratch destination into VLC's output picture
-   (skipped when `--autoupscale-zerocopy-dst=1` — see below).
+1. **Copy-in** (only when `--autoupscale-zerocopy-src=0`): each worker
+   `memcpy`s its source stripe into scratch. With the default source
+   zero-copy, graphs read VLC's source picture directly.
+2. Points each worker at the current frame's planes, bumps a shared
+   "generation" counter under a mutex, and wakes all workers with ONE
+   `pthread_cond_broadcast` (SCAL-2 — was one `sem_post` per worker).
+3. Waits on a single "all done" semaphore: each worker decrements an atomic
+   `pending` counter after its cell and the one that drives it to zero posts
+   the semaphore — a counting barrier (was N `sem_wait`s).
+4. **Copy-out** (when `--autoupscale-zerocopy-dst=0`, and always for column
+   tiles): each worker `memcpy`s its result into VLC's output picture. With
+   the default dst zero-copy, a non-tiled graph writes VLC's picture directly.
 
-At Close() the backend signals exit on every worker, joins, and frees.
+A per-frame pre-flight check (`zimg_pic_ok`) drops a malformed picture (null
+plane or pitch < width) before any worker reads or writes it.
+
+At `Close()` the backend wakes every worker to exit (one broadcast), joins
+them, and frees.
 
 ### Why copy-in / copy-out
 
@@ -819,63 +836,61 @@ We isolated the failure with a layered diagnostic:
 We didn't fully isolate the root cause inside VLC's picture allocator
 (the segfault was downstream of any logging we could add, and valgrind
 couldn't reach it inside VLC's process before timing out on its own
-overhead). The pragmatic fix is to never hand VLC's *source* picture
-buffers to zimg's per-stripe graphs — copy through scratch and pay a
-few hundred MB/s of memory bandwidth for guaranteed correctness.
+overhead). So the original design copied **both** sides through scratch
+and paid a few hundred MB/s of memory bandwidth for guaranteed correctness.
+That caution has since been relaxed on both sides — see below — behind a
+per-frame pre-flight guard, but either side can still be forced back to the
+copy path with its `--autoupscale-zerocopy-*=0` option.
 
-### Partial zero-copy on the destination side
+### Zero-copy on both sides
 
 The crash investigation specifically implicated VLC's source-pool
-buffers — the buffers that come from a recycling pool managed by the
-upstream filter. The destination picture is different: it comes from
-`filter_NewPicture()`, which uses VLC's per-output allocator path and
-is not pool-recycled (each output gets a fresh allocation). Reasoning
-that the failure mode might not transfer to the dst side, the
-`--autoupscale-zerocopy-dst=1` opt-in lets users skip the copy-out
-entirely:
+buffers — the recycling pool managed by the upstream filter. The
+destination picture is different: it comes from `filter_NewPicture()` (a
+fresh per-output allocation, not pool-recycled), so the **destination** side
+was made zero-copy first:
 
 - Workers receive VLC's destination picture pointers (with VLC's pitch)
-  per-frame instead of using the priv's scratch dst pointers.
-- `alloc_scratch_buffers()` skips the dst allocation when zero-copy is
-  on, so the scratch footprint drops by ~3 MB at 1080p.
-- The per-stripe filter graphs don't bake in destination stride — it
-  lives in the per-call `zimg_image_buffer` constructed by `worker_main`
-  — so the strides can change per frame without rebuilding graphs.
+  per-frame instead of priv scratch pointers.
+- `alloc_scratch_buffers()` skips the dst allocation, dropping the scratch
+  footprint by ~3 MB at 1080p.
+- Graphs don't bake in destination stride — it lives in the per-call
+  `zimg_image_buffer` — so the stride can vary per frame without rebuilding.
 
-In sandbox testing the byte-identical decoded MD5 matches between
-zerocopy-dst=0 and zerocopy-dst=1 on both single-threaded and
-multi-threaded runs, which is strong evidence that the zero-copy is
-correct at the pixel level. With that confidence the option **defaults
-to 1 (on)**: workers write directly into VLC's destination picture
-and the final memcpy is skipped, saving ~125 µs per 1080p frame
-(~0.8 % of a 60 fps budget). The failure mode if zero-copy
-misbehaves on some VLC build is garbled output or a crash, not a soft
-fallback, so the option's longtext (and the troubleshooting recipes in
-[USAGE.md](USAGE.md)) tell users to set `--autoupscale-zerocopy-dst=0`
-to fall back to the copy-out path if playback looks wrong.
+Byte-identical decoded MD5 between `zerocopy-dst=0` and `=1` (single- and
+multi-threaded) confirmed it pixel-correct, so it **defaults to 1 (on)**.
+The **source** side is the symmetric twin — graphs read VLC's source
+picture directly, `alloc_scratch_buffers()` skips the src allocation — and
+**defaults to 1 (on)** as well, guarded by a per-frame pre-flight check
+(`zimg_pic_ok`) that drops a malformed picture (null plane or pitch < width)
+before any out-of-bounds access. The one exception is a column tile, which
+always copies its result out of a private tile scratch into the destination
+sub-rectangle.
 
-The savings are modest: about 125 µs per 1080p frame (~0.8% of a 60 fps
-budget) on this hardware. Worth shipping because some users have
-specifically asked for it, but not worth recommending as a default.
-
-### Why this isn't a regression vs single-threaded zimg
-
-The single-threaded zimg path used to pass VLC's picture buffers to one
-`zimg_filter_graph_process` call covering the full image. That worked
-fine — the buffer issue only manifests with per-stripe graphs. To keep
-the code paths uniform, the new threaded backend uses the scratch path
-even at N=1 (the worker pool collapses to a single worker doing the
-whole frame). The single-extra-memcpy at N=1 costs about 4 ms per
-1080p frame, which the perfmon hint comfortably absorbs without firing
-at the default 60 fps target.
+The four src×dst copy/zero-copy combinations are held **byte-identical** by
+`tests/test_scaler_zimg.c`, so correctness is independent of which path
+runs — including at N=1, where the default zero-copy means no extra memcpy
+versus single-graph zimg. Skipping the copy-out saves ~125 µs per 1080p
+frame (~0.8% of a 60 fps budget) and the copy-in a comparable amount. The
+failure mode if zero-copy misbehaves on some VLC build is garbled output or
+a crash rather than a soft fallback, so set the offending side back to the
+copy path with `--autoupscale-zerocopy-src=0` / `--autoupscale-zerocopy-dst=0`
+(troubleshooting recipes in [USAGE.md](USAGE.md)).
 
 ### Stripe-boundary caveat
 
-Each stripe's graph resamples independently with zimg's default boundary
-handling. For natural video content the result is visually identical to
-the full-frame graph; on stylized content with pixel-sharp horizontal
-lines, the boundary kernel may differ slightly between adjacent stripes.
-Users who care can drop to `--autoupscale-threads=1`.
+Each horizontal stripe's graph resamples its own source rows with zimg's
+default *vertical* boundary handling, so a stripe boundary carries a
+sub-pixel phase rounding. Measured against the single-graph (`threads=1`)
+result it is ≤ a few code values out of 255 on real content — invisible;
+only synthetic high-frequency patterns make it measurable (the seam oracle
+in `tests/test_scaler_zimg.c` holds it ≤ 6, and `tests/fuzz_scaler_seam.c`
+checks it across random geometry). On stylized content with pixel-sharp
+horizontal lines a user who cares can drop to `--autoupscale-threads=1`.
+
+Column tiling does **not** add a horizontal counterpart: a column tile
+reads its source column window *with* cross-boundary halo via zimg's
+`active_region`, so vertical seams between column tiles are exact.
 
 ## Why decision logic is in a header
 
