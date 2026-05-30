@@ -116,6 +116,16 @@ static size_t cmp_visible(const zt_pic_t *a, const zt_pic_t *b)
     return diff;
 }
 
+/* True if a and b match over their visible region; names the config on diff
+ * so a failure points at the offending workload. */
+static int same_cfg(const struct zcfg *c, const zt_pic_t *a, const zt_pic_t *b)
+{
+    size_t diff = cmp_visible(a, b);
+    if (diff)
+        printf("    [%s] %zu visible bytes differ\n", c->name, diff);
+    return diff == 0;
+}
+
 static void test_full_write(void)
 {
     BEGIN("full-write: every visible dst byte written (0x00 init == 0xFF init)");
@@ -127,7 +137,7 @@ static void test_full_write(void)
             CHECK(r0 == 0);
             CHECK(r1 == 0);
             if (r0 == 0 && r1 == 0)
-                CHECK(cmp_visible(&a, &b) == 0);
+                CHECK(same_cfg(&CFGS[i], &a, &b));
             zt_pic_free(&a);
             zt_pic_free(&b);
         }
@@ -144,7 +154,7 @@ static void test_determinism(void)
         int r1 = run_zimg(&CFGS[i], 0, 0x00, 0xBEEF01u, &b);
         CHECK(r0 == 0 && r1 == 0);
         if (r0 == 0 && r1 == 0)
-            CHECK(cmp_visible(&a, &b) == 0);
+            CHECK(same_cfg(&CFGS[i], &a, &b));
         zt_pic_free(&a);
         zt_pic_free(&b);
     }
@@ -160,7 +170,7 @@ static void test_zerocopy_matches_copyout(void)
         int r1 = run_zimg(&CFGS[i], 1, 0x00, 0x5EED77u, &b);  /* zero-copy */
         CHECK(r0 == 0 && r1 == 0);
         if (r0 == 0 && r1 == 0)
-            CHECK(cmp_visible(&a, &b) == 0);
+            CHECK(same_cfg(&CFGS[i], &a, &b));
         zt_pic_free(&a);
         zt_pic_free(&b);
     }
