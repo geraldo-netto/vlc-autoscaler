@@ -16,6 +16,7 @@
 
 #include "../src/scaler.h"
 #include "../src/scaler_zimg_chroma.h"
+#include "../src/zimg_helpers.h"
 #include "../src/upscale_logic.h"
 
 #include <stdint.h>
@@ -54,8 +55,8 @@ static inline int zt_pic_alloc(zt_pic_t *tp, uint32_t chroma, int w, int h)
     memset(tp, 0, sizeof *tp);
     tp->pic.i_planes = 3;
 
-    const int cw = (w + (1 << sw) - 1) >> sw;
-    const int ch = (h + (1 << sh) - 1) >> sh;
+    const int cw = up_chroma_dim(w, (int)sw);
+    const int ch = up_chroma_dim(h, (int)sh);
     const int pw[3] = { w, cw, cw };
     const int ph[3] = { h, ch, ch };
 

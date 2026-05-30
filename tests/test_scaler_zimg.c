@@ -76,8 +76,8 @@ static const struct zcfg CFGS[] = {
 /* Run the backend once. Allocates src (filled from seed) and the caller-owned
  * dst (pre-filled dst_init). Returns the process() result, or -2 on
  * allocation/open failure. CCN 4. */
-static int run_zimg(const struct zcfg *c, int zc, uint8_t dst_init,
-                    uint32_t seed, zt_pic_t *out)
+static int run_zimg(const struct zcfg *c, int src_zc, int dst_zc,
+                    uint8_t dst_init, uint32_t seed, zt_pic_t *out)
 {
     zt_pic_t src;
     if (zt_pic_alloc(&src, c->chroma, c->sw, c->sh) != 0) return -2;
@@ -89,7 +89,8 @@ static int run_zimg(const struct zcfg *c, int zc, uint8_t dst_init,
     zt_pic_memset(out, dst_init);
 
     scaler_ctx_t ctx;
-    zt_ctx_init(&ctx, c->chroma, c->sw, c->sh, c->dw, c->dh, c->threads, zc);
+    zt_ctx_init(&ctx, c->chroma, c->sw, c->sh, c->dw, c->dh, c->threads, dst_zc);
+    ctx.zimg.src_zerocopy = src_zc;
     int rc = -2;
     if (ctx.backend->open(&ctx) == 0) {
         rc = ctx.backend->process(&ctx, &src.pic, &out->pic);
@@ -132,8 +133,8 @@ static void test_full_write(void)
     for (size_t i = 0; i < NCFG; i++) {
         for (int zc = 0; zc < 2; zc++) {
             zt_pic_t a, b;
-            int r0 = run_zimg(&CFGS[i], zc, 0x00, 0xC0FFEEu, &a);
-            int r1 = run_zimg(&CFGS[i], zc, 0xFF, 0xC0FFEEu, &b);
+            int r0 = run_zimg(&CFGS[i], 0, zc, 0x00, 0xC0FFEEu, &a);
+            int r1 = run_zimg(&CFGS[i], 0, zc, 0xFF, 0xC0FFEEu, &b);
             CHECK(r0 == 0);
             CHECK(r1 == 0);
             if (r0 == 0 && r1 == 0)
@@ -150,8 +151,8 @@ static void test_determinism(void)
     BEGIN("determinism: same input twice -> identical output");
     for (size_t i = 0; i < NCFG; i++) {
         zt_pic_t a, b;
-        int r0 = run_zimg(&CFGS[i], 0, 0x00, 0xBEEF01u, &a);
-        int r1 = run_zimg(&CFGS[i], 0, 0x00, 0xBEEF01u, &b);
+        int r0 = run_zimg(&CFGS[i], 0, 0, 0x00, 0xBEEF01u, &a);
+        int r1 = run_zimg(&CFGS[i], 0, 0, 0x00, 0xBEEF01u, &b);
         CHECK(r0 == 0 && r1 == 0);
         if (r0 == 0 && r1 == 0)
             CHECK(same_cfg(&CFGS[i], &a, &b));
@@ -166,13 +167,36 @@ static void test_zerocopy_matches_copyout(void)
     BEGIN("zerocopy-dst output byte-identical to copy-out output");
     for (size_t i = 0; i < NCFG; i++) {
         zt_pic_t a, b;
-        int r0 = run_zimg(&CFGS[i], 0, 0x00, 0x5EED77u, &a);  /* copy-out */
-        int r1 = run_zimg(&CFGS[i], 1, 0x00, 0x5EED77u, &b);  /* zero-copy */
+        int r0 = run_zimg(&CFGS[i], 0, 0, 0x00, 0x5EED77u, &a);  /* dst copy-out */
+        int r1 = run_zimg(&CFGS[i], 0, 1, 0x00, 0x5EED77u, &b);  /* dst zero-copy */
         CHECK(r0 == 0 && r1 == 0);
         if (r0 == 0 && r1 == 0)
             CHECK(same_cfg(&CFGS[i], &a, &b));
         zt_pic_free(&a);
         zt_pic_free(&b);
+    }
+    END();
+}
+
+/* Source zero-copy (graph reads the src picture directly) must produce output
+ * byte-identical to the copy-in path; and full zero-copy (src+dst) must match
+ * full copy. Validates the new src_zerocopy plumbing end to end. */
+static void test_src_zerocopy_matches_copy(void)
+{
+    BEGIN("source zero-copy + full zero-copy byte-identical to copy path");
+    for (size_t i = 0; i < NCFG; i++) {
+        zt_pic_t a, b, c;
+        int r0 = run_zimg(&CFGS[i], 0, 0, 0x00, 0x70DDu, &a);  /* all copy */
+        int r1 = run_zimg(&CFGS[i], 1, 0, 0x00, 0x70DDu, &b);  /* src zero-copy */
+        int r2 = run_zimg(&CFGS[i], 1, 1, 0x00, 0x70DDu, &c);  /* full zero-copy */
+        CHECK(r0 == 0 && r1 == 0 && r2 == 0);
+        if (r0 == 0 && r1 == 0 && r2 == 0) {
+            CHECK(same_cfg(&CFGS[i], &a, &b));
+            CHECK(same_cfg(&CFGS[i], &a, &c));
+        }
+        zt_pic_free(&a);
+        zt_pic_free(&b);
+        zt_pic_free(&c);
     }
     END();
 }
@@ -298,6 +322,7 @@ int main(void)
     test_full_write();
     test_determinism();
     test_zerocopy_matches_copyout();
+    test_src_zerocopy_matches_copy();
     test_supports();
     test_all_algos();
     test_open_rejects_unsupported();

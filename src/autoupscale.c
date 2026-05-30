@@ -142,6 +142,18 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
     "byte-identical to the copy-out path in our testing but cannot be " \
     "fully verified across every VLC build configuration.")
 
+#define ZEROCOPY_SRC_TEXT N_("Read VLC's source picture directly (experimental)")
+#define ZEROCOPY_SRC_LONGTEXT N_( \
+    "1 = on (experimental): zimg worker threads read VLC's source picture " \
+    "directly, skipping the copy-in to scratch and ~half the per-frame " \
+    "scratch memory. 0 = off (default, safe): the source is copied to " \
+    "plugin-owned scratch first. The direct-read path is the symmetric twin " \
+    "of zerocopy-dst (which is on by default and writes VLC's destination " \
+    "picture directly); it is off by default because reading VLC's " \
+    "pool-managed source buffers from worker threads was historically " \
+    "unreliable. Try it for the memory saving; set back to 0 if you see " \
+    "garbled output or instability.")
+
 #define USM_STRIPE_MIN_ROWS_TEXT N_("Minimum rows per USM stripe")
 #define USM_STRIPE_MIN_ROWS_LONGTEXT N_( \
     "Each USM worker thread processes at least this many rows. " \
@@ -223,6 +235,8 @@ vlc_module_begin()
                             THREADS_TEXT, THREADS_LONGTEXT, false )
     add_integer_with_range( CFG_PREFIX "zerocopy-dst", 1, 0, 1,
                             ZEROCOPY_DST_TEXT, ZEROCOPY_DST_LONGTEXT, false )
+    add_integer_with_range( CFG_PREFIX "zerocopy-src", 0, 0, 1,
+                            ZEROCOPY_SRC_TEXT, ZEROCOPY_SRC_LONGTEXT, false )
     add_integer_with_range( CFG_PREFIX "content-probe", 1, 0, 1,
                             PROBE_TEXT, PROBE_LONGTEXT, false )
     add_integer_with_range( CFG_PREFIX "usm-stripe-min-rows", 0, 0, 256,
@@ -404,6 +418,8 @@ static void ConfigureScaler( scaler_ctx_t *sc,
     sc->zimg.min_stripe_lines = var_InheritInteger( p_filter,
         CFG_PREFIX "zimg-stripe-lines" );
     sc->zimg.zerocopy = var_InheritInteger( p_filter, CFG_PREFIX "zerocopy-dst" );
+    sc->zimg.src_zerocopy = var_InheritInteger( p_filter,
+        CFG_PREFIX "zerocopy-src" );
     sc->chroma       = chroma;
     sc->log_obj      = p_this;
 

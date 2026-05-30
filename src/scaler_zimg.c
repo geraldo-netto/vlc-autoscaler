@@ -6,22 +6,28 @@
  * slice threading: the output frame is split into N horizontal stripes and
  * processed in parallel by a persistent worker pool.
  *
- * COPY-IN / COPY-OUT
+ * COPY-IN / COPY-OUT (zero-copy on each side, independently)
  *
- * The plugin maintains persistent, page-aligned scratch buffers (source
- * + destination, sized for the current stream). On each Filter() call:
- *   1. memcpy VLC's source picture -> scratch source buffer
- *   2. Dispatch threaded zimg on the scratch buffers
- *   3. memcpy scratch destination -> VLC's destination picture
+ * Each side of the resample can either go through a persistent, page-aligned
+ * scratch buffer or touch VLC's picture directly:
  *
- * The copies cost a few hundred MB/s of memory bandwidth (negligible vs
- * main memory's 50+ GB/s on modern systems) and buy us correctness:
- * passing VLC's pool-managed picture buffers directly to per-stripe zimg
- * graphs from worker threads is unreliable in ways we couldn't isolate
- * via instrumentation. The pure pattern - per-stripe graphs, persistent
- * thread pool, fresh pinned buffers - was verified working in isolation
- * (standalone reproducer + in-VLC-process self-test on fresh buffers).
- * Only the direct VLC-picture path failed, so we go through scratch.
+ *   - SOURCE. Default: each worker copies its own source stripe from VLC's
+ *     source picture into the scratch source buffer (PERF-1, parallel), then
+ *     its graph reads the scratch. Opt-in `zerocopy-src`: the graph reads
+ *     VLC's source picture directly (no copy, no scratch src).
+ *   - DEST. Default `zerocopy-dst=1`: each worker's graph writes VLC's
+ *     destination picture directly (no copy, no scratch dst). `zerocopy-dst=0`:
+ *     the graph writes scratch and each worker copies its own dst stripe out
+ *     to VLC's picture (PERF-5, parallel).
+ *
+ * So in the default config the only per-frame copy is the parallel source
+ * copy-in (small — source is the pre-upscale frame). Pointing graphs at VLC's
+ * pool-managed buffers from worker threads was historically unreliable, which
+ * is why source defaults to copy; the dest zero-copy default proves the
+ * pattern works, and a per-frame pre-flight check (zimg_pic_ok) drops a frame
+ * rather than read/write a malformed picture out of bounds. The four
+ * src×dst copy/zero-copy combinations are held byte-identical by the test
+ * harness (tests/test_scaler_zimg.c).
  *
  * THREADING
  *
@@ -55,6 +61,7 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -110,23 +117,35 @@ typedef struct
 
     /* Stripe geometry (constant after Open). */
     int                src_y_start;   /* in luma rows */
-    int                src_y_end;     /* in luma rows (for the copy-in stripe) */
+    int                src_y_end;     /* in luma rows (copy-in stripe) */
     int                dst_y_start;
+    int                dst_y_end;     /* in luma rows (copy-out stripe) */
     int                worker_id;
-    int                src_w;         /* luma width (for the copy-in stripe) */
+    int                src_w;         /* luma width (copy-in stripe) */
+    int                dst_w;         /* luma width (copy-out stripe) */
     unsigned           sub_w, sub_h;
 
-    /* Pointers into the parent's scratch buffers (set at Open).
-     * .lines_y / .lines_c are unused at the worker level. */
+    /* Per-worker I/O mode (constant after Open):
+     *   copy_in  = !src_zerocopy: worker memcpys VLC src -> scratch src.
+     *   copy_out = !dst_zerocopy: worker memcpys scratch dst -> VLC dst.
+     * With zero-copy on the matching side, the zimg graph reads/writes the
+     * VLC picture directly and the copy is skipped. */
+    bool               copy_in;
+    bool               copy_out;
+
+    /* The buffers the zimg graph reads from / writes to. In a copy mode these
+     * point at the pool scratch (set at Open); in a zero-copy mode they are
+     * overwritten per frame with the VLC picture planes. */
     plane_set_t        src;
     plane_set_t        dst;
 
-    /* VLC source picture planes for the CURRENT frame (set per dispatch by
-     * zimg_point_workers_src, while the worker is blocked on `go`). Each
-     * worker copies its own src stripe from here into the scratch `src`
-     * buffer at the head of its dispatch — PERF-1: the copy-in is part of
-     * the parallel work instead of a serial pre-pass on the main thread. */
+    /* VLC picture planes for the CURRENT frame, set per dispatch (while the
+     * worker is blocked on `go`, so no synchronization needed):
+     *   vlc_src — copy_in source  (PERF-1: each worker copies its own stripe)
+     *   vlc_dst — copy_out target (PERF-5: each worker copies its own stripe)
+     * Unused on the zero-copy side (the graph touches the VLC picture). */
     plane_set_t        vlc_src;
+    plane_set_t        vlc_dst;
 
     int                result;        /* 0 OK, -1 fail */
 } stripe_worker_t;
@@ -167,6 +186,16 @@ typedef struct
      * memcpy back from scratch -> VLC dst (~125 us/frame at 1080p).
      * Opt-in via the autoupscale-zerocopy-dst module option; default off. */
     bool              dst_zerocopy;
+
+    /* Source zero-copy: when true, worker graphs read the VLC source picture
+     * directly (no copy-in, no scratch src). Symmetric to dst_zerocopy.
+     * Experimental, opt-in via autoupscale-zerocopy-src; default off — see
+     * the COPY-IN/COPY-OUT note at the top of this file. */
+    bool              src_zerocopy;
+
+    /* One-shot guard so the per-frame picture-geometry check (pre-flight)
+     * warns once instead of every dropped frame. */
+    bool              preflight_warned;
 } zimg_priv_t;
 
 /* ---------- chroma + algo mappings ---------- */
@@ -235,7 +264,7 @@ static void worker_copy_in_stripe(stripe_worker_t *w)
 
     const int cs    = w->src_y_start >> w->sub_h;
     const int crows = (w->src_y_end >> w->sub_h) - cs;
-    const int cw    = (w->src_w + (1 << w->sub_w) - 1) >> w->sub_w;
+    const int cw    = up_chroma_dim(w->src_w, (int)w->sub_w);
     up_copy_plane(
         w->src.u     + (size_t)cs * (size_t)w->src.pitch_c, w->src.pitch_c,
         w->vlc_src.u + (size_t)cs * (size_t)w->vlc_src.pitch_c, w->vlc_src.pitch_c,
@@ -243,6 +272,36 @@ static void worker_copy_in_stripe(stripe_worker_t *w)
     up_copy_plane(
         w->src.v     + (size_t)cs * (size_t)w->src.pitch_c, w->src.pitch_c,
         w->vlc_src.v + (size_t)cs * (size_t)w->vlc_src.pitch_c, w->vlc_src.pitch_c,
+        cw, crows);
+}
+
+/*
+ * PERF-5: mirror of worker_copy_in_stripe for the OUTPUT side. Copy this
+ * worker's destination stripe from the scratch dst buffer out to the VLC
+ * destination picture, when dst zero-copy is OFF. Disjoint dst rows per
+ * worker -> no barrier; the copy-out parallelizes instead of running as a
+ * serial main-thread post-pass. CCN 1.
+ */
+static void worker_copy_out_stripe(stripe_worker_t *w)
+{
+    const int rows = w->dst_y_end - w->dst_y_start;
+    up_copy_plane(
+        w->vlc_dst.y + (size_t)w->dst_y_start * (size_t)w->vlc_dst.pitch_y,
+        w->vlc_dst.pitch_y,
+        w->dst.y     + (size_t)w->dst_y_start * (size_t)w->dst.pitch_y,
+        w->dst.pitch_y,
+        w->dst_w, rows);
+
+    const int cs    = w->dst_y_start >> w->sub_h;
+    const int crows = (w->dst_y_end >> w->sub_h) - cs;
+    const int cw    = up_chroma_dim(w->dst_w, (int)w->sub_w);
+    up_copy_plane(
+        w->vlc_dst.u + (size_t)cs * (size_t)w->vlc_dst.pitch_c, w->vlc_dst.pitch_c,
+        w->dst.u     + (size_t)cs * (size_t)w->dst.pitch_c, w->dst.pitch_c,
+        cw, crows);
+    up_copy_plane(
+        w->vlc_dst.v + (size_t)cs * (size_t)w->vlc_dst.pitch_c, w->vlc_dst.pitch_c,
+        w->dst.v     + (size_t)cs * (size_t)w->dst.pitch_c, w->dst.pitch_c,
         cw, crows);
 }
 
@@ -254,7 +313,7 @@ static void *worker_main(void *arg)
         sem_wait(&w->go);
         if (w->should_exit) break;
 
-        worker_copy_in_stripe(w);   /* PERF-1: parallel per-stripe copy-in */
+        if (w->copy_in) worker_copy_in_stripe(w);  /* PERF-1: parallel copy-in */
 
         /* Zero-init buffer descriptors. Upstream zimg's API contract
          * (see doc/example/api_example_c.c) requires plane[3] to be
@@ -295,6 +354,8 @@ static void *worker_main(void *arg)
         zimg_error_code_e rc = zimg_filter_graph_process(
             w->graph, &sb, &db, w->tmp, NULL, NULL, NULL, NULL);
         w->result = (rc == 0) ? 0 : -1;
+
+        if (w->copy_out) worker_copy_out_stripe(w);  /* PERF-5: parallel copy-out */
 
         sem_post(w->done);
     }
@@ -391,10 +452,12 @@ static int alloc_one_plane_set(plane_set_t *ps)
 
 static int alloc_scratch_buffers(zimg_priv_t *p)
 {
-    if (alloc_one_plane_set(&p->src) != 0) return -1;
-    if (p->dst_zerocopy)
-        return 0;  /* dst.{y,u,v} stay NULL, set per-frame from VLC dst */
-    return alloc_one_plane_set(&p->dst);
+    /* Each side's scratch is allocated only when that side COPIES. With
+     * zero-copy on a side, the graph reads/writes the VLC picture directly and
+     * the scratch stays NULL (set per-frame from the VLC picture instead). */
+    if (!p->src_zerocopy && alloc_one_plane_set(&p->src) != 0) return -1;
+    if (!p->dst_zerocopy && alloc_one_plane_set(&p->dst) != 0) return -1;
+    return 0;
 }
 
 /*
@@ -436,12 +499,18 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
     w->src_y_start  = src_y_start;
     w->src_y_end    = src_y_end;
     w->dst_y_start  = dst_y_start;
+    w->dst_y_end    = dst_y_end;
     w->src_w        = ctx->src_w;
-    /* worker_main shifts row offsets by sub_h (`>> w->sub_h`); a value >=
-     * the int width would be UB. Valid YUV chroma gives 0 or 1, but clamp
-     * defensively so a malformed sub_h can never reach the shift. */
+    w->dst_w        = ctx->dst_w;
+    /* worker_main shifts row offsets by sub (`>> w->sub_h`); a value >= the
+     * int width would be UB. Valid YUV chroma gives 0 or 1, but clamp both
+     * exponents defensively so a malformed value can never reach the shift
+     * (UB-2, UB-3). */
     w->sub_h        = (sub_h < 8u) ? sub_h : 0u;
-    w->sub_w        = sub_w;
+    w->sub_w        = (sub_w < 8u) ? sub_w : 0u;
+    /* I/O mode: copy on the side that is NOT zero-copy. */
+    w->copy_in      = !p->src_zerocopy;
+    w->copy_out     = !p->dst_zerocopy;
     w->done         = &p->done;
     w->worker_id    = worker_id;
     w->src = p->src;
@@ -735,86 +804,44 @@ static int zimg_open(scaler_ctx_t *ctx)
     p->algo_saved    = (int)AlgoToZimg(ctx->algo);
     p->log_obj_saved = ctx->log_obj;
     p->dst_zerocopy  = (ctx->zimg.zerocopy != 0);
+    p->src_zerocopy  = (ctx->zimg.src_zerocopy != 0);
 
     ctx->priv = p;
     return 0;
 }
 
 /*
- * Copy the scratch destination plane_set_t out to a VLC picture (the copy-out
- * path, used only when zero-copy dst is OFF). Plane 0 is luma at (w,h); planes
- * 1/2 are chroma at (w>>sub_w, h>>sub_h). YV12's U/V are swapped via the idx
- * map. (Copy-IN is no longer here — each worker copies its own source stripe;
- * see worker_copy_in_stripe / zimg_point_workers_src.) CCN 2.
- */
-static void copy_planes_to_pic(const plane_set_t *ps, picture_t *pic, int swap,
-                               int w, int h, unsigned sub_w, unsigned sub_h)
-{
-    const int idx[3] = { 0, up_zimg_plane_idx(1, swap),
-                            up_zimg_plane_idx(2, swap) };
-    uint8_t   *ps_data[3]  = { ps->y, ps->u, ps->v };
-    const int  ps_pitch[3] = { ps->pitch_y, ps->pitch_c, ps->pitch_c };
-    const int cw = (w + (1 << sub_w) - 1) >> sub_w;
-    const int ch = (h + (1 << sub_h) - 1) >> sub_h;
-    const int pw[3] = { w, cw, cw };
-    const int ph[3] = { h, ch, ch };
-
-    for (int k = 0; k < 3; k++)
-        up_copy_plane(pic->p[idx[k]].p_pixels, pic->p[idx[k]].i_pitch,
-                      ps_data[k], ps_pitch[k], pw[k], ph[k]);
-}
-
-/*
- * PERF-1 phase 1: hand every worker the VLC source picture's plane pointers +
- * pitches for THIS frame. Each worker then copies its own source stripe from
- * here into the scratch source buffer at the head of its dispatch, so the
- * copy-in parallelizes instead of running as a serial main-thread pre-pass.
+ * Per-frame: copy one VLC picture's plane pointers + pitches into the
+ * `plane_set_t` member of every worker selected by `member_off` (an offsetof
+ * into stripe_worker_t — one of src / dst / vlc_src / vlc_dst). Drives all
+ * four per-frame pointer-sets through one loop (DUP-7/PERF-6):
+ *   src      ← VLC src  when src zero-copy (graph reads VLC src)
+ *   vlc_src  ← VLC src  when copy-in       (worker copies VLC src -> scratch)
+ *   dst      ← VLC dst  when dst zero-copy  (graph writes VLC dst)
+ *   vlc_dst  ← VLC dst  when copy-out       (worker copies scratch -> VLC dst)
  * Workers are blocked on `go` while this runs, so the writes need no
- * synchronization — same pattern as zimg_zerocopy_point_workers for the dst
- * side. YV12 U/V are swapped via the plane-index map. CCN 2.
+ * synchronization. YV12 U/V are swapped via the plane-index map. CCN 2.
  */
-static void zimg_point_workers_src(zimg_priv_t *p, const picture_t *src)
+static void point_workers_planes(zimg_priv_t *p, const picture_t *pic,
+                                  size_t member_off)
 {
     const int swap = p->yv12_swap_uv;
-    const int s_y = 0;
-    const int s_u = up_zimg_plane_idx(1, swap);
-    const int s_v = up_zimg_plane_idx(2, swap);
+    const int iy = 0;
+    const int iu = up_zimg_plane_idx(1, swap);
+    const int iv = up_zimg_plane_idx(2, swap);
     for (int i = 0; i < p->n_threads; i++) {
-        stripe_worker_t *w = &p->workers[i];
-        w->vlc_src.y       = src->p[s_y].p_pixels;
-        w->vlc_src.u       = src->p[s_u].p_pixels;
-        w->vlc_src.v       = src->p[s_v].p_pixels;
-        w->vlc_src.pitch_y = src->p[s_y].i_pitch;
-        w->vlc_src.pitch_c = src->p[s_u].i_pitch;
+        plane_set_t *ps =
+            (plane_set_t *)((char *)&p->workers[i] + member_off);
+        ps->y       = pic->p[iy].p_pixels;
+        ps->u       = pic->p[iu].p_pixels;
+        ps->v       = pic->p[iv].p_pixels;
+        ps->pitch_y = pic->p[iy].i_pitch;
+        ps->pitch_c = pic->p[iu].i_pitch;
     }
 }
 
 /*
- * Phase 2 (only when zero-copy dst is enabled): point each worker at
- * VLC's destination picture for this frame. Workers read these fields
- * fresh on each dispatch (they're blocked on `go` until sem_post), so
- * no synchronization is needed. The per-stripe filter graphs do not
- * bake in dst stride — that goes into the per-call zimg_image_buffer
- * inside worker_main.
- */
-static void zimg_zerocopy_point_workers(zimg_priv_t *p, const picture_t *dst)
-{
-    const int swap = p->yv12_swap_uv;
-    int d_y = 0;
-    int d_u = up_zimg_plane_idx(1, swap);
-    int d_v = up_zimg_plane_idx(2, swap);
-    for (int i = 0; i < p->n_threads; i++) {
-        stripe_worker_t *w = &p->workers[i];
-        w->dst.y       = dst->p[d_y].p_pixels;
-        w->dst.u       = dst->p[d_u].p_pixels;
-        w->dst.v       = dst->p[d_v].p_pixels;
-        w->dst.pitch_y = dst->p[d_y].i_pitch;
-        w->dst.pitch_c = dst->p[d_u].i_pitch;
-    }
-}
-
-/*
- * Phase 3: Dispatch all workers and wait for completion.
+ * Dispatch all workers and wait for completion.
  * Returns 0 if every worker succeeded, -1 otherwise.
  */
 static int zimg_dispatch_and_wait(zimg_priv_t *p)
@@ -832,14 +859,56 @@ static int zimg_dispatch_and_wait(zimg_priv_t *p)
 }
 
 /*
- * Phase 4 (only when zero-copy dst is OFF): copy the scratch
- * destination buffers back to VLC's dst picture. Skipped entirely
- * with zero-copy, since workers already wrote into VLC's dst above.
+ * Pre-flight: validate that a VLC picture we are about to read from / write to
+ * is usable for luma width `w` — 3 planes present, plane pointers non-NULL,
+ * and each pitch at least the visible width. Catches a malformed picture
+ * (the zerocopy-dst "may not work everywhere" case) BEFORE the workers do an
+ * out-of-bounds read/write. CCN 6.
  */
-static void zimg_copy_out(zimg_priv_t *p, picture_t *dst)
+static bool zimg_pic_ok(const zimg_priv_t *p, const picture_t *pic, int w)
 {
-    copy_planes_to_pic(&p->dst, dst, p->yv12_swap_uv,
-                       p->dst_w, p->dst_h, p->sub_w, p->sub_h);
+    if (pic->i_planes < 3) return false;
+    const int swap = p->yv12_swap_uv;
+    const int iy = 0;
+    const int iu = up_zimg_plane_idx(1, swap);
+    const int iv = up_zimg_plane_idx(2, swap);
+    if (!pic->p[iy].p_pixels || !pic->p[iu].p_pixels || !pic->p[iv].p_pixels)
+        return false;
+    const int cw = up_chroma_dim(w, (int)p->sub_w);
+    return pic->p[iy].i_pitch >= w
+        && pic->p[iu].i_pitch >= cw
+        && pic->p[iv].i_pitch >= cw;
+}
+
+/* offsetof selectors for the per-frame plane-pointer targets. */
+#define WORKER_SRC_OFF      offsetof(stripe_worker_t, src)
+#define WORKER_DST_OFF      offsetof(stripe_worker_t, dst)
+#define WORKER_VLC_SRC_OFF  offsetof(stripe_worker_t, vlc_src)
+#define WORKER_VLC_DST_OFF  offsetof(stripe_worker_t, vlc_dst)
+
+/*
+ * Lazy init on first frame: spawn workers, allocate scratch, build per-stripe
+ * graphs — done once so VLC's chain solver can probe us cheaply during chain
+ * setup. Returns 0 if ready (already or just initialized), -1 on sticky
+ * failure. Extracted to keep zimg_process at CCN <= 10. CCN 5.
+ */
+static int zimg_ensure_lazy_init(zimg_priv_t *p)
+{
+    if (p->lazy_init_done) return 0;
+    if (p->lazy_init_failed) return -1;
+    if (zimg_lazy_init(p) != 0) {
+        p->lazy_init_failed = true;
+        /* OBS-2: the expensive setup ran at first frame, after the cheap
+         * Open() succeeded; say so once, else every frame drops silently. */
+        if (p->log_obj_saved)
+            msg_Err((vlc_object_t *)p->log_obj_saved,
+                    "zimg: worker/scratch init failed (%dx%d -> %dx%d); "
+                    "AutoUpscale will drop frames",
+                    p->src_w, p->src_h, p->dst_w, p->dst_h);
+        return -1;
+    }
+    p->lazy_init_done = true;
+    return 0;
 }
 
 static int zimg_process(scaler_ctx_t *ctx,
@@ -847,39 +916,30 @@ static int zimg_process(scaler_ctx_t *ctx,
 {
     zimg_priv_t *p = ctx->priv;
     if (!p) return -1;
+    if (zimg_ensure_lazy_init(p) != 0) return -1;
 
-    /* Lazy init: spawn workers, allocate scratch, build per-stripe
-     * graphs. Done once on the first frame so VLC's chain solver can
-     * probe us cheaply during chain setup. */
-    if (!p->lazy_init_done) {
-        if (p->lazy_init_failed) return -1;
-        if (zimg_lazy_init(p) != 0) {
-            p->lazy_init_failed = true;
-            /* OBS-2: the expensive setup (workers + scratch + per-stripe
-             * graphs) ran at first frame, after the cheap Open() succeeded;
-             * say so once, otherwise every frame is dropped silently. */
+    /* Pre-flight guard: a malformed src/dst picture (null plane or pitch <
+     * width) would make the workers read/write out of bounds — drop the frame
+     * (warn once) instead. */
+    if (!zimg_pic_ok(p, src, p->src_w) || !zimg_pic_ok(p, dst, p->dst_w)) {
+        if (!p->preflight_warned) {
+            p->preflight_warned = true;
             if (p->log_obj_saved)
-                msg_Err((vlc_object_t *)p->log_obj_saved,
-                        "zimg: worker/scratch init failed (%dx%d -> %dx%d); "
-                        "AutoUpscale will drop frames",
-                        p->src_w, p->src_h, p->dst_w, p->dst_h);
-            return -1;
+                msg_Warn((vlc_object_t *)p->log_obj_saved,
+                         "zimg: source/destination picture geometry unusable "
+                         "(null plane or pitch < width); dropping frame(s)");
         }
-        p->lazy_init_done = true;
+        return -1;
     }
 
-    zimg_point_workers_src(p, src);   /* PERF-1: workers copy their own stripe */
+    /* Per-frame plane pointers. On each side the graph touches the VLC
+     * picture directly (zero-copy) or the workers copy via scratch. */
+    point_workers_planes(p, src,
+        p->src_zerocopy ? WORKER_SRC_OFF : WORKER_VLC_SRC_OFF);
+    point_workers_planes(p, dst,
+        p->dst_zerocopy ? WORKER_DST_OFF : WORKER_VLC_DST_OFF);
 
-    if (p->dst_zerocopy)
-        zimg_zerocopy_point_workers(p, dst);
-
-    if (zimg_dispatch_and_wait(p) != 0)
-        return -1;
-
-    if (!p->dst_zerocopy)
-        zimg_copy_out(p, dst);
-
-    return 0;
+    return zimg_dispatch_and_wait(p);
 }
 
 /*

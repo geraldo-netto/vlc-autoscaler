@@ -44,6 +44,9 @@ typedef struct scaler_ctx_s
                                * worse load balance) */
         int zerocopy;         /* 0 = copy-out (safe); 1 = write directly to
                                * VLC dst picture (opt-in, not everywhere) */
+        int src_zerocopy;     /* 0 = copy-in to scratch (safe default); 1 =
+                               * read VLC src picture directly from worker
+                               * graphs (experimental, opt-in) */
     }                       zimg;
 
     vlc_fourcc_t            chroma;     /* same on input and output */

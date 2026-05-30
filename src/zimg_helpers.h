@@ -74,6 +74,20 @@ static inline int up_round_up_lines(int h)
 }
 
 /*
+ * chroma_dim(v, sub): the subsampled extent `ceil(v / 2^sub)` for a chroma
+ * plane whose luma extent is `v` and subsample exponent is `sub` (0 = none,
+ * 1 = half). Single definition of the round-up shared by plane sizing and by
+ * the per-stripe copy-in/out in scaler_zimg.c (DUP-6). Returns 0 on
+ * non-positive/negative input; clamps `sub` to a sane range.
+ */
+static inline int up_chroma_dim(int v, int sub)
+{
+    if (v <= 0 || sub < 0) return 0;
+    int s = (sub > 16) ? 16 : sub;
+    return (v + (1 << s) - 1) >> s;
+}
+
+/*
  * plane_pitch(w, sub_w): pitch in bytes for a plane whose visible width
  * is `w >> sub_w`, rounded up. sub_w is the chroma horizontal subsample
  * exponent (0 = no subsample, 1 = half, 2 = quarter).
@@ -81,9 +95,7 @@ static inline int up_round_up_lines(int h)
 static inline int up_plane_pitch(int w, int sub_w)
 {
     if (w <= 0 || sub_w < 0) return 0;
-    int sub = (sub_w > 16) ? 16 : sub_w;
-    int row = (w + (1 << sub) - 1) >> sub;
-    return up_round_up_pitch(row);
+    return up_round_up_pitch(up_chroma_dim(w, sub_w));
 }
 
 /*
@@ -93,9 +105,7 @@ static inline int up_plane_pitch(int w, int sub_w)
 static inline int up_plane_lines(int h, int sub_h)
 {
     if (h <= 0 || sub_h < 0) return 0;
-    int sub = (sub_h > 16) ? 16 : sub_h;
-    int rows = (h + (1 << sub) - 1) >> sub;
-    return up_round_up_lines(rows);
+    return up_round_up_lines(up_chroma_dim(h, sub_h));
 }
 
 /*
