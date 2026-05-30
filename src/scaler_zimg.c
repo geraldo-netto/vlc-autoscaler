@@ -650,7 +650,7 @@ static int zimg_open(scaler_ctx_t *ctx)
     /* Each stripe at least stripe_min_lines dst rows tall so kernel
      * context is meaningful. Helper resolves the 0-sentinel to the
      * compile-time default; see src/zimg_helpers.h. */
-    int stripe_min_lines = up_zimg_stripe_min_lines(ctx->zimg_stripe_min_lines);
+    int stripe_min_lines = up_zimg_stripe_min_lines(ctx->zimg.min_stripe_lines);
     int max_threads_by_size = ctx->dst_h / stripe_min_lines;
     if (max_threads_by_size < 1) max_threads_by_size = 1;
     if (n_threads > max_threads_by_size) n_threads = max_threads_by_size;
@@ -663,7 +663,7 @@ static int zimg_open(scaler_ctx_t *ctx)
     /* Save what zimg_lazy_init() needs that isn't already in priv. */
     p->algo_saved    = (int)AlgoToZimg(ctx->algo);
     p->log_obj_saved = ctx->log_obj;
-    p->dst_zerocopy  = (ctx->dst_zerocopy != 0);
+    p->dst_zerocopy  = (ctx->zimg.zerocopy != 0);
 
     ctx->priv = p;
     return 0;
@@ -838,6 +838,7 @@ static void zimg_close(scaler_ctx_t *ctx)
 
 const scaler_backend_t scaler_backend_zimg_impl = {
     .name     = "zimg",
+    .id       = SCALER_BACKEND_ZIMG,
     .supports = zimg_supports,
     .open     = zimg_open,
     .process  = zimg_process,

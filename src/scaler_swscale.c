@@ -131,6 +131,7 @@ static void sws_close( scaler_ctx_t *ctx )
 
 const scaler_backend_t scaler_backend_swscale_impl = {
     .name     = "swscale",
+    .id       = SCALER_BACKEND_SWSCALE,
     .supports = sws_supports,
     .open     = sws_open,
     .process  = sws_process,

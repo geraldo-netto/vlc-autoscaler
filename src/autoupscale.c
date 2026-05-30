@@ -376,13 +376,13 @@ static void ConfigureScaler( scaler_ctx_t *sc,
     sc->dst_h        = target.height;
     sc->algo         = algo;
     sc->threads_pref = var_InheritInteger( p_filter, CFG_PREFIX "threads" );
-    sc->zimg_stripe_min_lines = var_InheritInteger( p_filter,
+    sc->zimg.min_stripe_lines = var_InheritInteger( p_filter,
         CFG_PREFIX "zimg-stripe-lines" );
-    sc->dst_zerocopy = var_InheritInteger( p_filter, CFG_PREFIX "zerocopy-dst" );
+    sc->zimg.zerocopy = var_InheritInteger( p_filter, CFG_PREFIX "zerocopy-dst" );
     sc->chroma       = chroma;
     sc->log_obj      = p_this;
 
-    if( !sc->dst_zerocopy )
+    if( !sc->zimg.zerocopy )
         msg_Info( p_filter,
                   "AutoUpscale: dst zero-copy DISABLED via "
                   "--autoupscale-zerocopy-dst=0 (using copy-out path)" );
@@ -572,7 +572,7 @@ static void EmitPerfAdvisory( filter_t *p_filter, filter_sys_t *p_sys )
         msg_Info( p_filter,
                   "    --autoupscale-usm=0    "
                   "(disable post-sharpening)" );
-    if( p_sys->scaler.backend->name[0] != 's' )  /* not already swscale */
+    if( p_sys->scaler.backend->id != SCALER_BACKEND_SWSCALE )
         msg_Info( p_filter,
                   "    --autoupscale-backend=2 "
                   "(force swscale: faster scaler)" );
@@ -598,8 +598,16 @@ static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
                       const picture_t *p_in )
 {
     const plane_t *y = &p_in->p[0];
-    int w = y->i_visible_pitch ? y->i_visible_pitch : y->i_pitch;
+    /* Width must be the luma plane's visible width in PIXELS, not its
+     * byte pitch. They coincide for the 8-bit luma chromas the probe is
+     * gated to (1 byte == 1 px), but i_visible_pitch is bytes and would
+     * over-count on any >8-bit Y plane; take the pixel width from the
+     * frame format and clamp it to the plane's stride for safety. */
+    int w = p_in->format.i_visible_width
+                ? (int)p_in->format.i_visible_width
+                : (int)p_in->format.i_width;
     int h = y->i_visible_lines ? y->i_visible_lines : y->i_lines;
+    if( w > y->i_pitch ) w = y->i_pitch;
     uint64_t lap_n = 0, edge_n = 0;
     uint64_t lap  = up_laplacian_variance(  y->p_pixels, y->i_pitch,
                                             w, h, &lap_n );

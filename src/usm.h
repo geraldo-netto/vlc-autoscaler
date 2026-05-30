@@ -133,6 +133,13 @@ static inline void up_usm__hblur_row(uint8_t *restrict out,
  * reads each row's source pixel before writing the corresponding
  * destination pixel within an iteration, and never re-reads it across
  * iterations, so aliasing is safe.
+ *
+ * NOTE (WIRE-2): production does NOT call this directly — the plugin
+ * routes USM through the threaded up_usm_pool_apply(). This single-
+ * threaded version is deliberately retained as the BYTE-IDENTITY TEST
+ * ORACLE: tests/test_usm_pool.c, tests/stress_usm_pool.c and the variant
+ * suites assert the pool's output matches this function bit-for-bit. It
+ * is intentionally test-only, not a dead/unwired path.
  */
 /*
  * Internal: identity-copy fast path used when amount_q8 == 0. Skips the

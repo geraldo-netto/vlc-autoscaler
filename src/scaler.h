@@ -33,13 +33,19 @@ typedef struct scaler_ctx_s
     int                     dst_w, dst_h;
     int                     algo;       /* UP_ALGO_* */
     int                     threads_pref; /* 0 = auto; >0 = explicit */
-    int                     zimg_stripe_min_lines; /* 0 = use default 16;
-                                           * smaller = more workers fit on
-                                           * low-res frames (lower latency,
-                                           * worse load balance) */
-    int                     dst_zerocopy; /* 0 = copy-out (safe); 1 = write
-                                           * directly to VLC dst picture
-                                           * (opt-in, may not work everywhere) */
+
+    /* Backend-specific tunables. Only the zimg backend reads these;
+     * swscale ignores them. Grouped under a named member so the generic
+     * geometry above stays free of backend coupling (ISP). A third
+     * backend would add its own sibling member here. */
+    struct {
+        int min_stripe_lines; /* 0 = use default 16; smaller = more workers
+                               * fit on low-res frames (lower latency,
+                               * worse load balance) */
+        int zerocopy;         /* 0 = copy-out (safe); 1 = write directly to
+                               * VLC dst picture (opt-in, not everywhere) */
+    }                       zimg;
+
     vlc_fourcc_t            chroma;     /* same on input and output */
     vlc_object_t           *log_obj;    /* for msg_Dbg/msg_Warn */
 } scaler_ctx_t;
@@ -47,6 +53,11 @@ typedef struct scaler_ctx_s
 struct scaler_backend_s
 {
     const char *name;
+
+    /* Stable identity, one of SCALER_BACKEND_ZIMG / _SWSCALE. Lets callers
+     * branch on which backend is active without sniffing `name` (the old
+     * `name[0] != 's'` test was a brittle proxy for "not swscale"). */
+    int         id;
 
     /* Returns 1 if this backend can handle (chroma, algo), 0 otherwise.
      * Pure function: no allocations, safe to call before open(). */

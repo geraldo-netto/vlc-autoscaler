@@ -74,11 +74,19 @@ extern int up_usm_pool_apply_avx512(usm_pool_t *pool,
 /* Picked variant name, exported for diagnostic logging from autoupscale.c. */
 const char *up_usm_pool_variant_name = "uninitialized";
 
-/* Function pointers populated at .so load. */
-static usm_pool_t *(*p_create) (int, int, int, int);
-static void        (*p_destroy)(usm_pool_t *);
-static int         (*p_apply)  (usm_pool_t *, uint8_t *, int,
-                                const uint8_t *, int, int);
+/*
+ * One strategy vtable, selected once at load. Grouping the three function
+ * pointers (rather than three loose statics) parallels scaler_backend_t
+ * and makes "the active variant" a single object — add a new entry point
+ * and it is one struct member to wire, not another loose global. */
+typedef struct {
+    usm_pool_t *(*create) (int, int, int, int);
+    void        (*destroy)(usm_pool_t *);
+    int         (*apply)  (usm_pool_t *, uint8_t *, int,
+                           const uint8_t *, int, int);
+} usm_pool_ops_t;
+
+static usm_pool_ops_t g_ops;
 
 /*
  * Constructor: runs at .so load via the GCC/Clang constructor attribute.
@@ -95,23 +103,23 @@ up_usm_pool_dispatch_init(void)
 #if defined(__GNUC__) || defined(__clang__)
     __builtin_cpu_init();
     if (__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw")) {
-        p_create  = up_usm_pool_create_avx512;
-        p_destroy = up_usm_pool_destroy_avx512;
-        p_apply   = up_usm_pool_apply_avx512;
+        g_ops = (usm_pool_ops_t){ up_usm_pool_create_avx512,
+                                  up_usm_pool_destroy_avx512,
+                                  up_usm_pool_apply_avx512 };
         up_usm_pool_variant_name = "avx512";
         return;
     }
     if (__builtin_cpu_supports("avx2")) {
-        p_create  = up_usm_pool_create_avx2;
-        p_destroy = up_usm_pool_destroy_avx2;
-        p_apply   = up_usm_pool_apply_avx2;
+        g_ops = (usm_pool_ops_t){ up_usm_pool_create_avx2,
+                                  up_usm_pool_destroy_avx2,
+                                  up_usm_pool_apply_avx2 };
         up_usm_pool_variant_name = "avx2";
         return;
     }
 #endif
-    p_create  = up_usm_pool_create_sse2;
-    p_destroy = up_usm_pool_destroy_sse2;
-    p_apply   = up_usm_pool_apply_sse2;
+    g_ops = (usm_pool_ops_t){ up_usm_pool_create_sse2,
+                              up_usm_pool_destroy_sse2,
+                              up_usm_pool_apply_sse2 };
     up_usm_pool_variant_name = "sse2";
 }
 
@@ -121,12 +129,12 @@ up_usm_pool_dispatch_init(void)
 usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
                                int stripe_min_rows)
 {
-    return p_create(n_threads, width, height, stripe_min_rows);
+    return g_ops.create(n_threads, width, height, stripe_min_rows);
 }
 
 void up_usm_pool_destroy(usm_pool_t *pool)
 {
-    p_destroy(pool);
+    g_ops.destroy(pool);
 }
 
 int up_usm_pool_apply(usm_pool_t *pool,
@@ -134,5 +142,5 @@ int up_usm_pool_apply(usm_pool_t *pool,
                       const uint8_t *src, int src_stride,
                       int amount_q8)
 {
-    return p_apply(pool, dst, dst_stride, src, src_stride, amount_q8);
+    return g_ops.apply(pool, dst, dst_stride, src, src_stride, amount_q8);
 }
