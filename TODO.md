@@ -17,7 +17,7 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| (none open) | | | | |
+| UB-OVF1 | no-action | S | `autoupscale.c` `MaybeLogStats` computes `next_stats_ns = now_ns + OBS_STATS_INTERVAL_NS`; signed-overflow UB once `now_ns > INT64_MAX - 5e9` | ACCEPTED (theoretical, like PORT-3): `now_ns` is `CLOCK_MONOTONIC` nanoseconds, so reaching 2^63 ns needs ~292 years of uptime — unreachable. A saturating add would add a per-log branch for a case that cannot occur on a monotonic clock. Revisit only if the timestamp source ever changes to something that can approach INT64_MAX. |
 
 ## memory management
 
@@ -171,6 +171,19 @@ don't re-investigate:
 | `autoupscale.c` `monotonic_ns` returns 0 on `clock_gettime` failure "masks perf warnings" | Intentional + documented: a clock failure must NOT trigger a spurious perf advisory; perfmon ignores non-positive samples by design. |
 | `autoupscale.c` `RunProbe` "pixel vs byte width unit mismatch (UB)" | Already handled + documented: width is taken from `format.i_visible_width` (pixels) and clamped to `i_pitch`; the probe is gated to 8-bit luma where 1 byte == 1 px. |
 | `scaler_swscale.c` `sws_scale` "implicit pitch narrowing" | No narrowing: `i_pitch` is already `int`, assigned to the `int` stride array `sws_scale` expects; the short-return (`rc != dst_h`) is already checked (ERR-2). |
+
+### Rescan of the SCAL-3 column-tiling + SCAL-4 code (2026-05-30) — rejected
+
+Targeted re-audit of the new 2D-tiling / pinning code (active_region column
+tiles, per-worker tile dst scratch, `up_decide_tile_grid`, CPU pinning). One
+theoretical UB recorded above (UB-OVF1); the rest were false positives:
+
+| candidate | why rejected |
+|----|--------------|
+| `scaler_zimg.c` `alloc_one_plane_set` "leaks earlier planes if a later `aligned_alloc` fails" | Not a leak: on partial failure `ps->y/u/v` keep their (partial) values and the OWNER frees them — a column tile's `w->dst` via `release_worker_resources` (gated on `w->col_tiled`, which is set before `alloc_tile_dst`), and the priv scratch via `zimg_close` (`free(p->src/dst.{y,u,v})`). Pre-existing pattern; no plane pointer is dropped. |
+| `autoupscale.c` OBS-5 `var_Create` return unchecked | Benign: `var_Create` for a fixed-name INTEGER var effectively only fails on OOM; VLC's `var_Destroy` on an absent variable is a safe no-op (+debug log), so the unconditional `var_Destroy` in `Close()` cannot fault. Worst case the stat var simply isn't exported. |
+| `autoupscale.c` `ClampConfig` no upper bound on `skip` | Not a bug: unlike preset/algo/backend/usm (which index tables, hence clamped to MAX), `skip-above` is a plain numeric height threshold compared by value — a large value just means "never skip", no OOB. VLC's `add_integer_with_range` also bounds it at the config layer. |
+| `scaler_zimg.c` column-tile pointer math / per-tile dst race | Verified safe by the seam fuzzer (libFuzzer, geometry down to 2px + oversubscribed threads, no OOB), the ASan/UBSan + TSan harness (disjoint cells, no race), and the seam oracle (maxdelta<=6 vs single-graph). |
 
 Coverage note: pure-logic files are 100% (gated). scaler_zimg.c is exercised
 to ~94% by `make coverage-zimg` (was 0%); the rest needs a live VLC logger
