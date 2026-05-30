@@ -30,10 +30,10 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| PERF-4 | open | S | `usm.h:86-89,195-198` hot kernels rely on `#pragma GCC optimize("O3")` for autovectorization | Pragma opt-level is brittle across gcc versions and no-ops if inlining differs; compile the TU at -O3 (as usm_pool.o already is) or hand-write intrinsics for `combine_row`. |
+| (none open) | | | PERF-4 (per-function O3 pragma removed; usm_pool.c TU already -O3, codegen proven identical 287==287 vector ops) DONE — commit 4714938. | |
 
-PERF-2 (fuse USM passes) DONE — commit cc71221, measured 3-21% faster.
-PERF-3 (probe visible width) DONE — commit 0f92daa. PERF-1 parked (below).
+PERF-1 (parallel copy-in) DONE — commit b0d327f. PERF-2 (fuse) DONE —
+commit cc71221. PERF-3 (probe visible width) DONE — commit 0f92daa.
 
 ## scalability
 
@@ -72,7 +72,8 @@ duplication is gone.
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
 | ARCH-1 | open | M | `scaler_zimg.c:608` `zimg_lazy_init` builds a `fake_ctx` (memset + copy 4 geometry fields) only to satisfy `construct_workers`/`try_spawn_one_worker`, which read only src/dst dims | Change the stripe helpers to take a small geometry struct (or `zimg_priv_t` directly), eliminating the fake-ctx and the scaler.h coupling. |
-| ARCH-2 | open | S | Constant duplication across header boundaries: `SCALER_PICK_*` (`scaler_pick_logic.h:30`) mirrors `SCALER_BACKEND_*` (`scaler.h:21`, guarded only by `_Static_assert` in `scaler.c:21`); chroma fourcc literals in `chroma_classify.h` mirror VLC's `VLC_CODEC_*` | Accepted/documented pattern but drift risk; add a compile-time cross-check for chroma fourccs vs `VLC_CODEC_*` in a VLC-linked TU. |
+
+ARCH-2 (compile-time chroma fourcc cross-check vs VLC_CODEC_*) DONE — commit cb2efa9.
 
 ARCH-3 (move zimg-only knobs into a `zimg` sub-struct) DONE — commit 0f92daa.
 
@@ -80,8 +81,8 @@ ARCH-3 (move zimg-only knobs into a `zimg` sub-struct) DONE — commit 0f92daa.
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| DEC-1 | open | S | `up_usm_pool_variant_name` is a loose `extern const char *` global (`usm_pool_dispatch.c:75` / `usm_pool.c:58` / `usm_pool.h:103`) with two definition sites by build mode | Hide the single/multi split behind an accessor `up_usm_pool_variant_name(void)`. See ABI-1. |
-| DEC-2 | open | S | `usm_pool_dispatch.c` hand-maintains 9 extern decls + 3 forwarding shims that must stay in lockstep with `usm_pool.h` (header carries a large "IF YOU ADD/REMOVE" warning) | Generate the shims via an X-macro list so add/remove touches one line. See ABI-2. |
+| DEC-1 | rejected | S | `up_usm_pool_variant_name` is a loose `extern const char *` global with two definition sites by build mode | Rejected: an accessor `up_usm_pool_variant_name(void)` does NOT remove the two definition sites — there would still be one accessor body per build mode (dispatch.c vs usm_pool.c #else). It only swaps a global for a call, for no real decoupling, while rippling through 5 files incl tests. The misleading doc was the real issue, fixed by ABI-1 (commit ee09ed9). |
+| DEC-2 | rejected | S | `usm_pool_dispatch.c` hand-maintains extern decls + forwarding shims that must stay in lockstep with `usm_pool.h` | Rejected with ABI-2: drift fails at link time (loud, not silent), and the variant tests link all three variants + the dispatcher. X-macro shim generation is the "clever shortcut" AGENTS.md steers away from; explicit list + link-time check preferred. |
 
 ## business/design patterns/DDD
 
@@ -109,8 +110,9 @@ ERR-1 (sem leak on partial spawn) DONE — fixed during the PERF-2 rewrite (comm
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| PORT-2 | open | S | `usm_pool_dispatch.c:92-116` dispatcher is x86-only: the `#if defined(__GNUC__)||defined(__clang__)` guards only AVX probes, the unconditional `#else` still wires `_sse2` variant symbols | Guard the whole dispatcher on `defined(__x86_64__)` and provide a plain-`default` link path for non-x86. |
-| PORT-3 | open | S | `perfmon.h:96` EWMA update right-shifts a signed `diff` | Implementation-defined for negatives pre-C11 (well-defined on all twos-complement targets). Already documented; no change unless targeting non-twos-complement ABI. |
+| PORT-3 | no-action | S | `perfmon.h:96` EWMA update right-shifts a signed `diff` | Well-defined arithmetic shift on every twos-complement target (all real ABIs); already documented in the file. No change unless a non-twos-complement target appears. Kept as a known, accepted item. |
+
+PORT-2 (dispatcher x86-only) DONE — commit ee09ed9 (#error on !__x86_64__).
 
 ## resource management
 
@@ -124,26 +126,30 @@ RES-1 (sws_scale `rc > 0`) DONE — folded into the ERR-2 fix (commit 83f5ee0).
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| ABI-1 | open | S | `up_usm_pool_variant_name` documented as a "weak alias" in `usm_pool.h:103` but defined *strongly* in both `usm_pool.c:58` and `usm_pool_dispatch.c:75` | No clash today (single-baseline def is `#ifdef USM_VARIANT`-guarded) but the header contract is wrong; a future non-variant link alongside the dispatcher = duplicate-symbol error. Fix comment or make one def `__attribute__((weak))`. See DEC-1. |
-| ABI-2 | open | S | USM pool public symbol set hand-mirrored across `usm_pool.h:25-42`, dispatcher externs, and test files with only a comment to keep in sync | Add/remove a public fn → `.so` fails at load (unresolved symbol). Generate shims from one X-macro list or add a CI link check. See DEC-2. |
+| ABI-2 | rejected | S | USM pool public symbol set hand-mirrored across `usm_pool.h`, dispatcher externs, and test files with only a comment to keep in sync | Rejected (with DEC-2): drift is ALREADY caught loudly — adding/removing a public fn without updating the dispatcher fails at link (unresolved/orphaned symbol), and the variant tests link all three + the dispatcher. An X-macro to auto-generate the shims is the "clever indirection" AGENTS.md steers away from; the explicit list + link-time safety net is preferred. |
+
+ABI-1 (false "weak alias" comment) DONE — commit ee09ed9 (corrected to describe the two mutually-exclusive strong defs).
 
 ## build/toolchain hygiene
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
 | BUILD-1 | open | M | Generic object rule `Makefile:184` omits included headers (`content_probe.h`, `chroma_classify.h`, `zimg_helpers.h`, `scaler_zimg_chroma.h`, `scaler_pick_logic.h`) | Editing those headers does not rebuild dependent TUs → stale incremental builds. Add `-MMD -MP` + `-include $(OBJS:.o=.d)` for auto header deps. |
-| BUILD-2 | open | S | cppcheck explicitly excludes `autoupscale.c` and `scaler_zimg.c` (`Makefile:493-499`); shipped `.so` never built under ASan/UBSan or `-fanalyzer` | The two largest pointer-heavy TUs get zero static/dynamic analysis; add a `scan-build`/`-fanalyzer` plugin build or run cppcheck with the VLC include path on them in CI. |
-| BUILD-3 | open | S | CI uses `-Wall -Wextra -Wshadow ...` but never `-Werror` (`Makefile:40`) | Warning regressions pass CI silently; add `EXTRA_CFLAGS=-Werror` to build/test jobs. |
-| BUILD-4 | open | S | Production `.so` only ever compiled with gcc; clang used solely for fuzz/stress (`Makefile:17-18`) | clang-only warnings and the clang hot-kernel codegen path (which `usm.h` relies on) are untested for the shipped artifact; add a clang plugin build to CI. |
+| BUILD-1 | open | M | Generic object rule `Makefile:184` omits included headers (`content_probe.h`, `chroma_classify.h`, `zimg_helpers.h`, `scaler_zimg_chroma.h`, `scaler_pick_logic.h`) | Editing those headers does not rebuild dependent TUs → stale incremental builds. Add `-MMD -MP` + `-include $(OBJS:.o=.d)` for auto header deps. (M effort.) |
+| BUILD-2 | partial | S | cppcheck excludes `autoupscale.c` and `scaler_zimg.c` (can't parse VLC's macro headers); shipped `.so` analysis gap | Partially addressed: CI now builds the plugin under gcc AND clang `-Werror` and runs scaler_zimg.c through the ASan/UBSan/TSan harness (commit 47d2c40) — stronger than cppcheck for that file. cppcheck-on-VLC-TUs still out (header parsing); `-fanalyzer` deferred (noisy on VLC headers). |
 | BUILD-5 | open | S | `MARCH ?= native` + `MULTIVERSION ?= 0` (`Makefile:63,110`) makes the default `.so` non-portable and prone to SIGILL on a different CPU | Acceptable per the build-and-run model, but no runtime guard; a `__builtin_cpu_supports` self-check at Open() (or portable baseline for release artifacts) would fail gracefully. |
+
+BUILD-3 (-Werror) + BUILD-4 (clang plugin build) DONE — commit 47d2c40; CI
+also now installs libzimg and runs the zimg harness (test-zimg / stress-zimg).
 
 ## observability
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| OBS-1 | open | S | Per-frame process failures drop the frame with no log: `scaler_zimg.c:780`, `autoupscale.c:703-708`, `scaler_swscale.c:118` | A persistently failing scaler yields a black/stalled stream with nothing logged; emit a one-time (rate-limited) `msg_Warn` on first failure. |
-| OBS-2 | open | S | `zimg_lazy_init` failure returns -1 silently at first frame (`scaler_zimg.c:766-772`) | The expensive setup (threads/scratch) can fail after a successful cheap Open(); add an explicit `msg_Err` via `log_obj_saved` so users see why frames drop. |
 | OBS-3 | open | S | No counters for frames processed/dropped, USM-skipped, or achieved fps; only signal is the one-shot perf advisory (`autoupscale.c:550`) | Add periodic `msg_Dbg` (every N seconds) with processed/dropped counts and current EWMA so long-run behavior is observable. |
+
+OBS-1 (one-shot warn on process failure) + OBS-2 (msg_Err on lazy-init failure)
+DONE — commit fe9396f.
 
 ## wiring gaps
 
@@ -155,12 +161,12 @@ RES-1 (sws_scale `rc > 0`) DONE — folded into the ERR-2 fix (commit 83f5ee0).
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| DEAD-1 | open | S | `up_usm_workspace_size` (`usm.h:60`) called only by tests (test_usm.c, fuzz_usm.c); no production caller (pool sizes its workspace inline in `usm_pool_lazy_init`) | keep: small pure helper used by reference-path tests; harmless. Inline into tests if reference path retired. |
-| DEAD-2 | open | S | `up_usm__pass1_hblur` (`usm.h:171`) reachable only via `up_usm_apply_plane` (no production caller) | inline/keep with WIRE-2; lives or dies with the single-threaded reference. |
-| DEAD-3 | open | S | `up_usm__pass2_combine` (`usm.h:228`) reachable only via `up_usm_apply_plane` | inline/keep with WIRE-2. |
-| DEAD-4 | open | S | `up_usm__apply_identity` (`usm.h:142`) reachable only via `up_usm_apply_plane`; usm_pool.c references it only in a comment (has its own `usm_pool_identity`) | keep with WIRE-2; logic duplicated at `usm_pool.c:387` — dedup target (see DUP-1). |
-| DEAD-5 | open | S | `up_usm__args_valid` (`usm.h:251`) reachable only via `up_usm_apply_plane` | inline/keep with WIRE-2. |
-| DEAD-7 | open | S | `scaler_zimg.c` `construct_workers` partial-build retry + `teardown_constructed_workers` are unreachable in practice: `zimg_open` clamps stripes to >=16 dst rows and source-stripe degeneracy is all-or-nothing, so `0 < constructed < n` never occurs (found while pushing zimg coverage) | keep: cheap defensive net against future stripe-bounds changes; document as belt-and-suspenders, or delete if the clamp invariant is asserted instead. Not a correctness bug. |
+| DEAD-1,2,3,5 | keep | S | `up_usm_workspace_size`, `up_usm__pass1_hblur`, `up_usm__pass2_combine`, `up_usm__args_valid` (usm.h) are reachable only via `up_usm_apply_plane` | DECISION: keep. They are the single-threaded byte-identity TEST ORACLE for the threaded pool (documented at up_usm_apply_plane via WIRE-2, commit 0f92daa). Not dead — intentionally test-only. |
+| DEAD-7 | keep | S | `scaler_zimg.c` `construct_workers` partial-build retry + `teardown_constructed_workers` are unreachable in practice: `zimg_open` clamps stripes to >=16 dst rows and source-stripe degeneracy is all-or-nothing, so `0 < constructed < n` never occurs | DECISION: keep as a cheap defensive net against future stripe-bounds changes. Not a correctness bug. |
+
+DEAD-4 RESOLVED: after DUP-1 (commit 0711d5f) the threaded pool calls
+`up_usm__apply_identity` directly, so it now has a production caller — no
+longer dead.
 
 DEAD-6 (orphaned bench_usm_pool.c) DONE — wired as `make bench` / `make bench-flatskip` and its timing loop fixed (commit cc71221).
 
