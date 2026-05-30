@@ -110,14 +110,23 @@ typedef struct
 
     /* Stripe geometry (constant after Open). */
     int                src_y_start;   /* in luma rows */
+    int                src_y_end;     /* in luma rows (for the copy-in stripe) */
     int                dst_y_start;
     int                worker_id;
-    unsigned           sub_h;
+    int                src_w;         /* luma width (for the copy-in stripe) */
+    unsigned           sub_w, sub_h;
 
     /* Pointers into the parent's scratch buffers (set at Open).
      * .lines_y / .lines_c are unused at the worker level. */
     plane_set_t        src;
     plane_set_t        dst;
+
+    /* VLC source picture planes for the CURRENT frame (set per dispatch by
+     * zimg_point_workers_src, while the worker is blocked on `go`). Each
+     * worker copies its own src stripe from here into the scratch `src`
+     * buffer at the head of its dispatch — PERF-1: the copy-in is part of
+     * the parallel work instead of a serial pre-pass on the main thread. */
+    plane_set_t        vlc_src;
 
     int                result;        /* 0 OK, -1 fail */
 } stripe_worker_t;
@@ -206,6 +215,37 @@ static inline void set_buf_plane(zimg_image_buffer *b, int idx,
     b->plane[idx].mask   = ZIMG_BUFFER_MAX;
 }
 
+/*
+ * PERF-1: copy this worker's source stripe from the VLC source picture into
+ * the shared scratch source buffer. Each worker owns a disjoint luma row range
+ * [src_y_start, src_y_end) (chroma shifted by sub_h), so there is no
+ * cross-worker contention and no barrier — the copy folds into the same
+ * dispatch as the resample instead of running as a serial main-thread pre-pass.
+ * CCN 1.
+ */
+static void worker_copy_in_stripe(stripe_worker_t *w)
+{
+    const int rows = w->src_y_end - w->src_y_start;
+    up_copy_plane(
+        w->src.y     + (size_t)w->src_y_start * (size_t)w->src.pitch_y,
+        w->src.pitch_y,
+        w->vlc_src.y + (size_t)w->src_y_start * (size_t)w->vlc_src.pitch_y,
+        w->vlc_src.pitch_y,
+        w->src_w, rows);
+
+    const int cs    = w->src_y_start >> w->sub_h;
+    const int crows = (w->src_y_end >> w->sub_h) - cs;
+    const int cw    = (w->src_w + (1 << w->sub_w) - 1) >> w->sub_w;
+    up_copy_plane(
+        w->src.u     + (size_t)cs * (size_t)w->src.pitch_c, w->src.pitch_c,
+        w->vlc_src.u + (size_t)cs * (size_t)w->vlc_src.pitch_c, w->vlc_src.pitch_c,
+        cw, crows);
+    up_copy_plane(
+        w->src.v     + (size_t)cs * (size_t)w->src.pitch_c, w->src.pitch_c,
+        w->vlc_src.v + (size_t)cs * (size_t)w->vlc_src.pitch_c, w->vlc_src.pitch_c,
+        cw, crows);
+}
+
 static void *worker_main(void *arg)
 {
     stripe_worker_t *w = (stripe_worker_t *)arg;
@@ -213,6 +253,8 @@ static void *worker_main(void *arg)
     {
         sem_wait(&w->go);
         if (w->should_exit) break;
+
+        worker_copy_in_stripe(w);   /* PERF-1: parallel per-stripe copy-in */
 
         /* Zero-init buffer descriptors. Upstream zimg's API contract
          * (see doc/example/api_example_c.c) requires plane[3] to be
@@ -392,11 +434,14 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
                               zimg_resample_filter_e filt)
 {
     w->src_y_start  = src_y_start;
+    w->src_y_end    = src_y_end;
     w->dst_y_start  = dst_y_start;
+    w->src_w        = ctx->src_w;
     /* worker_main shifts row offsets by sub_h (`>> w->sub_h`); a value >=
      * the int width would be UB. Valid YUV chroma gives 0 or 1, but clamp
      * defensively so a malformed sub_h can never reach the shift. */
     w->sub_h        = (sub_h < 8u) ? sub_h : 0u;
+    w->sub_w        = sub_w;
     w->done         = &p->done;
     w->worker_id    = worker_id;
     w->src = p->src;
@@ -696,48 +741,52 @@ static int zimg_open(scaler_ctx_t *ctx)
 }
 
 /*
- * Internal: copy 3 YUV planes between a VLC picture and our scratch
- * plane_set_t, in either direction. Plane 0 is luma at (w,h); planes
- * 1/2 are chroma at (w>>sub_w, h>>sub_h). The ps planes alternate role
- * (src or dst) depending on `dir`: when dir==0 ps is the destination
- * (copy IN to scratch); when dir==1 ps is the source (copy OUT to pic).
+ * Copy the scratch destination plane_set_t out to a VLC picture (the copy-out
+ * path, used only when zero-copy dst is OFF). Plane 0 is luma at (w,h); planes
+ * 1/2 are chroma at (w>>sub_w, h>>sub_h). YV12's U/V are swapped via the idx
+ * map. (Copy-IN is no longer here — each worker copies its own source stripe;
+ * see worker_copy_in_stripe / zimg_point_workers_src.) CCN 2.
  */
-static void copy_yuv_planes(const plane_set_t *ps, picture_t *pic, int swap,
-                            int w, int h, unsigned sub_w, unsigned sub_h,
-                            int dir)
+static void copy_planes_to_pic(const plane_set_t *ps, picture_t *pic, int swap,
+                               int w, int h, unsigned sub_w, unsigned sub_h)
 {
     const int idx[3] = { 0, up_zimg_plane_idx(1, swap),
                             up_zimg_plane_idx(2, swap) };
-    uint8_t   *ps_data[3]   = { ps->y, ps->u, ps->v };
-    const int  ps_pitch[3]  = { ps->pitch_y, ps->pitch_c, ps->pitch_c };
+    uint8_t   *ps_data[3]  = { ps->y, ps->u, ps->v };
+    const int  ps_pitch[3] = { ps->pitch_y, ps->pitch_c, ps->pitch_c };
     const int cw = (w + (1 << sub_w) - 1) >> sub_w;
     const int ch = (h + (1 << sub_h) - 1) >> sub_h;
     const int pw[3] = { w, cw, cw };
     const int ph[3] = { h, ch, ch };
 
-    for (int k = 0; k < 3; k++) {
-        uint8_t *pic_data  = pic->p[idx[k]].p_pixels;
-        int      pic_pitch = pic->p[idx[k]].i_pitch;
-        if (dir == 0)
-            up_copy_plane(ps_data[k], ps_pitch[k],
-                          pic_data, pic_pitch, pw[k], ph[k]);
-        else
-            up_copy_plane(pic_data, pic_pitch,
-                          ps_data[k], ps_pitch[k], pw[k], ph[k]);
-    }
+    for (int k = 0; k < 3; k++)
+        up_copy_plane(pic->p[idx[k]].p_pixels, pic->p[idx[k]].i_pitch,
+                      ps_data[k], ps_pitch[k], pw[k], ph[k]);
 }
 
 /*
- * Phase 1: Copy IN. VLC's source picture (which we cannot read from
- * worker threads — pool-managed buffers segfault) is copied to our
- * scratch source buffers. Workers then read from the scratch.
+ * PERF-1 phase 1: hand every worker the VLC source picture's plane pointers +
+ * pitches for THIS frame. Each worker then copies its own source stripe from
+ * here into the scratch source buffer at the head of its dispatch, so the
+ * copy-in parallelizes instead of running as a serial main-thread pre-pass.
+ * Workers are blocked on `go` while this runs, so the writes need no
+ * synchronization — same pattern as zimg_zerocopy_point_workers for the dst
+ * side. YV12 U/V are swapped via the plane-index map. CCN 2.
  */
-static void zimg_copy_in(zimg_priv_t *p, const picture_t *src)
+static void zimg_point_workers_src(zimg_priv_t *p, const picture_t *src)
 {
-    /* picture_t is read-only here, but copy_yuv_planes also serves the
-     * write path; cast away const at the seam. */
-    copy_yuv_planes(&p->src, (picture_t *)src, p->yv12_swap_uv,
-                    p->src_w, p->src_h, p->sub_w, p->sub_h, 0);
+    const int swap = p->yv12_swap_uv;
+    const int s_y = 0;
+    const int s_u = up_zimg_plane_idx(1, swap);
+    const int s_v = up_zimg_plane_idx(2, swap);
+    for (int i = 0; i < p->n_threads; i++) {
+        stripe_worker_t *w = &p->workers[i];
+        w->vlc_src.y       = src->p[s_y].p_pixels;
+        w->vlc_src.u       = src->p[s_u].p_pixels;
+        w->vlc_src.v       = src->p[s_v].p_pixels;
+        w->vlc_src.pitch_y = src->p[s_y].i_pitch;
+        w->vlc_src.pitch_c = src->p[s_u].i_pitch;
+    }
 }
 
 /*
@@ -789,8 +838,8 @@ static int zimg_dispatch_and_wait(zimg_priv_t *p)
  */
 static void zimg_copy_out(zimg_priv_t *p, picture_t *dst)
 {
-    copy_yuv_planes(&p->dst, dst, p->yv12_swap_uv,
-                    p->dst_w, p->dst_h, p->sub_w, p->sub_h, 1);
+    copy_planes_to_pic(&p->dst, dst, p->yv12_swap_uv,
+                       p->dst_w, p->dst_h, p->sub_w, p->sub_h);
 }
 
 static int zimg_process(scaler_ctx_t *ctx,
@@ -811,7 +860,7 @@ static int zimg_process(scaler_ctx_t *ctx,
         p->lazy_init_done = true;
     }
 
-    zimg_copy_in(p, src);
+    zimg_point_workers_src(p, src);   /* PERF-1: workers copy their own stripe */
 
     if (p->dst_zerocopy)
         zimg_zerocopy_point_workers(p, dst);
