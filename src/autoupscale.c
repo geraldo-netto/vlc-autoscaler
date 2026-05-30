@@ -18,6 +18,8 @@
 #include <vlc_filter.h>
 #include <vlc_picture.h>
 
+#include <limits.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
@@ -298,8 +300,15 @@ static void DetectHardware( int *cores, unsigned long *mem_mb )
 #ifdef __linux__
     struct sysinfo info;
     if( sysinfo( &info ) == 0 )
-        *mem_mb = ((unsigned long)info.totalram * (unsigned long)info.mem_unit)
-                  / (1024UL * 1024UL);
+    {
+        /* Compute in 64-bit: on 32-bit hosts `totalram * mem_unit` overflows
+         * `unsigned long` and would yield a bogus (small) mem_mb that skews
+         * the AUTO 720p/1080p decision. Saturate when narrowing back. */
+        uint64_t mb = ( (uint64_t)info.totalram * (uint64_t)info.mem_unit )
+                      >> 20;  /* / (1024*1024) */
+        *mem_mb = ( mb > (uint64_t)ULONG_MAX ) ? ULONG_MAX
+                                               : (unsigned long)mb;
+    }
 #endif
 }
 

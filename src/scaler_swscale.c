@@ -115,7 +115,11 @@ static int sws_process( scaler_ctx_t *ctx,
 
     int rc = sws_scale( p->ctx, src_data, src_stride, 0, ctx->src_h,
                         dst_data, dst_stride );
-    return rc > 0 ? 0 : -1;
+    /* sws_scale returns the number of output lines written. A full-frame
+     * scale must emit exactly dst_h lines; a short return (rc < dst_h, incl.
+     * 0 or a negative error) leaves the destination partially filled, so
+     * fail rather than forward a half-written frame. */
+    return rc == ctx->dst_h ? 0 : -1;
 }
 
 static void sws_close( scaler_ctx_t *ctx )
