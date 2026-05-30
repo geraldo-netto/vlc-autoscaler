@@ -35,7 +35,9 @@
  * N persistent worker threads spawned at Open(), one per stripe. Each
  * worker owns its zimg_filter_graph (built for that stripe's src_h/dst_h
  * dimensions) and its tmp buffer. Per-frame dispatch via per-worker
- * sem_t "go" + a shared sem_t "done" the main thread waits on N times.
+ * sem_t "go"; completion is a counting barrier (SCAL-2): an atomic "pending"
+ * counter the workers decrement, the last posting a single "all_done" sem the
+ * main thread waits on exactly once (was N sem_wait on a shared sem).
  * N is determined by up_threads_decide() in threading.h.
  *
  * Stripe-boundary caveat: each stripe's graph resamples independently
@@ -62,6 +64,7 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdalign.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -95,7 +98,12 @@ typedef struct
      * name, hence on the first member. */
     alignas(64) pthread_t  thread;
     sem_t              go;
-    sem_t             *done;          /* shared with parent */
+    /* SCAL-2: completion is a counting barrier, not N sem_post/sem_wait on a
+     * shared sem. Each worker decrements *pending after its stripe; only the
+     * one that drives it to zero posts *all_done, which the main thread waits
+     * on exactly once. Both shared with the parent. */
+    atomic_int        *pending;
+    sem_t             *all_done;
     bool               thread_started; /* true iff pthread_create succeeded;
                                         * pthread_t is opaque, so a "== 0"
                                         * test on `thread` is not portable —
@@ -107,8 +115,11 @@ typedef struct
      * and the worker reads it after sem_wait(go) (acquire pairs with that
      * release). release_worker_resources() only joins; it does NOT re-signal,
      * so there is no concurrent second write. result is single-writer
-     * (worker) / single-reader (main) across the sem_post(done)/sem_wait(done)
-     * handshake. Keep signal-once-then-join on every teardown path or these
+     * (worker) / single-reader (main): each worker writes result, then does an
+     * acq_rel fetch_sub on *pending; those RMWs form a release sequence, so the
+     * worker that hits zero (acquire) observes every other worker's result
+     * write, and its sem_post(all_done) -> main's sem_wait(all_done) publishes
+     * them to main. Keep signal-once-then-join on every teardown path or these
      * would need to become _Atomic. */
     int                should_exit;
 
@@ -156,8 +167,9 @@ typedef struct
 {
     int               n_threads;
     stripe_worker_t  *workers;
-    sem_t             done;
-    bool              done_inited;   /* sem_destroy guard: true iff sem_init succeeded */
+    atomic_int        pending;       /* SCAL-2: live workers this dispatch */
+    sem_t             all_done;      /* posted once when pending hits 0 */
+    bool              all_done_inited; /* sem_destroy guard: true iff sem_init succeeded */
 
     int               yv12_swap_uv;
     unsigned          sub_w, sub_h;
@@ -359,7 +371,10 @@ static void *worker_main(void *arg)
 
         if (w->copy_out) worker_copy_out_stripe(w);  /* PERF-5: parallel copy-out */
 
-        sem_post(w->done);
+        /* SCAL-2: last worker to finish posts all_done exactly once. acq_rel
+         * so the result writes above join the release sequence on *pending. */
+        if (atomic_fetch_sub_explicit(w->pending, 1, memory_order_acq_rel) == 1)
+            sem_post(w->all_done);
     }
     return NULL;
 }
@@ -513,7 +528,8 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
     /* I/O mode: copy on the side that is NOT zero-copy. */
     w->copy_in      = !p->src_zerocopy;
     w->copy_out     = !p->dst_zerocopy;
-    w->done         = &p->done;
+    w->pending      = &p->pending;
+    w->all_done     = &p->all_done;
     w->worker_id    = worker_id;
     w->src = p->src;
     w->dst = p->dst;
@@ -755,8 +771,9 @@ static int zimg_lazy_init(zimg_priv_t *p)
         memset(p->workers, 0, total);
     }
 
-    if (sem_init(&p->done, 0, 0) != 0) return -1;
-    p->done_inited = true;
+    atomic_init(&p->pending, 0);
+    if (sem_init(&p->all_done, 0, 0) != 0) return -1;
+    p->all_done_inited = true;
 
     int constructed = 0;
     /* construct_workers needs ctx-shaped data: build a fake scaler_ctx_t
@@ -867,12 +884,15 @@ static void point_workers_planes(zimg_priv_t *p, const picture_t *pic,
  */
 static int zimg_dispatch_and_wait(zimg_priv_t *p)
 {
+    /* SCAL-2: arm the barrier before any worker can run (each is blocked on its
+     * own `go`); relaxed is sufficient because the sem_post(go) below release-
+     * publishes this store to each worker. */
+    atomic_store_explicit(&p->pending, p->n_threads, memory_order_relaxed);
     for (int i = 0; i < p->n_threads; i++) {
         p->workers[i].result = 0;
         sem_post(&p->workers[i].go);
     }
-    for (int i = 0; i < p->n_threads; i++)
-        sem_wait(&p->done);
+    sem_wait(&p->all_done);   /* one wait, not N (was N sem_wait on a shared sem) */
     for (int i = 0; i < p->n_threads; i++) {
         if (p->workers[i].result != 0) return -1;
     }
@@ -987,7 +1007,7 @@ static void zimg_close(scaler_ctx_t *ctx)
         }
         free(p->workers);
     }
-    if (p->done_inited) sem_destroy(&p->done);
+    if (p->all_done_inited) sem_destroy(&p->all_done);
 
     free(p->src.y); free(p->src.u); free(p->src.v);
     free(p->dst.y); free(p->dst.u); free(p->dst.v);

@@ -34,8 +34,7 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| SCAL-2 | open | S | `scaler_zimg.c:732` per-frame dispatch issues N `sem_post`/`sem_wait` pairs per phase from the main thread; sync cost grows linearly with thread count | USM path HALVED in cc71221 (fused to one dispatch). zimg dispatch half remains: a counting barrier / futex gate would cut its per-frame syscalls. Parked with PERF-1 (no zimg test harness). |
-| SCAL-4 | open | M | Worker thread affinity / core pinning | Reduce cache thrashing and context-switch overhead on high-core-count/NUMA systems. |
+| SCAL-2 | open | S | `scaler_zimg.c` per-frame dispatch: the main-thread WAIT half is now O(1) (counting barrier, commit pending); the WAKE half still issues N `sem_post(go)` from the main thread | Done-side resolved: workers decrement an atomic `pending`, the last posts a single `all_done` the main thread waits on once (was N `sem_wait` on a shared sem). Validated race-free under the TSan harness. Residual: replace the N per-worker `go` sems with one broadcast gate (pthread_cond + generation) to take the wake half N->1. Riskier (touches the exit/`should_exit` handshake); deferred. |
 
 ## concurrency
 
@@ -98,7 +97,7 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| RES-2 | open | M | `scaler_zimg.c` + `usm_pool.c` each filter instance spawns up to `UP_THREADS_MAX` (64) zimg workers + up to 64 USM workers + multi-MB scratch, with no process-wide cap across concurrent AutoUpscale instances | If multiple concurrent instances are possible, add an aggregate thread/memory budget; else document the per-instance bound as intentional. NB the two pools run sequentially per frame (see rejected SCAL-1), so the cost is idle-thread address space, not CPU. |
+| RES-2 | decided | M | `scaler_zimg.c` + `usm_pool.c` each filter instance spawns up to `UP_THREADS_MAX` (64) zimg workers + up to 64 USM workers + multi-MB scratch, with no process-wide cap across concurrent AutoUpscale instances | DECISION (2026-05-30): per-instance bound is intentional; no aggregate budget added. The two pools run sequentially per frame (rejected SCAL-1), and each pool further clamps thread count to `dst_h / stripe_min_lines` and core count, so the only cross-instance cost is idle-thread address space (untouched stacks), not CPU or RSS. Typical VLC runs one filter instance per pipeline; a global atomic budget would add shared mutable state + a new open-time failure mode for no real gain. Revisit only if a concurrent-many-instance use case appears. |
 
 ## API/ABI stability
 
@@ -142,7 +141,8 @@ now only on scope, not on lack of a safety net.
 | id | effort | description | why parked |
 |----|--------|-------------|------------|
 | SCAL-3 | S | 2D/column tiling for very wide/short zimg frames | Column tiling subdivides WIDTH; horizontal resampling across a column-tile boundary risks visible vertical seams (horizontal-stripe-only design avoids this). Needs zimg halo/overlap; the harness only checks full-write/determinism/zerocopy, NOT seam-free quality — would need a perceptual/reference check added. Low priority for typical content. |
-| SCAL-2 (zimg half) | S | Replace zimg's per-frame N sem_post/sem_wait with a counting barrier | Unblocked by the harness (TSan covers the race surface). USM half already done (commit cc71221). |
+| SCAL-2 (wake half) | S | Replace zimg's per-frame N `sem_post(go)` with one broadcast gate (pthread_cond + generation) | The WAIT half is done (counting barrier, commit pending). The wake half remains: a cond broadcast touches the `should_exit`/exit handshake (currently a carefully-reasoned single-write-under-sem invariant), so it carries more race risk than the done-side barrier. Harness (TSan) covers it; parked on scope, not safety net. |
+| SCAL-4 | M | Worker thread affinity / core pinning | Parked pending EVIDENCE: no NUMA/high-core throughput bench exists to prove a gain, and pinning short-lived per-frame workers can HARM by fighting VLC's own threads and the OS scheduler's load balancing on the typical desktop. Non-portable (`pthread_setaffinity_np`). Revisit with a real multi-socket bench before adding speculative pinning. |
 
 ## Pending validation
 
