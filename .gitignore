@@ -2,11 +2,21 @@
 build/
 build_dev/
 *.o
+*.obj
 *.so
 *.a
+*.lo
+*.la
+*.out
+a.out
+*.exe
+*.dll
+*.dylib
 *.gcda
 *.gcno
 *.gcov
+*.profraw
+*.profdata
 
 # libFuzzer artifacts
 crash-*
