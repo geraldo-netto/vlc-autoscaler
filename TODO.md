@@ -3,6 +3,9 @@
 Review findings from a full-project audit (2026-05-30) against the AGENTS.md
 review categories. One table per category. Format: `id | status | effort | description | notes`.
 
+2026-06-06 rescan: added two new review categories — **system design** and
+**data governance** — and scanned the whole project for them (SYS-1..3, DG-1..2).
+
 Effort: S (small) / M (medium) / L (large). Remove a row once its fix is
 implemented + tested + merged (`git log` is the durable record). Keep deferred
 items under "Open — parked" with a why-not-now note; keep rejected audit picks
@@ -12,6 +15,13 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
+
+## data governance
+
+| id | status | effort | description | notes |
+|----|--------|--------|-------------|-------|
+| DG-1 | open | S | `zimg_pic_ok` (`scaler_zimg.c:1113-1126`) validates the WIDTH axis only — `i_planes>=3`, non-null plane pointers, `i_pitch >= w/cw` — but never the picture's ROW count (`i_lines`/`i_visible_lines`). In zerocopy-src mode workers read VLC's source picture directly up to the Open-time `p->src_h` (derived from `fmt_in`, not from the incoming `src`). The pre-flight deliberately distrusts pitch but silently trusts height. | Defense-in-depth gap, not a live exploit: under VLC's format contract the decoder honors negotiated `fmt_in` and a real resolution change restarts the filter, so a short luma plane shouldn't occur. But a malformed/drifted pool picture below `src_h` would drive an OOB read — exactly the failure class the pitch guard exists to prevent. Asymmetric with `RunProbe` (line ~703), which derives height from the picture itself. Direction: also require `pic->p[iy].i_visible_lines >= p->src_h` (and chroma `>> sub_h`) in `zimg_pic_ok`. |
+| DG-2 | no-action | S | Plugin-owned scratch holding decoded frame pixels (`p->src`/`p->dst`/per-tile dst via `aligned_alloc`, `scaler_zimg.c:611-613`; USM scratch `usm_pool.c:521`) is `free()`d without zeroing on close (`zimg_close` ~1209), so the last frame's content lingers in freed heap until reuse. | DECIDED no-action (2026-06-06): matches VLC's own picture pools (no scrub); decoded video is not treated as a secret anywhere in VLC, buffers never leave the process, and no log/error path ever emits buffer contents or addresses. Scrubbing every freed block on close adds cost for no real threat. Recorded so a future pass doesn't re-raise. |
 
 ## undefined behavior
 
@@ -60,6 +70,14 @@ under "Audit picks deliberately rejected".
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
 | ARCH-4 | keep | S | `plane_set_t` on `stripe_worker_t` carries three roles: scratch geometry (`.lines_*`, priv-level only), the worker's scratch view (`src`/`dst`), and per-frame VLC picture pointers (`vlc_src`/`vlc_dst`) | DECISION (2026-05-30): keep. A `plane_geom_t`{pitch,lines} / `plane_ptrs_t`{y,u,v,pitch} split duplicates `pitch` across both types and ripples through `point_workers_planes`, the copy helpers, scratch alloc, and every worker field — for an overload whose only cost is two unused `int`s (`lines_*`) carried in the worker views. Net more types/code, marginal clarity. Per AGENTS.md (SOLID only when it helps). Revisit if a third consumer with different geometry needs appears. |
+
+## system design
+
+| id | status | effort | description | notes |
+|----|--------|--------|-------------|-------|
+| SYS-1 | open | M | The per-frame dispatch model diverged between the two structurally-parallel worker pools. zimg was migrated (SCAL-2) to a single mutex+`generation`+`cond_broadcast` wake plus an atomic-`pending` counting barrier — O(1) syscalls each way. The USM pool was left on the OLD O(N) model: `usm_pool_run` does N×`sem_post(go)` + N×`sem_wait(done)` every frame (`usm_pool.c:445-448`), one `sem_t go` per worker. | SCAL-2 is logged "RESOLVED" but only for zimg; the USM pool runs once per USM-enabled frame, so the 2N-syscall cost is real, just smaller (single-pass, ~6-30 workers). Two near-identical pools now carry DIFFERENT concurrency designs, undercutting DUP-3's "keep — they're parallel" rationale and creating a maintenance/divergence trap. Direction: port the broadcast+barrier to the USM pool (harness already validates it for zimg), OR document why USM intentionally stays on per-worker sems. |
+| SYS-2 | open | M | No runtime backend fallback after a successful `Open()`. Backend selection (`scaler_pick`) runs once at Open; zimg's heavy setup (worker spawn, scratch alloc, per-stripe graph build) is deferred to the FIRST frame (`zimg_ensure_lazy_init`/`zimg_lazy_init`). If that deferred init fails, `lazy_init_failed` is sticky (`scaler_zimg.c:266-267,925-926`) and `zimg_process` returns -1 for the filter's whole lifetime → `Filter()` drops EVERY frame. swscale opens eagerly in `sws_open`, so its failure is caught at Open and lets VLC try another filter. | The `scaler_pick`/`scaler_backend_t` seam makes zimg→swscale failover look designed-in, but it only operates pre-Open. A first-frame zimg failure (OOM under pressure, graph-build edge case) is unrecoverable degradation to frozen/black output instead of the universal fallback the swscale backend exists to provide. Distinct from the rejected "Open `be->open` failure" item (that was Open-time; this is post-Open first-frame). Direction: on sticky lazy-init failure re-`scaler_pick(SWSCALE)`+`be->open` once and swap `ctx->backend`, OR force eager zimg init at Open when `backend=auto` so the failure surfaces while VLC can still pick another filter. |
+| SYS-3 | no-action | S | `up_usm_pool_variant_name` is a process-global mutable `const char*` (`usm_pool_dispatch.c:85`) set by an `__attribute__((constructor))` and read per-filter-instance in Open's engagement log (`autoupscale.c:616`). It is the one piece of cross-instance mutable global state. | Not a live bug — write-once at dlopen (constructor completes before any plugin entry point), read-only after, value never changes. Recorded as the SOLE global-mutable-state item for completeness; becomes a data race only if a future variant re-selects at runtime. DEC-1 already rejected an accessor on tradeoff grounds, so keep as-is (treat as write-once). |
 
 ## decoupling
 
