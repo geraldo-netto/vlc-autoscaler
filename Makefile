@@ -12,6 +12,8 @@
 #   make clean
 #   make info        — print discovered toolchain paths
 
+.DEFAULT_GOAL := all
+
 PLUGIN := libautoupscale_plugin
 
 CC      ?= gcc
@@ -158,6 +160,7 @@ all: plugin
 
 # --------- plugin ---------
 plugin: $(BUILD)/$(PLUGIN).so
+	@chmod 0644 $<
 
 $(BUILD)/$(PLUGIN).so: $(PLUGIN_OBJS) | $(BUILD)
 	@if [ -z "$(VLC_LIBS)" ]; then \
@@ -179,6 +182,7 @@ $(BUILD)/$(PLUGIN).so: $(PLUGIN_OBJS) | $(BUILD)
 	@if [ -n "$(HAVE_ZIMG)" ]; then echo "  zimg backend:    ENABLED"; \
 	 else echo "  zimg backend:    disabled (libzimg-dev not found)"; fi
 	$(CC) $(PLUGIN_LDFLAGS) -o $@ $(PLUGIN_OBJS) $(PLUGIN_LIBS)
+	chmod 0644 $@
 
 $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CC) $(PLUGIN_CFLAGS) -c -o $@ $<
@@ -750,7 +754,7 @@ install: $(BUILD)/$(PLUGIN).so
 	@if [ -z "$(VLC_PLUGIN_DIR)" ]; then \
 		echo "ERROR: cannot determine VLC plugin directory"; exit 1; fi
 	$(INSTALL) -d $(DESTDIR)$(VLC_PLUGIN_DIR)
-	$(INSTALL) -m 0755 $(BUILD)/$(PLUGIN).so $(DESTDIR)$(VLC_PLUGIN_DIR)/
+	$(INSTALL) -m 0644 $(BUILD)/$(PLUGIN).so $(DESTDIR)$(VLC_PLUGIN_DIR)/
 	@echo "Installed to $(DESTDIR)$(VLC_PLUGIN_DIR)/$(PLUGIN).so"
 	@echo "If VLC doesn't pick it up, run:"
 	@echo "  vlc-cache-gen $(VLC_PLUGIN_BASE)"
