@@ -462,6 +462,8 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
 
     usm_pool_t *p = calloc(1, sizeof(*p));
     if (!p) return NULL;
+    /* calloc's zero bytes are not a portable _Atomic initialisation. */
+    atomic_init(&p->pending, 0);
     p->n_threads_pref = n_threads;
     p->n_threads      = n_threads;  /* updated by lazy_init if it shrinks */
     p->width          = width;

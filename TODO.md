@@ -49,7 +49,6 @@ cannot double-book a core, no O(n²) growth in the dispatch path.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| CON-1 | open | S | `src/usm_pool.c:224` — `pending` (`atomic_int`) is never initialized with `atomic_init`; the pool struct comes from `calloc` (usm_pool.c:463), and using a calloc-zeroed `_Atomic` object without `atomic_init` is formally unspecified in C11. | Benign on every real ABI, and first access is a store — hygiene/consistency defect. The zimg pool does it right (`atomic_init(&p->pending, 0)`, scaler_zimg.c:1006). One line in lazy init. |
 | CON-2 | open | S | `src/usm_pool.c:316-317` and `src/scaler_zimg.c:529-530` — `sem_post(all_done)` return unchecked in the last-finisher path; a failed post would hang the main thread in `up_sem_wait_nointr` forever. Wait-side failure is handled (pool poison + drain + join) but the post side is not symmetric. | `sem_post` on a valid unnamed semaphore can only fail with EOVERFLOW (needs SEM_VALUE_MAX posts) — protocol-symmetry nit, low severity. |
 
 Verified sound (checked explicitly): per-frame state publication ordered by go-lock;
