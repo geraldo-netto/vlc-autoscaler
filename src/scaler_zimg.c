@@ -118,15 +118,25 @@ static void pin_worker_to_cpu(pthread_t thread, int cpu)
 #endif
 }
 
-/* Bundled plane pointers + pitch + line counts for one side (src or dst).
- * Used both by the per-worker view (where lines_* are unused but cheap to
- * carry) and the priv-level scratch buffer geometry. */
+enum { PLANE_Y, PLANE_U, PLANE_V, PLANE_COUNT };
+
 typedef struct
 {
-    uint8_t *y, *u, *v;
-    int      pitch_y, pitch_c;
-    int      lines_y, lines_c;
-} plane_set_t;
+    uint8_t *data[PLANE_COUNT];
+    int      pitch[PLANE_COUNT];
+} plane_view_t;
+
+typedef struct
+{
+    int pitch[PLANE_COUNT];
+    int lines[PLANE_COUNT];
+} plane_layout_t;
+
+typedef struct
+{
+    uint8_t       *data[PLANE_COUNT];
+    plane_layout_t layout;
+} plane_buffer_t;
 
 /* Per-worker state. */
 typedef struct
@@ -135,7 +145,7 @@ typedef struct
      * alignment to 64 and forces sizeof to a 64-byte multiple, so an
      * aligned-allocated array keeps each worker on its own cache line(s).
      * Per dispatch the main thread writes per-worker fields (w->result reset;
-     * in zerocopy-dst mode also w->dst.{y,u,v,pitch_*}) and the worker writes
+     * in zerocopy-dst mode also w->dst.{data,pitch}) and the worker writes
      * w->result and w->seen_gen; without padding, two adjacent workers'
      * writes invalidate each other's lines on every frame. Same fix as
      * usm_worker_t in usm_pool.c. C11 disallows _Alignas on a typedef
@@ -190,7 +200,7 @@ typedef struct
 
     /* SCAL-3: true when this cell is a column tile. Then the graph reads the
      * full-width source (active_region crops columns, with halo) and writes a
-     * per-worker tile-sized dst scratch (this struct OWNS w->dst.{y,u,v}),
+     * per-worker tile-sized dst scratch (this struct owns w->tile_dst),
      * which worker_copy_out_tile() places into the VLC dst sub-rectangle. */
     bool               col_tiled;
 
@@ -205,16 +215,17 @@ typedef struct
     /* The buffers the zimg graph reads from / writes to. In a copy mode these
      * point at the pool scratch (set at Open); in a zero-copy mode they are
      * overwritten per frame with the VLC picture planes. */
-    plane_set_t        src;
-    plane_set_t        dst;
+    plane_view_t       src;
+    plane_view_t       dst;
+    plane_buffer_t     tile_dst;
 
     /* VLC picture planes for the CURRENT frame, set per dispatch (while the
      * worker is blocked on `go`, so no synchronization needed):
      *   vlc_src — copy_in source  (PERF-1: each worker copies its own stripe)
      *   vlc_dst — copy_out target (PERF-5: each worker copies its own stripe)
      * Unused on the zero-copy side (the graph touches the VLC picture). */
-    plane_set_t        vlc_src;
-    plane_set_t        vlc_dst;
+    plane_view_t       vlc_src;
+    plane_view_t       vlc_dst;
 
     int                result;        /* 0 OK, -1 fail */
 } stripe_worker_t;
@@ -251,8 +262,8 @@ typedef struct
      * (lazy init), pinned for the plugin lifetime after that. Open() is
      * kept cheap so VLC's chain solver can probe us without paying for 30
      * worker thread spawns and 6 MB of scratch per probe. */
-    plane_set_t       src;
-    plane_set_t       dst;
+    plane_buffer_t    src;
+    plane_buffer_t    dst;
     int               src_w, src_h, dst_w, dst_h;
 
     /* Lazy-init state. lazy_init_done is set by zimg_lazy_init() after
@@ -351,29 +362,30 @@ static inline void set_const_buf_plane(zimg_image_buffer_const *b, int idx,
  * [src_y_start, src_y_end) (chroma shifted by sub_h), so there is no
  * cross-worker contention and no barrier — the copy folds into the same
  * dispatch as the resample instead of running as a serial main-thread pre-pass.
- * CCN 1.
+ * CCN 2.
  */
 static void worker_copy_in_stripe(stripe_worker_t *w)
 {
     const int rows = w->src_y_end - w->src_y_start;
     up_copy_plane(
-        w->src.y     + (size_t)w->src_y_start * (size_t)w->src.pitch_y,
-        w->src.pitch_y,
-        w->vlc_src.y + (size_t)w->src_y_start * (size_t)w->vlc_src.pitch_y,
-        w->vlc_src.pitch_y,
+        w->src.data[PLANE_Y]
+            + (size_t)w->src_y_start * (size_t)w->src.pitch[PLANE_Y],
+        w->src.pitch[PLANE_Y],
+        w->vlc_src.data[PLANE_Y]
+            + (size_t)w->src_y_start * (size_t)w->vlc_src.pitch[PLANE_Y],
+        w->vlc_src.pitch[PLANE_Y],
         w->src_w, rows);
 
     const int cs    = w->src_y_start >> w->sub_h;
     const int crows = (w->src_y_end >> w->sub_h) - cs;
     const int cw    = up_chroma_dim(w->src_w, (int)w->sub_w);
-    up_copy_plane(
-        w->src.u     + (size_t)cs * (size_t)w->src.pitch_c, w->src.pitch_c,
-        w->vlc_src.u + (size_t)cs * (size_t)w->vlc_src.pitch_c, w->vlc_src.pitch_c,
-        cw, crows);
-    up_copy_plane(
-        w->src.v     + (size_t)cs * (size_t)w->src.pitch_c, w->src.pitch_c,
-        w->vlc_src.v + (size_t)cs * (size_t)w->vlc_src.pitch_c, w->vlc_src.pitch_c,
-        cw, crows);
+    for (int p = PLANE_U; p < PLANE_COUNT; p++) {
+        up_copy_plane(
+            w->src.data[p] + (size_t)cs * (size_t)w->src.pitch[p],
+            w->src.pitch[p],
+            w->vlc_src.data[p] + (size_t)cs * (size_t)w->vlc_src.pitch[p],
+            w->vlc_src.pitch[p], cw, crows);
+    }
 }
 
 /*
@@ -381,56 +393,59 @@ static void worker_copy_in_stripe(stripe_worker_t *w)
  * worker's destination stripe from the scratch dst buffer out to the VLC
  * destination picture, when dst zero-copy is OFF. Disjoint dst rows per
  * worker -> no barrier; the copy-out parallelizes instead of running as a
- * serial main-thread post-pass. CCN 1.
+ * serial main-thread post-pass. CCN 2.
  */
 static void worker_copy_out_stripe(stripe_worker_t *w)
 {
     const int rows = w->dst_y_end - w->dst_y_start;
     up_copy_plane(
-        w->vlc_dst.y + (size_t)w->dst_y_start * (size_t)w->vlc_dst.pitch_y,
-        w->vlc_dst.pitch_y,
-        w->dst.y     + (size_t)w->dst_y_start * (size_t)w->dst.pitch_y,
-        w->dst.pitch_y,
+        w->vlc_dst.data[PLANE_Y]
+            + (size_t)w->dst_y_start * (size_t)w->vlc_dst.pitch[PLANE_Y],
+        w->vlc_dst.pitch[PLANE_Y],
+        w->dst.data[PLANE_Y]
+            + (size_t)w->dst_y_start * (size_t)w->dst.pitch[PLANE_Y],
+        w->dst.pitch[PLANE_Y],
         w->dst_w, rows);
 
     const int cs    = w->dst_y_start >> w->sub_h;
     const int crows = (w->dst_y_end >> w->sub_h) - cs;
     const int cw    = up_chroma_dim(w->dst_w, (int)w->sub_w);
-    up_copy_plane(
-        w->vlc_dst.u + (size_t)cs * (size_t)w->vlc_dst.pitch_c, w->vlc_dst.pitch_c,
-        w->dst.u     + (size_t)cs * (size_t)w->dst.pitch_c, w->dst.pitch_c,
-        cw, crows);
-    up_copy_plane(
-        w->vlc_dst.v + (size_t)cs * (size_t)w->vlc_dst.pitch_c, w->vlc_dst.pitch_c,
-        w->dst.v     + (size_t)cs * (size_t)w->dst.pitch_c, w->dst.pitch_c,
-        cw, crows);
+    for (int p = PLANE_U; p < PLANE_COUNT; p++) {
+        up_copy_plane(
+            w->vlc_dst.data[p] + (size_t)cs * (size_t)w->vlc_dst.pitch[p],
+            w->vlc_dst.pitch[p],
+            w->dst.data[p] + (size_t)cs * (size_t)w->dst.pitch[p],
+            w->dst.pitch[p], cw, crows);
+    }
 }
 
 /*
  * SCAL-3: place a column tile's output. The graph wrote the tile-sized scratch
  * w->dst (origin 0,0; tile pitch); copy it into the VLC dst sub-rectangle at
- * [dst_x_start, dst_y_start). Disjoint cells -> no barrier. CCN 1.
+ * [dst_x_start, dst_y_start). Disjoint cells -> no barrier. CCN 2.
  */
 static void worker_copy_out_tile(stripe_worker_t *w)
 {
     const int rows = w->dst_y_end - w->dst_y_start;
     const int cx   = w->dst_x_start;
     up_copy_plane(
-        w->vlc_dst.y + (size_t)w->dst_y_start * (size_t)w->vlc_dst.pitch_y + cx,
-        w->vlc_dst.pitch_y,
-        w->dst.y, w->dst.pitch_y,
+        w->vlc_dst.data[PLANE_Y]
+            + (size_t)w->dst_y_start * (size_t)w->vlc_dst.pitch[PLANE_Y] + cx,
+        w->vlc_dst.pitch[PLANE_Y],
+        w->dst.data[PLANE_Y], w->dst.pitch[PLANE_Y],
         w->dst_w, rows);
 
     const int cs    = w->dst_y_start >> w->sub_h;
     const int crows = (w->dst_y_end >> w->sub_h) - cs;
     const int cw    = up_chroma_dim(w->dst_w, (int)w->sub_w);
     const int cxc   = w->dst_x_start >> w->sub_w;
-    up_copy_plane(
-        w->vlc_dst.u + (size_t)cs * (size_t)w->vlc_dst.pitch_c + cxc, w->vlc_dst.pitch_c,
-        w->dst.u, w->dst.pitch_c, cw, crows);
-    up_copy_plane(
-        w->vlc_dst.v + (size_t)cs * (size_t)w->vlc_dst.pitch_c + cxc, w->vlc_dst.pitch_c,
-        w->dst.v, w->dst.pitch_c, cw, crows);
+    for (int p = PLANE_U; p < PLANE_COUNT; p++) {
+        up_copy_plane(
+            w->vlc_dst.data[p]
+                + (size_t)cs * (size_t)w->vlc_dst.pitch[p] + cxc,
+            w->vlc_dst.pitch[p],
+            w->dst.data[p], w->dst.pitch[p], cw, crows);
+    }
 }
 
 /* Place this worker's resampled output: a column tile copies its private dst
@@ -489,17 +504,13 @@ static void *worker_main(void *arg)
         const int dst_off_y = w->col_tiled ? 0 : w->dst_y_start;
         const int dst_off_c = w->col_tiled ? 0 : (w->dst_y_start >> w->sub_h);
 
-        const uint8_t *src_planes[3] = { w->src.y, w->src.u, w->src.v };
-        uint8_t       *dst_planes[3] = { w->dst.y, w->dst.u, w->dst.v };
-        const int src_strides[3] = { w->src.pitch_y, w->src.pitch_c, w->src.pitch_c };
-        const int dst_strides[3] = { w->dst.pitch_y, w->dst.pitch_c, w->dst.pitch_c };
         const int src_offs[3]    = { src_off_y, src_off_c, src_off_c };
         const int dst_offs[3]    = { dst_off_y, dst_off_c, dst_off_c };
         for (int p = 0; p < 3; p++) {
             set_const_buf_plane(&sb, p,
-                                src_planes[p], src_strides[p], src_offs[p]);
+                                w->src.data[p], w->src.pitch[p], src_offs[p]);
             set_buf_plane(&db, p,
-                          dst_planes[p], dst_strides[p], dst_offs[p]);
+                          w->dst.data[p], w->dst.pitch[p], dst_offs[p]);
         }
 
         zimg_error_code_e rc = zimg_filter_graph_process(
@@ -611,18 +622,59 @@ static inline size_t plane_alloc_bytes(int lines, int pitch)
     return l * pp;
 }
 
-/* Allocate one plane_set_t's three plane buffers. Returns 0 on success,
- * -1 if any size computation overflows or any aligned_alloc fails. CCN 4. */
-static int alloc_one_plane_set(plane_set_t *ps)
+static plane_view_t plane_buffer_view(const plane_buffer_t *buffer)
 {
-    const size_t y_bytes = plane_alloc_bytes(ps->lines_y, ps->pitch_y);
-    const size_t c_bytes = plane_alloc_bytes(ps->lines_c, ps->pitch_c);
-    if (y_bytes == 0 || c_bytes == 0) return -1;
+    plane_view_t view = {0};
+    for (int p = 0; p < PLANE_COUNT; p++) {
+        view.data[p] = buffer->data[p];
+        view.pitch[p] = buffer->layout.pitch[p];
+    }
+    return view;
+}
 
-    ps->y = aligned_alloc(UP_PITCH_ALIGN, y_bytes);
-    ps->u = aligned_alloc(UP_PITCH_ALIGN, c_bytes);
-    ps->v = aligned_alloc(UP_PITCH_ALIGN, c_bytes);
-    if (!ps->y || !ps->u || !ps->v) return -1;
+static void free_plane_buffer(plane_buffer_t *buffer)
+{
+    for (int p = 0; p < PLANE_COUNT; p++) {
+        free(buffer->data[p]);
+        buffer->data[p] = NULL;
+    }
+}
+
+static void init_plane_layout(plane_layout_t *layout, int width, int height,
+                              unsigned sub_w, unsigned sub_h)
+{
+    layout->pitch[PLANE_Y] = up_plane_pitch(width, 0);
+    layout->lines[PLANE_Y] = up_plane_lines(height, 0);
+    for (int p = PLANE_U; p < PLANE_COUNT; p++) {
+        layout->pitch[p] = up_plane_pitch(width, sub_w);
+        layout->lines[p] = up_plane_lines(height, sub_h);
+    }
+}
+
+static size_t plane_buffer_bytes(const plane_buffer_t *buffer)
+{
+    size_t bytes = 0;
+    for (int p = 0; p < PLANE_COUNT; p++) {
+        const size_t plane_bytes = plane_alloc_bytes(buffer->layout.lines[p],
+                                                      buffer->layout.pitch[p]);
+        if (plane_bytes > SIZE_MAX - bytes) return SIZE_MAX;
+        bytes += plane_bytes;
+    }
+    return bytes;
+}
+
+/* Allocate one layout's three plane buffers. Partial state remains owned by
+ * the caller and is released by free_plane_buffer. CCN 4. */
+static int alloc_plane_buffer(plane_buffer_t *buffer)
+{
+    if (plane_buffer_bytes(buffer) == SIZE_MAX) return -1;
+    for (int p = 0; p < PLANE_COUNT; p++) {
+        size_t bytes = plane_alloc_bytes(buffer->layout.lines[p],
+                                         buffer->layout.pitch[p]);
+        if (bytes == 0) return -1;
+        buffer->data[p] = aligned_alloc(UP_PITCH_ALIGN, bytes);
+        if (!buffer->data[p]) return -1;
+    }
     return 0;
 }
 
@@ -631,10 +683,10 @@ static int alloc_scratch_buffers(zimg_priv_t *p)
     /* Each side's scratch is allocated only when that side COPIES. With
      * zero-copy on a side, the graph reads/writes the VLC picture directly and
      * the scratch stays NULL (set per-frame from the VLC picture instead). */
-    if (!p->src_zerocopy && alloc_one_plane_set(&p->src) != 0) return -1;
+    if (!p->src_zerocopy && alloc_plane_buffer(&p->src) != 0) return -1;
     /* Column tiling gives each worker its own tile dst scratch, so the shared
      * priv-level dst scratch isn't used. */
-    if (!p->dst_zerocopy && !p->col_tiled && alloc_one_plane_set(&p->dst) != 0)
+    if (!p->dst_zerocopy && !p->col_tiled && alloc_plane_buffer(&p->dst) != 0)
         return -1;
     return 0;
 }
@@ -652,14 +704,8 @@ static void init_priv_geometry(zimg_priv_t *p, const scaler_ctx_t *ctx,
     p->src_w = ctx->src_w; p->src_h = ctx->src_h;
     p->dst_w = ctx->dst_w; p->dst_h = ctx->dst_h;
 
-    p->src.pitch_y = up_plane_pitch(ctx->src_w, 0);
-    p->src.pitch_c = up_plane_pitch(ctx->src_w, sub_w);
-    p->dst.pitch_y = up_plane_pitch(ctx->dst_w, 0);
-    p->dst.pitch_c = up_plane_pitch(ctx->dst_w, sub_w);
-    p->src.lines_y = up_plane_lines(ctx->src_h, 0);
-    p->src.lines_c = up_plane_lines(ctx->src_h, sub_h);
-    p->dst.lines_y = up_plane_lines(ctx->dst_h, 0);
-    p->dst.lines_c = up_plane_lines(ctx->dst_h, sub_h);
+    init_plane_layout(&p->src.layout, ctx->src_w, ctx->src_h, sub_w, sub_h);
+    init_plane_layout(&p->dst.layout, ctx->dst_w, ctx->dst_h, sub_w, sub_h);
 }
 
 /*
@@ -674,11 +720,11 @@ static void init_priv_geometry(zimg_priv_t *p, const scaler_ctx_t *ctx,
 static int alloc_tile_dst(stripe_worker_t *w, const zimg_priv_t *p,
                           int dst_stripe_h)
 {
-    w->dst.pitch_y = up_plane_pitch(w->dst_w, 0);
-    w->dst.pitch_c = up_plane_pitch(w->dst_w, p->sub_w);
-    w->dst.lines_y = up_plane_lines(dst_stripe_h, 0);
-    w->dst.lines_c = up_plane_lines(dst_stripe_h, p->sub_h);
-    return alloc_one_plane_set(&w->dst);
+    init_plane_layout(&w->tile_dst.layout, w->dst_w, dst_stripe_h,
+                      p->sub_w, p->sub_h);
+    if (alloc_plane_buffer(&w->tile_dst) != 0) return -1;
+    w->dst = plane_buffer_view(&w->tile_dst);
+    return 0;
 }
 
 /* Build this cell's zimg graph (full-width source + active_region column crop;
@@ -737,7 +783,7 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
     w->pending      = &p->pending;
     w->all_done     = &p->all_done;
     w->worker_id    = worker_id;
-    w->src = p->src;
+    w->src = plane_buffer_view(&p->src);
 
     /* dst buffer: a column tile writes its own tile-sized scratch (owned);
      * otherwise it shares the priv-level dst scratch (or VLC dst in zerocopy,
@@ -745,7 +791,7 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
     if (w->col_tiled) {
         if (alloc_tile_dst(w, p, dst_y_end - dst_y_start) != 0) return -1;
     } else {
-        w->dst = p->dst;
+        w->dst = plane_buffer_view(&p->dst);
     }
 
     if (build_worker_graph_and_tmp(w, p, src_y_end - src_y_start,
@@ -794,10 +840,7 @@ static void release_worker_resources(stripe_worker_t *w, bool had_thread)
     free(w->tmp); w->tmp = NULL;
     /* SCAL-3: a column tile owns its dst scratch; the shared (non-tiled) dst
      * is owned by the priv and freed in zimg_close. */
-    if (w->col_tiled) {
-        free(w->dst.y); free(w->dst.u); free(w->dst.v);
-        w->dst.y = w->dst.u = w->dst.v = NULL;
-    }
+    if (w->col_tiled) free_plane_buffer(&w->tile_dst);
 }
 
 /*
@@ -907,13 +950,10 @@ static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
 {
     if (!log_obj) return;
     /* Only scratch that is actually allocated (the copy side) counts. */
-    size_t src_mb = p->src_zerocopy ? 0
-        : (((size_t)p->src.lines_y * p->src.pitch_y
-          + 2 * (size_t)p->src.lines_c * p->src.pitch_c) >> 20);
+    size_t src_mb = p->src_zerocopy ? 0 : (plane_buffer_bytes(&p->src) >> 20);
     /* Column tiling uses per-worker tile dst scratch, not the shared p->dst. */
     size_t dst_mb = (p->dst_zerocopy || p->col_tiled) ? 0
-        : (((size_t)p->dst.lines_y * p->dst.pitch_y
-          + 2 * (size_t)p->dst.lines_c * p->dst.pitch_c) >> 20);
+        : (plane_buffer_bytes(&p->dst) >> 20);
     msg_Info(log_obj,
              "zimg: %d worker thread%s (grid %dx%d), %dx%d -> %dx%d, "
              "scratch %zu MB (src %s, dst %s)",
@@ -1094,7 +1134,7 @@ static int zimg_open(scaler_ctx_t *ctx)
 
 /*
  * Per-frame: copy one VLC picture's plane pointers + pitches into the
- * `plane_set_t` member of every worker selected by `member_off` (an offsetof
+ * `plane_view_t` member of every worker selected by `member_off` (an offsetof
  * into stripe_worker_t — one of src / dst / vlc_src / vlc_dst). Drives all
  * four per-frame pointer-sets through one loop (DUP-7/PERF-6):
  *   src      ← VLC src  when src zero-copy (graph reads VLC src)
@@ -1112,13 +1152,14 @@ static void point_workers_planes(zimg_priv_t *p, const picture_t *pic,
     const int iu = up_zimg_plane_idx(1, swap);
     const int iv = up_zimg_plane_idx(2, swap);
     for (int i = 0; i < p->n_threads; i++) {
-        plane_set_t *ps =
-            (plane_set_t *)((char *)&p->workers[i] + member_off);
-        ps->y       = pic->p[iy].p_pixels;
-        ps->u       = pic->p[iu].p_pixels;
-        ps->v       = pic->p[iv].p_pixels;
-        ps->pitch_y = pic->p[iy].i_pitch;
-        ps->pitch_c = pic->p[iu].i_pitch;
+        plane_view_t *view =
+            (plane_view_t *)((char *)&p->workers[i] + member_off);
+        view->data[PLANE_Y] = pic->p[iy].p_pixels;
+        view->data[PLANE_U] = pic->p[iu].p_pixels;
+        view->data[PLANE_V] = pic->p[iv].p_pixels;
+        view->pitch[PLANE_Y] = pic->p[iy].i_pitch;
+        view->pitch[PLANE_U] = pic->p[iu].i_pitch;
+        view->pitch[PLANE_V] = pic->p[iv].i_pitch;
     }
 }
 
@@ -1257,8 +1298,8 @@ static void zimg_close(scaler_ctx_t *ctx)
     }
     if (p->all_done_inited) sem_destroy(&p->all_done);
 
-    free(p->src.y); free(p->src.u); free(p->src.v);
-    free(p->dst.y); free(p->dst.u); free(p->dst.v);
+    free_plane_buffer(&p->src);
+    free_plane_buffer(&p->dst);
     free(p);
     ctx->priv = NULL;
 }

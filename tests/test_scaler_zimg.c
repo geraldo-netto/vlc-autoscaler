@@ -114,6 +114,50 @@ static int run_zimg(const struct zcfg *c, int src_zc, int dst_zc,
     return rc;
 }
 
+static int restride_plane(zt_pic_t *pic, int plane, int extra_pitch)
+{
+    if (plane < 0 || plane >= pic->pic.i_planes || extra_pitch < 0) return -1;
+    plane_t *p = &pic->pic.p[plane];
+    const int pitch = zt_align_up(p->i_visible_pitch + extra_pitch);
+    const size_t bytes = (size_t)pitch * (size_t)p->i_lines;
+    uint8_t *data = aligned_alloc(ZT_ALIGN, bytes);
+    if (!data) return -1;
+    free(pic->buf[plane]);
+    pic->buf[plane] = data;
+    p->p_pixels = data;
+    p->i_pitch = pitch;
+    return 0;
+}
+
+/* Exercise a legal picture whose second chroma plane has a distinct stride.
+ * Returns process() status or -2 on setup/open failure. CCN 6. */
+static int run_zimg_asymmetric_pitch(const struct zcfg *c, int src_zc,
+                                     int dst_zc, uint32_t seed, zt_pic_t *out)
+{
+    zt_pic_t src = {0};
+    if (zt_pic_alloc(&src, c->chroma, c->sw, c->sh) != 0) return -2;
+    if (zt_pic_alloc(out, c->chroma, c->dw, c->dh) != 0
+            || restride_plane(&src, 2, 64) != 0
+            || restride_plane(out, 2, 128) != 0) {
+        zt_pic_free(&src);
+        return -2;
+    }
+    zt_pic_fill(&src, seed);
+    zt_pic_memset(out, 0xA5);
+
+    scaler_ctx_t ctx;
+    zt_ctx_init(&ctx, c->chroma, c->sw, c->sh, c->dw, c->dh,
+                c->threads, dst_zc);
+    ctx.zimg.src_zerocopy = src_zc;
+    int rc = -2;
+    if (ctx.backend->open(&ctx) == 0) {
+        rc = ctx.backend->process(&ctx, &src.pic, &out->pic);
+        ctx.backend->close(&ctx);
+    }
+    zt_pic_free(&src);
+    return rc;
+}
+
 /* Count differing bytes in the visible region of two same-geometry pics. */
 static size_t cmp_visible(const zt_pic_t *a, const zt_pic_t *b)
 {
@@ -245,6 +289,28 @@ static void test_src_zerocopy_matches_copy(void)
         zt_pic_free(&a);
         zt_pic_free(&b);
         zt_pic_free(&c);
+    }
+    END();
+}
+
+static void test_asymmetric_chroma_pitches(void)
+{
+    BEGIN("independent U/V strides work through graph and copy paths");
+    const struct zcfg *configs[] = { &CFGS[1], &CFGS[4] };
+    const int modes[][2] = { { 0, 1 }, { 1, 0 } };
+    for (size_t c = 0; c < sizeof configs / sizeof configs[0]; c++) {
+        for (size_t i = 0; i < sizeof modes / sizeof modes[0]; i++) {
+            zt_pic_t expected = {0}, actual = {0};
+            int expected_rc = run_zimg(configs[c], modes[i][0], modes[i][1],
+                                       0xA5, 0xA5C440u, &expected);
+            int actual_rc = run_zimg_asymmetric_pitch(
+                configs[c], modes[i][0], modes[i][1], 0xA5C440u, &actual);
+            CHECK(expected_rc == 0 && actual_rc == 0);
+            if (expected_rc == 0 && actual_rc == 0)
+                CHECK(same_cfg(configs[c], &expected, &actual));
+            zt_pic_free(&expected);
+            zt_pic_free(&actual);
+        }
     }
     END();
 }
@@ -543,6 +609,7 @@ int main(void)
     test_determinism();
     test_zerocopy_matches_copyout();
     test_src_zerocopy_matches_copy();
+    test_asymmetric_chroma_pitches();
     test_supports();
     test_all_algos();
     test_open_rejects_unsupported();
