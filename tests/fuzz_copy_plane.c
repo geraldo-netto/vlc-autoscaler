@@ -153,7 +153,8 @@ static int run_one(const uint8_t *data, size_t size)
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
-    return run_one(data, size) ? 1 : 0;
+    if (run_one(data, size)) abort();
+    return 0;
 }
 
 #ifdef FUZZ_MAIN
