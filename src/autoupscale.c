@@ -503,6 +503,17 @@ static int OpenScalerOrFallback( filter_t *p_filter, filter_sys_t *p_sys )
     return -1;
 }
 
+/* var_InheritInteger returns int64_t while every AutoUpscale tunable is an
+ * int. VLC range-clamps declared options, but narrow explicitly and
+ * saturate so an out-of-range value can never truncate (sonar 64->32). */
+static int InheritIntSat( filter_t *p_filter, const char *name )
+{
+    int64_t v = var_InheritInteger( p_filter, name );
+    if( v > INT_MAX ) return INT_MAX;
+    if( v < INT_MIN ) return INT_MIN;
+    return (int)v;
+}
+
 /* Populate the scaler_ctx_t from filter parameters and VLC vars. CCN 2. */
 static void ConfigureScaler( scaler_ctx_t *sc,
                              const scaler_backend_t *be,
@@ -511,7 +522,7 @@ static void ConfigureScaler( scaler_ctx_t *sc,
                              up_dims_t src, up_dims_t target )
 {
     vlc_object_t *p_this = (vlc_object_t *)p_filter;
-    int threads = var_InheritInteger( p_filter, CFG_PREFIX "threads" );
+    int threads = InheritIntSat( p_filter, CFG_PREFIX "threads" );
     if( threads < 0 ) threads = 0;
     if( threads > UP_THREADS_MAX ) threads = UP_THREADS_MAX;
 
@@ -526,12 +537,12 @@ static void ConfigureScaler( scaler_ctx_t *sc,
     sc->dst_h        = target.height;
     sc->algo         = algo;
     sc->threads_pref = threads;
-    sc->pin_cpus     = var_InheritInteger( p_filter,
+    sc->pin_cpus     = InheritIntSat( p_filter,
         CFG_PREFIX "pin-threads" ) ? 1 : 0;
-    sc->zimg.min_stripe_lines = var_InheritInteger( p_filter,
+    sc->zimg.min_stripe_lines = InheritIntSat( p_filter,
         CFG_PREFIX "zimg-stripe-lines" );
-    sc->zimg.zerocopy = var_InheritInteger( p_filter, CFG_PREFIX "zerocopy-dst" );
-    sc->zimg.src_zerocopy = var_InheritInteger( p_filter,
+    sc->zimg.zerocopy = InheritIntSat( p_filter, CFG_PREFIX "zerocopy-dst" );
+    sc->zimg.src_zerocopy = InheritIntSat( p_filter,
         CFG_PREFIX "zerocopy-src" );
     sc->chroma       = chroma;
     sc->log_obj      = p_this;
@@ -553,7 +564,7 @@ static void InitUsmPool( filter_sys_t *p_sys, filter_t *p_filter,
         return;
 
     int n_threads = up_threads_decide( p_sys->scaler.threads_pref, cores );
-    int stripe_min = var_InheritInteger( p_filter,
+    int stripe_min = InheritIntSat( p_filter,
                                          CFG_PREFIX "usm-stripe-min-rows" );
     p_sys->usm_pool = up_usm_pool_create( n_threads,
                                           target.width, target.height,
@@ -571,7 +582,7 @@ static void InitUsmPool( filter_sys_t *p_sys, filter_t *p_filter,
 static void InitProbeAndPerfmon( filter_sys_t *p_sys, filter_t *p_filter,
                                  vlc_fourcc_t chroma, int algo, int usm_pct )
 {
-    const int target_fps = var_InheritInteger( p_filter,
+    const int target_fps = InheritIntSat( p_filter,
                                                CFG_PREFIX "target-fps" );
     up_perfmon_init( &p_sys->perfmon, target_fps );
     p_sys->target_fps = target_fps;
@@ -582,13 +593,13 @@ static void InitProbeAndPerfmon( filter_sys_t *p_sys, filter_t *p_filter,
      * readable luma plane. For opaque and packed RGB chromas the probe stays
      * disabled because they are GPU-managed or have no discrete luma plane.
      * The accumulator is already zeroed by calloc(). */
-    p_sys->usm_sharp_threshold = var_InheritInteger( p_filter,
+    p_sys->usm_sharp_threshold = InheritIntSat( p_filter,
         CFG_PREFIX "usm-sharp-threshold" );
 
     /* Metric collection also runs with content-probe=0 when the USM
      * sharpness gate needs it — that gate changes pixel output, so it
      * must not silently die with the diagnostic-only probe option. */
-    p_sys->probe_advice  = var_InheritInteger( p_filter,
+    p_sys->probe_advice  = InheritIntSat( p_filter,
                                                CFG_PREFIX "content-probe" ) != 0;
     p_sys->probe_enabled = ( p_sys->probe_advice
                           || ( p_sys->usm_sharp_threshold > 0 && usm_pct > 0 ) )
@@ -647,11 +658,11 @@ static int Open( vlc_object_t *p_this )
 
     EvenAlignSrcDims( p_filter->fmt_in.video.i_chroma, &src_w, &src_h );
 
-    int skip_above   = var_InheritInteger( p_filter, CFG_PREFIX "skip-above" );
-    int preset       = var_InheritInteger( p_filter, CFG_PREFIX "target" );
-    int algo         = var_InheritInteger( p_filter, CFG_PREFIX "algo" );
-    int backend_pref = var_InheritInteger( p_filter, CFG_PREFIX "backend" );
-    int usm_pct      = var_InheritInteger( p_filter, CFG_PREFIX "usm" );
+    int skip_above   = InheritIntSat( p_filter, CFG_PREFIX "skip-above" );
+    int preset       = InheritIntSat( p_filter, CFG_PREFIX "target" );
+    int algo         = InheritIntSat( p_filter, CFG_PREFIX "algo" );
+    int backend_pref = InheritIntSat( p_filter, CFG_PREFIX "backend" );
+    int usm_pct      = InheritIntSat( p_filter, CFG_PREFIX "usm" );
 
     ClampConfig( &preset, &algo, &backend_pref, &usm_pct, &skip_above );
 
