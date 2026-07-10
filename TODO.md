@@ -80,7 +80,6 @@ under "Audit picks deliberately rejected".
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
 | ARCH-4 | keep | S | `plane_set_t` on `stripe_worker_t` carries three roles: scratch geometry (`.lines_*`, priv-level only), the worker's scratch view (`src`/`dst`), and per-frame VLC picture pointers (`vlc_src`/`vlc_dst`) | DECISION (2026-05-30): keep. A `plane_geom_t`{pitch,lines} / `plane_ptrs_t`{y,u,v,pitch} split duplicates `pitch` across both types and ripples through `point_workers_planes`, the copy helpers, scratch alloc, and every worker field — for an overload whose only cost is two unused `int`s (`lines_*`) carried in the worker views. Net more types/code, marginal clarity. Per AGENTS.md (SOLID only when it helps). Revisit if a third consumer with different geometry needs appears. |
-| ARCH-7 | open | S | `UP_PROBE_WINDOW_FRAMES` (60) lives in `autoupscale.c:336-339` while its coupled counterpart `UP_PROBE_MIN_FRAMES` (10) and all other probe thresholds live in `content_probe.h:256-259`. If the window were ever shrunk below MIN_FRAMES, `up_should_bypass_for_content` would silently never fire — and that coupling is invisible from autoupscale.c. | Fix: move the #define next to UP_PROBE_MIN_FRAMES in content_probe.h with a one-line "must be >= MIN_FRAMES" note (or a `_Static_assert`). One-line move; puts constants that must stay consistent side by side. |
 
 ## system design
 

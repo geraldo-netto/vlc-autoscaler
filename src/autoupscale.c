@@ -333,11 +333,6 @@ struct filter_sys_t
     int64_t            next_stats_ns;
 };
 
-/* How many frames to observe before deciding. At 30fps this is 2 seconds
- * — enough for a few I-frames and a couple of GOPs to characterize the
- * encoder's quality across motion changes. */
-#define UP_PROBE_WINDOW_FRAMES 60
-
 /*****************************************************************************
  * Helpers
  *****************************************************************************/

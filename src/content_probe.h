@@ -258,6 +258,14 @@ static inline void up_probe_observe(up_probe_accum_t *a,
 #define UP_PROBE_MIN_FRAMES               10   /* need this many frames */
 #define UP_PROBE_MIN_SAMPLES_PER_KIND  20000   /* need this many samples */
 
+/* How many frames the caller observes before deciding. At 30fps this is
+ * 2 seconds — enough for a few I-frames and a couple of GOPs to
+ * characterize the encoder's quality across motion changes. Must stay
+ * >= UP_PROBE_MIN_FRAMES or the bypass advisory could never fire. */
+#define UP_PROBE_WINDOW_FRAMES 60
+_Static_assert(UP_PROBE_WINDOW_FRAMES >= UP_PROBE_MIN_FRAMES,
+               "probe window shorter than the frames the verdict needs");
+
 /* Default sharpness cutoff (sum-of-squared-laplacians per sample, i.e.
  * the same units as `lap_sum / lap_samples`). Above this value the
  * source is considered heavily textured/grainy and USM is skipped to
