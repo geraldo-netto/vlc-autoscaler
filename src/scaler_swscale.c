@@ -93,8 +93,7 @@ static int sws_open( scaler_ctx_t *ctx )
 }
 
 /* libswscale's YUV420P descriptor expects semantic Y/U/V, while VLC stores
- * YV12 physically as Y/V/U. Other formats keep their physical plane order.
- * CCN 3. */
+ * YV12 physically as Y/V/U. Other formats keep their physical plane order. */
 static int sws_plane_index( vlc_fourcc_t chroma, int plane )
 {
     if( chroma != VLC_CODEC_YV12 || plane == 0 ) return plane;

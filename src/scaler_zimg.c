@@ -108,7 +108,7 @@ _Static_assert(UP_TILE_THREADS_MAX == UP_THREADS_MAX,
  * (--autoupscale-pin-threads), Linux only — isolates the non-portable
  * pthread_setaffinity_np here. Failure is ignored: pinning is an optimization,
  * never a correctness requirement, and can fail benignly (CPU offline, cgroup
- * cpuset, container limits). No-op on non-Linux. CCN 1. */
+ * cpuset, container limits). No-op on non-Linux. */
 static void pin_worker_to_cpu(pthread_t thread, int cpu)
 {
 #if defined(__linux__)
@@ -341,7 +341,7 @@ static zimg_resample_filter_e AlgoToZimg(int algo)
 
 /* ---------- worker thread ---------- */
 
-/* Internal: fill one plane of a writable zimg image buffer. CCN 1. */
+/* Internal: fill one plane of a writable zimg image buffer. */
 static inline void set_buf_plane(zimg_image_buffer *b, int idx,
                                  void *data, int stride,
                                  int offset_rows)
@@ -352,7 +352,7 @@ static inline void set_buf_plane(zimg_image_buffer *b, int idx,
     b->plane[idx].mask   = ZIMG_BUFFER_MAX;
 }
 
-/* zimg's const and writable descriptors are distinct tagged types. CCN 1. */
+/* zimg's const and writable descriptors are distinct tagged types. */
 static inline void set_const_buf_plane(zimg_image_buffer_const *b, int idx,
                                        const void *data, int stride,
                                        int offset_rows)
@@ -369,7 +369,6 @@ static inline void set_const_buf_plane(zimg_image_buffer_const *b, int idx,
  * [src_y_start, src_y_end) (chroma shifted by sub_h), so there is no
  * cross-worker contention and no barrier — the copy folds into the same
  * dispatch as the resample instead of running as a serial main-thread pre-pass.
- * CCN 2.
  */
 static void worker_copy_in_stripe(stripe_worker_t *w)
 {
@@ -400,7 +399,7 @@ static void worker_copy_in_stripe(stripe_worker_t *w)
  * worker's destination stripe from the scratch dst buffer out to the VLC
  * destination picture, when dst zero-copy is OFF. Disjoint dst rows per
  * worker -> no barrier; the copy-out parallelizes instead of running as a
- * serial main-thread post-pass. CCN 2.
+ * serial main-thread post-pass.
  */
 static void worker_copy_out_stripe(stripe_worker_t *w)
 {
@@ -429,7 +428,7 @@ static void worker_copy_out_stripe(stripe_worker_t *w)
 /*
  * SCAL-3: place a column tile's output. The graph wrote the tile-sized scratch
  * w->dst (origin 0,0; tile pitch); copy it into the VLC dst sub-rectangle at
- * [dst_x_start, dst_y_start). Disjoint cells -> no barrier. CCN 2.
+ * [dst_x_start, dst_y_start). Disjoint cells -> no barrier.
  */
 static void worker_copy_out_tile(stripe_worker_t *w)
 {
@@ -457,7 +456,7 @@ static void worker_copy_out_tile(stripe_worker_t *w)
 
 /* Place this worker's resampled output: a column tile copies its private dst
  * scratch into the VLC dst sub-rect; a plain stripe copies out when dst is not
- * zero-copy (else the graph already wrote VLC's picture). CCN 2. */
+ * zero-copy (else the graph already wrote VLC's picture). */
 static void worker_emit_output(stripe_worker_t *w)
 {
     if (w->col_tiled)     worker_copy_out_tile(w);    /* SCAL-3 */
@@ -618,7 +617,7 @@ static void zimg_close(scaler_ctx_t *ctx);
  * shared destination buffer.
  *
  * Returns 0 on success, -1 on any allocation failure. Partial state is
- * freed by zimg_close via priv->src.* / priv->dst.*. CCN 4.
+ * freed by zimg_close via priv->src.* / priv->dst.*.
  */
 /*
  * Compute `lines * pitch` as size_t with overflow check. Returns 0 if
@@ -678,7 +677,7 @@ static size_t plane_buffer_bytes(const plane_buffer_t *buffer)
 }
 
 /* Allocate one layout's three plane buffers. Partial state remains owned by
- * the caller and is released by free_plane_buffer. CCN 4. */
+ * the caller and is released by free_plane_buffer. */
 static int alloc_plane_buffer(plane_buffer_t *buffer)
 {
     if (plane_buffer_bytes(buffer) == SIZE_MAX) return -1;
@@ -707,7 +706,7 @@ static int alloc_scratch_buffers(zimg_priv_t *p)
 
 /*
  * Fill the priv struct's geometry/pitch fields from the scaler context
- * and chroma subsampling. Pure assignment; no allocation. CCN 1.
+ * and chroma subsampling. Pure assignment; no allocation.
  */
 static void init_priv_geometry(zimg_priv_t *p, const scaler_ctx_t *ctx,
                                unsigned sub_w, unsigned sub_h, int swap)
@@ -726,11 +725,11 @@ static void init_priv_geometry(zimg_priv_t *p, const scaler_ctx_t *ctx,
  * Set up one grid worker: stash geometry, build its filter graph, allocate its
  * temporary buffer, connect it to the shared dispatch gate, and spawn the
  * thread. Returns 0 on success, -1 on any failure (caller handles
- * cleanup of partial state via the worker's graph/tmp fields). CCN 5.
+ * cleanup of partial state via the worker's graph/tmp fields).
  */
 /* SCAL-3: allocate this column-tile worker's own dst scratch (tile_dst_w x
  * dst_stripe_h). The graph writes here; worker_copy_out_tile places it into
- * the VLC dst sub-rect. Returns 0 on success, -1 on alloc failure. CCN 1. */
+ * the VLC dst sub-rect. Returns 0 on success, -1 on alloc failure. */
 static int alloc_tile_dst(stripe_worker_t *w, const zimg_priv_t *p,
                           int dst_stripe_h)
 {
@@ -743,7 +742,7 @@ static int alloc_tile_dst(stripe_worker_t *w, const zimg_priv_t *p,
 
 /* Build this cell's zimg graph (full-width source + active_region column crop;
  * tile-width dst) and allocate its tmp buffer. Returns 0, or -1 on build/alloc
- * failure (caller releases via release_worker_resources). CCN 4. */
+ * failure (caller releases via release_worker_resources). */
 static int build_worker_graph_and_tmp(stripe_worker_t *w, const zimg_priv_t *p,
                                       const cell_bounds_t *c,
                                       unsigned sub_w, unsigned sub_h,
@@ -881,7 +880,6 @@ static void zimg_stop_workers(zimg_priv_t *p)
 /*
  * Tear down all `n` constructed workers and zero their slots so they can
  * be re-initialized cleanly on retry. Used after a partial construction.
- * CCN 2 (was CCN 5).
  */
 static void teardown_constructed_workers(zimg_priv_t *p, int n)
 {
@@ -949,7 +947,7 @@ static void construct_workers(zimg_priv_t *p,
     *out_constructed = p->n_threads;
 }
 
-/* Diagnostic log emitted once after successful lazy initialization. CCN 2. */
+/* Diagnostic log emitted once after successful lazy initialization. */
 static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
 {
     if (!log_obj) return;
@@ -1043,7 +1041,7 @@ static int zimg_lazy_init(zimg_priv_t *p)
  * safety fallback the option longtext sells as the escape hatch for
  * VLC-pool instability. The user asked for the safe path: give it to
  * them — recompute a rows-only grid (fewer workers on wide/short frames)
- * instead of forcing zero-copy reads behind their back. CCN 4. */
+ * instead of forcing zero-copy reads behind their back. */
 static void zimg_honor_copy_in_grid(const scaler_ctx_t *ctx, int n_threads,
                                     int stripe_min_lines,
                                     int *rows, int *cols)
@@ -1141,7 +1139,7 @@ static int zimg_open(scaler_ctx_t *ctx)
  *   dst      ← VLC dst  when dst zero-copy  (graph writes VLC dst)
  *   vlc_dst  ← VLC dst  when copy-out       (worker copies scratch -> VLC dst)
  * Workers are blocked on `go` while this runs, so the writes need no
- * synchronization. YV12 U/V are swapped via the plane-index map. CCN 2.
+ * synchronization. YV12 U/V are swapped via the plane-index map.
  */
 static void point_workers_planes(zimg_priv_t *p,
                                   const up_picture_view_t *pic,
@@ -1207,7 +1205,7 @@ static scaler_process_status_t zimg_dispatch_and_wait(zimg_priv_t *p)
  * Lazy init on the first valid frame: spawn workers, allocate scratch, and
  * build per-cell graphs — done once so VLC can probe us cheaply during chain
  * setup. Returns 0 if ready (already or just initialized), -1 on sticky
- * failure. Extracted to keep zimg_process at CCN <= 10. CCN 5.
+ * failure. Extracted to keep zimg_process within the complexity limit.
  */
 static int zimg_ensure_lazy_init(zimg_priv_t *p)
 {
@@ -1229,8 +1227,7 @@ static int zimg_ensure_lazy_init(zimg_priv_t *p)
 }
 
 /* zimg requires every direct image address and stride to be 32-byte aligned.
- * Cropping can move an otherwise aligned VLC allocation off that boundary.
- * CCN 3. */
+ * Cropping can move an otherwise aligned VLC allocation off that boundary. */
 static bool zimg_view_aligned(const up_picture_view_t *view)
 {
     for (int i = 0; i < view->plane_count; i++)
@@ -1243,7 +1240,7 @@ static bool zimg_view_aligned(const up_picture_view_t *view)
 /* Lazy init lets the first real picture select the safe I/O mode. If a VLC
  * crop breaks zimg's direct-buffer alignment contract, use the aligned copy
  * buffers. Source copy-in cannot use column graphs, so fall back to the same
- * rows-only grid used by the explicit zerocopy-src=0 option. CCN 5. */
+ * rows-only grid used by the explicit zerocopy-src=0 option. */
 static void zimg_prepare_first_frame_io(zimg_priv_t *p,
                                         const scaler_ctx_t *ctx,
                                         const up_picture_view_t *src,
@@ -1266,7 +1263,7 @@ static void zimg_prepare_first_frame_io(zimg_priv_t *p,
 }
 
 /* A later frame may drift to different storage. Copy paths accept arbitrary
- * valid VLC alignment; an already-built zero-copy graph does not. CCN 3. */
+ * valid VLC alignment; an already-built zero-copy graph does not. */
 static bool zimg_frame_io_safe(const zimg_priv_t *p,
                                const up_picture_view_t *src,
                                const up_picture_view_t *dst)

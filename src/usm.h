@@ -145,7 +145,7 @@ typedef struct {
 /*
  * Internal: identity-copy fast path used when amount_q8 == 0. Skips the
  * memcpy entirely if dst aliases src with the same stride. Keeps the
- * dispatch in apply_plane simple. CCN 3.
+ * dispatch in apply_plane simple.
  */
 static inline void up_usm__apply_identity(
     uint8_t *dst, int dst_stride,
@@ -171,7 +171,7 @@ static inline int up_usm__clamp_amount_q8(int amount_q8)
 
 /*
  * Internal: pass 1 of the USM. Horizontal-blur every source row into the
- * dense workspace buffer. CCN 2.
+ * dense workspace buffer.
  */
 static inline void up_usm__pass1_hblur(
     uint8_t *workspace,
@@ -190,7 +190,7 @@ static inline void up_usm__pass1_hblur(
  * Internal: combine one row's blur and source values into the sharpened
  * destination row. The triangle blur kernel reads three workspace rows
  * (up_row, mid, dn_row) and the per-pixel detail = src - blur is added
- * back at amount_q8/256 strength, with [0,255] clamping. CCN 4.
+ * back at amount_q8/256 strength, with [0,255] clamping.
  *
  * Hottest pixel loop in the project (called height× per frame). Like
  * up_usm__hblur_row above, it relies on the production TU (usm_pool.c)
@@ -227,7 +227,7 @@ static inline void up_usm__combine_row(
 /*
  * Internal: pass 2 of the USM. For each row y, picks workspace rows
  * y-1, y, y+1 (clamped at boundaries), then combines via the per-row
- * helper. CCN 4.
+ * helper.
  */
 static inline void up_usm__pass2_combine(
     const up_usm_plane_io_t *io,
@@ -262,7 +262,7 @@ static inline int up_usm__plane_args_ok(
     return 1;
 }
 
-/* Extracted to cap the CCN of up_usm_apply_plane at <=10. The six
+/* Extracted to keep up_usm_apply_plane within the complexity limit. The six
  * boolean clauses below would otherwise count one branch each in the
  * caller. */
 static inline int up_usm__args_valid(

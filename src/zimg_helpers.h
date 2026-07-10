@@ -162,12 +162,11 @@ static inline void up_copy_plane(uint8_t *dst, int dst_stride,
  * resize ratio src_h_stripe / dst_h_stripe stays close to the global
  * ratio src_h / dst_h, which is what the per-stripe zimg graph wants.
  *
- * CCN 5.
  */
-/* Extracted to cap the CCN of up_compute_stripe_bounds at <=10. The
+/* Extracted to keep up_compute_stripe_bounds within the complexity limit. The
  * five OR-ed clauses each count as a branch in the caller; collapsing
- * them into a single call reduces the bound calculation's CCN from 11
- * to 6 without changing behaviour. */
+ * them into a single call keeps the bound calculation compact without
+ * changing behaviour. */
 static inline int up__stripe_args_valid(int i, int n, int src_h, int dst_h)
 {
     if (n <= 0 || src_h <= 0 || dst_h <= 0) return 0;
@@ -217,7 +216,7 @@ static inline int up_compute_stripe_bounds(
  * pure even-aligned 1D partition, and even column boundaries keep chroma
  * subsampling exact. Writes *rows,*cols (each >= 1); rows*cols <= the thread
  * budget. The bounded search maximizes active workers, preferring more rows
- * on ties. CCN 6.
+ * on ties.
  */
 static inline int up__tile_axis_limit(int extent, int minimum,
                                       int fallback, int budget)

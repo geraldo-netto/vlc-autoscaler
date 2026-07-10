@@ -82,9 +82,7 @@ static inline bool up_chroma_is_opaque(uint32_t c)
  */
 static inline bool up_chroma_has_y_plane(uint32_t c)
 {
-    /* This switch has CCN 7 by lizard's count (one branch per case).
-     * That's below the 10 threshold and keeps the function
-     * cheap to grep when adding new chromas. */
+    /* A flat switch keeps new chroma mappings easy to audit. */
     switch (c) {
         case UP_FOURCC('I','4','2','0'):  /* planar 4:2:0 */
         case UP_FOURCC('Y','V','1','2'):  /* planar 4:2:0, V/U swap */

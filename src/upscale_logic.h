@@ -64,7 +64,7 @@ static inline int up__clamp_even(int v)
  * exceeds 1080p — going higher must be explicit (target=3..6).
  *
  * Extracted from up_decide_target_height to keep its cyclomatic
- * complexity within the CCN-10 ceiling.
+ * complexity within the project ceiling.
  */
 static inline int up__auto_target_height(int src_h, int cores,
                                          unsigned long mem_mb)
@@ -151,7 +151,7 @@ static inline int up_decide_target_height(int src_h, int preset,
  * Validate the (src_w, src_h, target_h) triple for up_compute_target_dims.
  * Returns 1 if all three are positive and within UP_MAX_DIM.
  *
- * Extracted to keep up_compute_target_dims under the CCN-10 ceiling.
+ * Extracted to keep up_compute_target_dims within the complexity limit.
  */
 static inline int up__dims_inputs_valid(int src_w, int src_h, int target_h)
 {
@@ -204,7 +204,7 @@ static inline int up_compute_target_dims(int src_w, int src_h,
  * and applies the AUTO-only skip_above bypass. Returns 1 if planning
  * should proceed, 0 if the filter must bypass.
  *
- * Extracted to keep up_plan_upscale under the CCN-10 ceiling.
+ * Extracted to keep up_plan_upscale within the complexity limit.
  */
 static inline int up__plan_inputs_ok(int src_w, int src_h, int skip_above,
                                      int preset)

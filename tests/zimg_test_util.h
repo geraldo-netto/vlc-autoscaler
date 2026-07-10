@@ -45,7 +45,7 @@ static inline int zt_align_up(int v)
 
 /* Allocate a 3-plane YUV picture for `chroma` at w x h. Pitch is 64-aligned;
  * chroma planes are subsampled per the chroma. Returns 0 on success, -1 if
- * the chroma is unsupported or any allocation fails. CCN 4. */
+ * the chroma is unsupported or any allocation fails. */
 static inline int zt_pic_alloc(zt_pic_t *tp, uint32_t chroma, int w, int h)
 {
     unsigned sw, sh;

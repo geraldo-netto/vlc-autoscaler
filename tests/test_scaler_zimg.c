@@ -89,7 +89,7 @@ static const struct zcfg CFGS[] = {
 
 /* Run the backend once. Allocates src (filled from seed) and the caller-owned
  * dst (pre-filled dst_init). Returns the process() result, or -2 on
- * allocation/open failure. CCN 4. */
+ * allocation/open failure. */
 static int run_zimg(const struct zcfg *c, int src_zc, int dst_zc,
                     uint8_t dst_init, uint32_t seed, zt_pic_t *out)
 {
@@ -130,7 +130,7 @@ static int restride_plane(zt_pic_t *pic, int plane, int extra_pitch)
 }
 
 /* Exercise a legal picture whose second chroma plane has a distinct stride.
- * Returns process() status or -2 on setup/open failure. CCN 6. */
+ * Returns process() status or -2 on setup/open failure. */
 static int run_zimg_asymmetric_pitch(const struct zcfg *c, int src_zc,
                                      int dst_zc, uint32_t seed, zt_pic_t *out)
 {
@@ -189,7 +189,7 @@ static void copy_into_crop(zt_pic_t *dst, const zt_pic_t *src,
     }
 }
 
-/* Build physical pictures with poison margins around a visible crop. CCN 6. */
+/* Build physical pictures with poison margins around a visible crop. */
 static int run_zimg_cropped(const struct zcfg *c, int src_zc, int dst_zc,
                             uint8_t poison, uint32_t seed, zt_pic_t *out)
 {

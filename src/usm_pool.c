@@ -245,11 +245,11 @@ struct usm_pool_s {
  * private hblur row buffers (up = hblur(y-1), mid = hblur(y), dn =
  * hblur(y+1)), combining each row as the window slides down. Boundary rows
  * clamp (y-1 -> 0 at the top, y+1 -> height-1 at the bottom), matching
- * up_usm__pass2_combine exactly. CCN 4.
+ * up_usm__pass2_combine exactly.
  */
 /* Source row for the hblur reads: the two rows a neighbour stripe may
  * be overwriting concurrently (in-place frames) come from the pre-frame
- * halo snapshots; everything else reads the plane directly. CCN 3. */
+ * halo snapshots; everything else reads the plane directly. */
 static const uint8_t *usm_worker_src_row(const usm_worker_t *w, int y)
 {
     if (w->halo_top && y == w->y_start - 1) return w->halo_top;
@@ -341,7 +341,7 @@ static int usm_pool_init_gate(usm_pool_t *p)
 /*
  * Total bytes for the shared scratch block: USM_POOL_SCRATCH_ROWS rolling
  * rows of `width` bytes for each of `n` workers. Returns 0 on overflow or
- * invalid input so the caller treats it as an allocation failure. CCN 3.
+ * invalid input so the caller treats it as an allocation failure.
  */
 static size_t usm_pool_scratch_bytes(int n, int width)
 {
@@ -353,7 +353,7 @@ static size_t usm_pool_scratch_bytes(int n, int width)
 }
 
 /* Allocate the shared worker scratch block (5*width per worker). Returns
- * 0 on success, -1 on overflow or allocation failure. CCN 3. */
+ * 0 on success, -1 on overflow or allocation failure. */
 static int usm_pool_alloc_scratch(usm_pool_t *p)
 {
     size_t bytes = usm_pool_scratch_bytes(p->n_threads_pref, p->width);
@@ -405,7 +405,7 @@ static void usm_pool_repartition_stripes(usm_worker_t *workers, int n,
 }
 
 /* Allocate the worker array (one cache-line-aligned slot each) and zero
- * it. Returns 0 on success, -1 on failure. CCN 2. */
+ * it. Returns 0 on success, -1 on failure. */
 static int usm_pool_alloc_workers(usm_pool_t *p)
 {
     /* aligned_alloc not calloc: usm_worker_t carries _Alignas(64) so each
@@ -473,7 +473,7 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
 /* In-place frames only (SYS-4): snapshot the two src rows this worker's
  * boundary hblurs need but a neighbour worker concurrently overwrites
  * (y_start-1 belongs to worker i-1's stripe, y_end to worker i+1's).
- * Serial main-thread work, two rows per worker, before dispatch. CCN 3. */
+ * Serial main-thread work, two rows per worker, before dispatch. */
 static void usm_worker_snapshot_halo(usm_worker_t *w, const uint8_t *src,
                                      int src_stride, int height)
 {

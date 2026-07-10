@@ -387,14 +387,14 @@ static void DetectHardware( int *cores, unsigned long *mem_mb )
 /*****************************************************************************
  * Open: probe input format, decide whether to engage, set up scaler + USM
  *****************************************************************************
- * Open() is split into focused phase helpers (each at CCN <= 5):
+ * Open() is split into focused phase helpers:
  *   ResolveInputDims      — picks visible-or-physical src dims
  *   PickBackendOrReject   — opaque-chroma + null-backend gate
  *   ConfigureScaler       — fills scaler_ctx_t from VLC vars
  *   InitUsmPool           — optional USM post-pass setup
  *   InitProbeAndPerfmon   — perfmon + content-probe bookkeeping
  *   SetOutputFormat       — fmt_out wiring
- * Open() itself is a linear orchestrator at CCN ~5.
+ * Open() itself is a linear orchestrator.
  *****************************************************************************/
 
 /* Pick the visible (cropped) dimension when present, otherwise the
@@ -418,7 +418,7 @@ static void ResolveInputDims( const filter_t *p_filter,
  * (VP9/AV1 allow them with 4:2:0) would pass Open and then fail EVERY
  * per-cell graph build on the first valid frame — sticky lazy-init failure,
  * every frame dropped. Cropping one source row/column is visually
- * free; up__clamp_even already does the same for dst. CCN 4. */
+ * free; up__clamp_even already does the same for dst. */
 static void EvenAlignSrcDims( vlc_fourcc_t chroma, int *src_w, int *src_h )
 {
     unsigned sub_w, sub_h;
@@ -432,7 +432,7 @@ static void EvenAlignSrcDims( vlc_fourcc_t chroma, int *src_w, int *src_h )
 
 /* Opaque-chroma rejection + backend selection. Logs the reason and returns
  * NULL when this filter cannot run on the input — Open() turns NULL into
- * VLC_EGENERIC. CCN 4. */
+ * VLC_EGENERIC. */
 static const scaler_backend_t *PickBackendOrReject(
     filter_t *p_filter, vlc_fourcc_t chroma, int algo, int backend_pref )
 {
@@ -471,7 +471,7 @@ static int OpenBackendAttempt( void *context, const void *backend_handle )
 }
 
 /* AUTO may recover from a preferred zimg open failure through the broad-coverage
- * swscale backend. Explicit backend selections remain strict. CCN 6. */
+ * swscale backend. Explicit backend selections remain strict. */
 static int OpenScalerOrFallback( filter_t *p_filter, filter_sys_t *p_sys )
 {
     scaler_ctx_t *sc = &p_sys->scaler;
@@ -514,7 +514,7 @@ static int InheritIntSat( filter_t *p_filter, const char *name )
     return (int)v;
 }
 
-/* Populate the scaler_ctx_t from filter parameters and VLC vars. CCN 2. */
+/* Populate the scaler_ctx_t from filter parameters and VLC vars. */
 static void ConfigureScaler( scaler_ctx_t *sc,
                              const scaler_backend_t *be,
                              filter_t *p_filter,
@@ -555,7 +555,7 @@ static void ConfigureScaler( scaler_ctx_t *sc,
 
 /* Create the small USM descriptor when sharpening is requested and the chroma
  * has a Y plane. Workers and scratch initialize lazily on first apply. On
- * allocation failure, continue with USM disabled. CCN 4. */
+ * allocation failure, continue with USM disabled. */
 static void InitUsmPool( filter_sys_t *p_sys, filter_t *p_filter,
                          vlc_fourcc_t chroma, up_dims_t target,
                          int cores, int usm_pct )
@@ -578,7 +578,7 @@ static void InitUsmPool( filter_sys_t *p_sys, filter_t *p_filter,
                   target.width, target.height, n_threads );
 }
 
-/* Initialize the perfmon and the content probe bookkeeping fields. CCN 1. */
+/* Initialize the perfmon and the content probe bookkeeping fields. */
 static void InitProbeAndPerfmon( filter_sys_t *p_sys, filter_t *p_filter,
                                  vlc_fourcc_t chroma, int algo, int usm_pct )
 {
@@ -608,7 +608,7 @@ static void InitProbeAndPerfmon( filter_sys_t *p_sys, filter_t *p_filter,
     p_sys->advice_logged = 0;
 }
 
-/* Wire fmt_out to the upscale target. Same chroma, new dimensions. CCN 1. */
+/* Wire fmt_out to the upscale target. Same chroma, new dimensions. */
 static void SetOutputFormat( filter_t *p_filter, vlc_fourcc_t chroma,
                              up_dims_t target )
 {
@@ -794,7 +794,7 @@ static void EmitPerfAdvisory( filter_t *p_filter, filter_sys_t *p_sys )
  * resolves VLC's visible-area crop and rejects malformed plane geometry.
  *
  * Extracted from Filter() to keep its cyclomatic complexity within
- * the project's CCN-10 ceiling.
+ * the project's complexity ceiling.
  */
 static void LogProbeVerdict( filter_t *p_filter, filter_sys_t *p_sys );
 
@@ -887,7 +887,7 @@ static void LogProbeVerdict( filter_t *p_filter, filter_sys_t *p_sys )
  * geometry. A pool failure (sticky lazy-init, OBS parity with the zimg
  * pool's OBS-2)
  * warns once and disables USM for the rest of playback so every later
- * frame skips the dead call. CCN 7. */
+ * frame skips the dead call. */
 static void ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
                                picture_t *p_out )
 {
@@ -924,7 +924,7 @@ static void ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
 }
 
 /* OBS-3: every OBS_STATS_INTERVAL_NS, log a one-line long-run summary so
- * sustained behavior is observable beyond the one-shot perf advisory. CCN 3. */
+ * sustained behavior is observable beyond the one-shot perf advisory. */
 #define OBS_STATS_INTERVAL_NS (5 * 1000000000LL)
 static void MaybeLogStats( filter_t *p_filter, filter_sys_t *p_sys,
                            int64_t now_ns )
@@ -952,7 +952,7 @@ static void MaybeLogStats( filter_t *p_filter, filter_sys_t *p_sys,
 }
 
 /* Record one frame's elapsed work into the perfmon and emit the one-time
- * advisory if perfmon decides the budget has been blown. CCN 2. */
+ * advisory if perfmon decides the budget has been blown. */
 static void RecordPerf( filter_t *p_filter, filter_sys_t *p_sys,
                         int64_t t_start, int64_t t_end )
 {
@@ -975,7 +975,7 @@ static void RecordPerf( filter_t *p_filter, filter_sys_t *p_sys,
  * swscale on the same ctx is a clean swap; one frame is dropped. A
  * forced --autoupscale-backend=1 (zimg) is respected. On a failed swap
  * the backend is left NULL and Filter() drops every frame — same
- * behavior as before, minus the dead process() call. CCN 5. */
+ * behavior as before, minus the dead process() call. */
 static void TryBackendFallback( filter_t *p_filter, filter_sys_t *p_sys )
 {
     if( p_sys->fallback_tried )

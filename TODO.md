@@ -63,7 +63,6 @@ implemented and tested; `git log` is the durable completion record.
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| COMP-2 | open | S | Hand-maintained per-function CCN annotations have drifted from the enforced lizard results. Examples: `OpenScalerOrFallback`, `ConfigureScaler`, and `InitProbeAndPerfmon` claim 6/2/1 but are 8/5/4; `log_zimg_open` claims 2 but is 9. | Remove exact CCN numerals from comments while retaining design rationale. Lizard is the source of truth and currently reports all 675 functions at CCN 10 or lower. |
 
 ## code duplication
 
