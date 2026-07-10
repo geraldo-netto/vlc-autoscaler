@@ -31,7 +31,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Match VLC's VLC_FOURCC byte ordering on both endianness paths. */
+/* Match VLC's VLC_FOURCC byte ordering on both endianness paths.
+ * WORDS_BIGENDIAN comes from VLC's config.h, which the plugin build
+ * does not define — fall back to the compiler's __BYTE_ORDER__ so a
+ * big-endian host picks the right branch without it. The
+ * _Static_asserts in autoupscale.c pin these against VLC_CODEC_*, so
+ * any residual mismatch is a compile break, not silent corruption. */
+#if !defined(WORDS_BIGENDIAN) && defined(__BYTE_ORDER__) && \
+    defined(__ORDER_BIG_ENDIAN__) && \
+    __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+# define WORDS_BIGENDIAN 1
+#endif
 #ifdef WORDS_BIGENDIAN
 # define UP_FOURCC( a, b, c, d ) \
     ( ((uint32_t)(d)) | ( ((uint32_t)(c)) << 8 ) \
