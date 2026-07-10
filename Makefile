@@ -77,15 +77,15 @@ ifdef HAVE_ZIMG
   PLUGIN_LIBS   += $(ZIMG_LIBS)
 endif
 
-TEST_CFLAGS  := -O2 -g $(MARCH_FLAG) $(WARN) -fsanitize=address,undefined
+TEST_CFLAGS  := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefined
 TEST_LDFLAGS := -fsanitize=address,undefined
 BARRIER_WRAP_LDFLAGS := -Wl,--wrap=sem_wait -Wl,--wrap=pthread_cond_broadcast
 USM_POOL_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc
 
 FUZZ_SAN     := -fsanitize=fuzzer,address,undefined
-FUZZ_CFLAGS  := -O1 -g $(MARCH_FLAG) $(WARN) $(FUZZ_SAN)
+FUZZ_CFLAGS  := -O1 -g $(MARCH_FLAG) $(WARN) -MMD -MP $(FUZZ_SAN)
 
-SMOKE_CFLAGS := -O2 -g $(MARCH_FLAG) $(WARN) -fsanitize=address,undefined -DFUZZ_MAIN
+SMOKE_CFLAGS := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefined -DFUZZ_MAIN
 SMOKE_LDFLAGS := -fsanitize=address,undefined
 
 PLUGIN_SRCS := src/autoupscale.c src/scaler.c src/scaler_swscale.c
@@ -437,16 +437,22 @@ $(BUILD)/fuzz_usm_variants_smoke: tests/fuzz_usm_variants.c \
 # repeated frames at unusual (n_threads, w, h) combinations, including worker
 # clamping and the single-worker path.
 
-STRESS_CFLAGS_ASAN := -O2 -g $(MARCH_FLAG) $(WARN) -fsanitize=address,undefined
+STRESS_CFLAGS_ASAN := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefined
 STRESS_LDFLAGS_ASAN := -fsanitize=address,undefined -lpthread
-STRESS_CFLAGS_TSAN := -O1 -g $(MARCH_FLAG) $(WARN) -fsanitize=thread
+STRESS_CFLAGS_TSAN := -O1 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=thread
 STRESS_LDFLAGS_TSAN := -fsanitize=thread -lpthread
 
-$(BUILD)/stress_usm_pool: tests/stress_usm_pool.c tests/usm_test_util.h src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
-	$(CLANG) $(STRESS_CFLAGS_ASAN) -o $@ $< src/usm_pool.c $(STRESS_LDFLAGS_ASAN)
+$(BUILD)/usm_pool_stress_asan.o: src/usm_pool.c | $(BUILD)
+	$(CLANG) $(STRESS_CFLAGS_ASAN) -c -o $@ $<
 
-$(BUILD)/stress_usm_pool_tsan: tests/stress_usm_pool.c tests/usm_test_util.h src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
-	$(CLANG) $(STRESS_CFLAGS_TSAN) -o $@ $< src/usm_pool.c $(STRESS_LDFLAGS_TSAN)
+$(BUILD)/usm_pool_stress_tsan.o: src/usm_pool.c | $(BUILD)
+	$(CLANG) $(STRESS_CFLAGS_TSAN) -c -o $@ $<
+
+$(BUILD)/stress_usm_pool: tests/stress_usm_pool.c $(BUILD)/usm_pool_stress_asan.o | $(BUILD)
+	$(CLANG) $(STRESS_CFLAGS_ASAN) -o $@ $< $(BUILD)/usm_pool_stress_asan.o $(STRESS_LDFLAGS_ASAN)
+
+$(BUILD)/stress_usm_pool_tsan: tests/stress_usm_pool.c $(BUILD)/usm_pool_stress_tsan.o | $(BUILD)
+	$(CLANG) $(STRESS_CFLAGS_TSAN) -o $@ $< $(BUILD)/usm_pool_stress_tsan.o $(STRESS_LDFLAGS_TSAN)
 
 stress: $(BUILD)/stress_usm_pool $(BUILD)/stress_usm_pool_tsan
 	@echo
@@ -465,37 +471,47 @@ stress: $(BUILD)/stress_usm_pool $(BUILD)/stress_usm_pool_tsan
 ifdef HAVE_ZIMG
 ZIMG_H_CFLAGS  := -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS)
 ZIMG_H_LIBS    := $(VLC_LIBS) $(ZIMG_LIBS) -lpthread
-ZIMG_H_DEPS    := tests/zimg_test_util.h src/scaler_zimg.c src/scaler.h \
-                  src/scaler_status.h \
-                  src/picture_view.h \
-                  tests/barrier_fault_inject.h \
-                  src/zimg_helpers.h src/scaler_zimg_chroma.h \
-                  src/upscale_logic.h src/threading.h
 
-$(BUILD)/test_scaler_zimg: tests/test_scaler_zimg.c $(ZIMG_H_DEPS) | $(BUILD)
-	$(CC) -O2 $(ZIMG_H_CFLAGS) -fsanitize=address,undefined -o $@ \
-	    $< src/scaler_zimg.c -fsanitize=address,undefined \
+# scaler_zimg.c compiled once per sanitizer/optimization mode; header
+# dependencies come from -MMD (the coverage-zimg recipe rebuilds from
+# scratch every run, so it alone stays a one-step compile).
+$(BUILD)/scaler_zimg_asan.o: src/scaler_zimg.c | $(BUILD)
+	$(CC) -O2 $(ZIMG_H_CFLAGS) -fsanitize=address,undefined -MMD -MP -c -o $@ $<
+
+$(BUILD)/scaler_zimg_tsan.o: src/scaler_zimg.c | $(BUILD)
+	$(CLANG) -O1 $(ZIMG_H_CFLAGS) -fsanitize=thread -MMD -MP -c -o $@ $<
+
+$(BUILD)/scaler_zimg_bench.o: src/scaler_zimg.c | $(BUILD)
+	$(CC) -O2 $(ZIMG_H_CFLAGS) -MMD -MP -c -o $@ $<
+
+$(BUILD)/test_scaler_zimg: tests/test_scaler_zimg.c $(BUILD)/scaler_zimg_asan.o | $(BUILD)
+	$(CC) -O2 $(ZIMG_H_CFLAGS) -fsanitize=address,undefined -MMD -MP -o $@ \
+	    $< $(BUILD)/scaler_zimg_asan.o -fsanitize=address,undefined \
 	    $(BARRIER_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
 
-$(BUILD)/test_scaler_zimg_tsan: tests/test_scaler_zimg.c $(ZIMG_H_DEPS) | $(BUILD)
-	$(CLANG) -O1 $(ZIMG_H_CFLAGS) -fsanitize=thread -o $@ \
-	    $< src/scaler_zimg.c -fsanitize=thread \
+$(BUILD)/test_scaler_zimg_tsan: tests/test_scaler_zimg.c $(BUILD)/scaler_zimg_tsan.o | $(BUILD)
+	$(CLANG) -O1 $(ZIMG_H_CFLAGS) -fsanitize=thread -MMD -MP -o $@ \
+	    $< $(BUILD)/scaler_zimg_tsan.o -fsanitize=thread \
 	    $(BARRIER_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
 
-$(BUILD)/bench_scaler_zimg: tests/bench_scaler_zimg.c tests/cli_parse.h $(ZIMG_H_DEPS) | $(BUILD)
-	$(CC) -O2 $(ZIMG_H_CFLAGS) -o $@ $< src/scaler_zimg.c $(ZIMG_H_LIBS)
+$(BUILD)/bench_scaler_zimg: tests/bench_scaler_zimg.c $(BUILD)/scaler_zimg_bench.o | $(BUILD)
+	$(CC) -O2 $(ZIMG_H_CFLAGS) -MMD -MP -o $@ $< $(BUILD)/scaler_zimg_bench.o $(ZIMG_H_LIBS)
 
 # SCAL-3 seam fuzzer: randomized geometry/chroma/thread-count, asserts the
 # tiled-vs-single-graph seam stays <= SEAM_MAX_DELTA on smooth content.
 # Smoke variant (own main) runs in the standard harness; libFuzzer variant
 # (clang) explores the geometry space.
-$(BUILD)/fuzz_scaler_seam_smoke: tests/fuzz_scaler_seam.c $(ZIMG_H_DEPS) | $(BUILD)
-	$(CC) -O2 $(ZIMG_H_CFLAGS) -DFUZZ_MAIN -fsanitize=address,undefined -o $@ \
-	    $< src/scaler_zimg.c -fsanitize=address,undefined $(ZIMG_H_LIBS)
+$(BUILD)/fuzz_scaler_seam_smoke: tests/fuzz_scaler_seam.c $(BUILD)/scaler_zimg_asan.o | $(BUILD)
+	$(CC) -O2 $(ZIMG_H_CFLAGS) -DFUZZ_MAIN -fsanitize=address,undefined -MMD -MP -o $@ \
+	    $< $(BUILD)/scaler_zimg_asan.o -fsanitize=address,undefined $(ZIMG_H_LIBS)
 
-$(BUILD)/fuzz_scaler_seam: tests/fuzz_scaler_seam.c $(ZIMG_H_DEPS) | $(BUILD)
+$(BUILD)/scaler_zimg_fuzz.o: src/scaler_zimg.c | $(BUILD)
 	$(CLANG) -O1 -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS) $(FUZZ_SAN) \
-	    -o $@ $< src/scaler_zimg.c $(FUZZ_SAN) $(ZIMG_H_LIBS)
+	    -MMD -MP -c -o $@ $<
+
+$(BUILD)/fuzz_scaler_seam: tests/fuzz_scaler_seam.c $(BUILD)/scaler_zimg_fuzz.o | $(BUILD)
+	$(CLANG) -O1 -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS) $(FUZZ_SAN) \
+	    -MMD -MP -o $@ $< $(BUILD)/scaler_zimg_fuzz.o $(FUZZ_SAN) $(ZIMG_H_LIBS)
 
 fuzz-seam: $(BUILD)/fuzz_scaler_seam_smoke
 	@echo
@@ -560,14 +576,18 @@ endif
 # flat-detection path is actually compiled and exercised — the call
 # site that opt-in feature exists for — and prints a rand-vs-flat
 # comparison so the skip's payoff is visible.
-BENCH_CFLAGS := -O3 $(MARCH_FLAG) $(WARN)
+BENCH_CFLAGS := -O3 $(MARCH_FLAG) $(WARN) -MMD -MP
 
 build-bench: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip $(if $(HAVE_ZIMG),$(BUILD)/bench_scaler_zimg)
 
-$(BUILD)/bench_usm_pool: tests/bench_usm_pool.c tests/cli_parse.h src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
-	$(CC) $(BENCH_CFLAGS) -o $@ $< src/usm_pool.c -lpthread
-$(BUILD)/bench_usm_pool_flatskip: tests/bench_usm_pool.c tests/cli_parse.h src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
-	$(CC) $(BENCH_CFLAGS) -DUSM_POOL_FLAT_SKIP=1 -o $@ $< src/usm_pool.c -lpthread
+$(BUILD)/usm_pool_bench.o: src/usm_pool.c | $(BUILD)
+	$(CC) $(BENCH_CFLAGS) -c -o $@ $<
+$(BUILD)/usm_pool_bench_flatskip.o: src/usm_pool.c | $(BUILD)
+	$(CC) $(BENCH_CFLAGS) -DUSM_POOL_FLAT_SKIP=1 -c -o $@ $<
+$(BUILD)/bench_usm_pool: tests/bench_usm_pool.c $(BUILD)/usm_pool_bench.o | $(BUILD)
+	$(CC) $(BENCH_CFLAGS) -o $@ $< $(BUILD)/usm_pool_bench.o -lpthread
+$(BUILD)/bench_usm_pool_flatskip: tests/bench_usm_pool.c $(BUILD)/usm_pool_bench_flatskip.o | $(BUILD)
+	$(CC) $(BENCH_CFLAGS) -o $@ $< $(BUILD)/usm_pool_bench_flatskip.o -lpthread
 
 bench: $(BUILD)/bench_usm_pool
 	@echo "threads,width,height,frames,amount,fill,us_per_frame"
@@ -602,7 +622,7 @@ COV_BUILD := $(BUILD)/cov
 # Coverage profiles are compiler-specific; override these as a matched GCC pair.
 COV_CC      ?= gcc
 GCOV        ?= gcov
-COV_CFLAGS  := -O0 -g $(MARCH_FLAG) $(WARN) --coverage -fprofile-arcs -ftest-coverage
+COV_CFLAGS  := -O0 -g $(MARCH_FLAG) $(WARN) -MMD -MP --coverage -fprofile-arcs -ftest-coverage
 COV_LDFLAGS := --coverage
 
 COV_TESTS := \
@@ -653,8 +673,10 @@ $(COV_BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/test_usm_pool: tests/test_usm_pool.c tests/usm_test_util.h tests/barrier_fault_inject.h src/usm_pool.c src/usm_pool.h src/usm.h | $(COV_BUILD)
-	$(COV_CC) $(COV_CFLAGS) -o $@ $< src/usm_pool.c $(COV_LDFLAGS) \
+$(COV_BUILD)/usm_pool_cov.o: src/usm_pool.c | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -c -o $@ $<
+$(COV_BUILD)/test_usm_pool: tests/test_usm_pool.c $(COV_BUILD)/usm_pool_cov.o | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_BUILD)/usm_pool_cov.o $(COV_LDFLAGS) \
 	    $(USM_POOL_WRAP_LDFLAGS) -lpthread
 $(COV_BUILD)/test_content_probe: tests/test_content_probe.c src/content_probe.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
@@ -664,8 +686,8 @@ $(COV_BUILD)/test_scaler_swscale: tests/test_scaler_swscale.c src/scaler_swscale
 	$(COV_CC) $(COV_CFLAGS) -Itests/stubs -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_picture_view: tests/test_picture_view.c src/picture_view.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -Itests/stubs -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/test_lifetime: tests/test_lifetime.c src/usm_pool.c src/usm_pool.h src/usm.h | $(COV_BUILD)
-	$(COV_CC) $(COV_CFLAGS) -o $@ $< src/usm_pool.c $(COV_LDFLAGS) -lpthread
+$(COV_BUILD)/test_lifetime: tests/test_lifetime.c $(COV_BUILD)/usm_pool_cov.o | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_BUILD)/usm_pool_cov.o $(COV_LDFLAGS) -lpthread
 
 $(COV_BUILD)/fuzz_upscale_logic: tests/fuzz_upscale_logic.c src/upscale_logic.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
@@ -777,8 +799,12 @@ info:
 $(BUILD):
 	mkdir -p $(BUILD)
 
-# Include dependency files generated by -MMD
+# Include dependency files generated by -MMD (plugin, tests, fuzzers,
+# stress, bench, coverage). Hand-written header prerequisites on the
+# rules above are a readable summary only; the .d files are the source
+# of truth for incremental correctness.
 -include $(wildcard $(BUILD)/*.d)
+-include $(wildcard $(COV_BUILD)/*.d)
 $(BUILD)/test_threading: tests/test_threading.c src/threading.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
@@ -788,8 +814,11 @@ $(BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $(BUI
 $(BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
-$(BUILD)/test_usm_pool: tests/test_usm_pool.c tests/usm_test_util.h tests/barrier_fault_inject.h src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
-	$(CC) $(TEST_CFLAGS) -o $@ $< src/usm_pool.c $(TEST_LDFLAGS) \
+$(BUILD)/usm_pool_test.o: src/usm_pool.c | $(BUILD)
+	$(CC) $(TEST_CFLAGS) -c -o $@ $<
+
+$(BUILD)/test_usm_pool: tests/test_usm_pool.c $(BUILD)/usm_pool_test.o | $(BUILD)
+	$(CC) $(TEST_CFLAGS) -o $@ $< $(BUILD)/usm_pool_test.o $(TEST_LDFLAGS) \
 	    $(USM_POOL_WRAP_LDFLAGS) -lpthread
 
 # Cross-variant byte-equivalence test: links all three SIMD variants and the
@@ -826,5 +855,5 @@ $(BUILD)/test_scaler_swscale: tests/test_scaler_swscale.c src/scaler_swscale.c s
 $(BUILD)/test_picture_view: tests/test_picture_view.c src/picture_view.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -Itests/stubs -o $@ $< $(TEST_LDFLAGS)
 
-$(BUILD)/test_lifetime: tests/test_lifetime.c src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
-	$(CC) $(TEST_CFLAGS) -o $@ $< src/usm_pool.c $(TEST_LDFLAGS) -lpthread
+$(BUILD)/test_lifetime: tests/test_lifetime.c $(BUILD)/usm_pool_test.o | $(BUILD)
+	$(CC) $(TEST_CFLAGS) -o $@ $< $(BUILD)/usm_pool_test.o $(TEST_LDFLAGS) -lpthread
