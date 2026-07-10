@@ -8,7 +8,7 @@ review categories. One table per category. Format: `id | status | effort | descr
 
 2026-07-10 post-fix rescan: full repository, every category, four parallel
 audit tracks covering production code, tests/fuzzers/benches, build/CI/scripts,
-and documentation. New or reopened: UB-5..6, SCAL-5..6, CON-4, COMP-1,
+and documentation. New or reopened: UB-5, SCAL-5..6, CON-4, COMP-1,
 ARCH-10, REL-6..8, ERR-3, PORT-6..8, ABI-3,
 BUILD-2, BUILD-11..12, BUILD-14..15,
 OBS-6..8, WIRE-4..5, DEAD-9; DG-1, DUP-9, PORT-3, and BUILD-10 were
@@ -41,7 +41,6 @@ under "Audit picks deliberately rejected".
 |----|--------|--------|-------------|-------|
 | UB-OVF1 | no-action | S | `autoupscale.c` `MaybeLogStats` computes `next_stats_ns = now_ns + OBS_STATS_INTERVAL_NS`; signed-overflow UB once `now_ns > INT64_MAX - 5e9` | ACCEPTED (theoretical, like PORT-3): `now_ns` is `CLOCK_MONOTONIC` nanoseconds, so reaching 2^63 ns needs ~292 years of uptime — unreachable. A saturating add would add a per-log branch for a case that cannot occur on a monotonic clock. Revisit only if the timestamp source ever changes to something that can approach INT64_MAX. |
 | UB-5 | open | S | `up_perfmon_record_ns` increments signed `samples_seen` forever on an enabled stream that stays under budget (`perfmon.h:76-99`), overflowing after about 104 days at 240 fps or 414 days at 60 fps. | The counter is used only for small warmup/trust thresholds. Saturate after the largest threshold or use an unsigned/wider counter; add a boundary test. Distinct from the 292-year accepted clock case in UB-OVF1. |
-| UB-6 | open | S | Public geometry helpers overflow for large valid `int` inputs: `up_round_up_lines(INT_MAX)` computes `INT_MAX + UP_SCRATCH_LINE_PAD`, and `up_chroma_dim(INT_MAX, 1)` computes `INT_MAX + 1` (`zimg_helpers.h:70-87`). | Production planning currently caps frame dimensions, but the helpers claim defensive behavior and are independently tested/fuzzed. Guard the addition and implement ceil-division without `v + bias`; add `INT_MAX` tests. UBSan repros both. |
 
 ## memory management
 

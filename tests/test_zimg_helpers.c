@@ -79,6 +79,32 @@ static void test_round_up_lines_negative(void)
     END();
 }
 
+static void test_round_up_lines_overflow(void)
+{
+    BEGIN("round_up_lines: rejects overflowing padding");
+    int boundary = INT_MAX - UP_SCRATCH_LINE_PAD;
+    CHECK_EQ(up_round_up_lines(boundary), INT_MAX);
+    CHECK_EQ(up_round_up_lines(boundary + 1), 0);
+    CHECK_EQ(up_round_up_lines(INT_MAX), 0);
+    END();
+}
+
+/* ---------- chroma_dim ---------- */
+
+static void test_chroma_dim_boundaries(void)
+{
+    BEGIN("chroma_dim: ceil-divides without overflowing");
+    CHECK_EQ(up_chroma_dim(INT_MAX, 0), INT_MAX);
+    CHECK_EQ(up_chroma_dim(INT_MAX, 1), 1073741824);
+    CHECK_EQ(up_chroma_dim(INT_MAX, 16), 32768);
+    CHECK_EQ(up_chroma_dim(INT_MAX, 17), 32768);
+    CHECK_EQ(up_chroma_dim(8, 1), 4);
+    CHECK_EQ(up_chroma_dim(7, 1), 4);
+    CHECK_EQ(up_chroma_dim(0, 1), 0);
+    CHECK_EQ(up_chroma_dim(8, -1), 0);
+    END();
+}
+
 /* ---------- plane_pitch ---------- */
 
 static void test_plane_pitch_no_subsample(void)
@@ -133,6 +159,16 @@ static void test_plane_lines_odd_height(void)
     BEGIN("plane_lines: odd height ceils to integer chroma rows");
     /* 7-row source with sub_h=1: ceil(7/2)=4 chroma rows + 8 pad = 12 */
     CHECK_EQ(up_plane_lines(7, 1), 12);
+    END();
+}
+
+static void test_plane_geometry_extreme_height(void)
+{
+    BEGIN("plane geometry: propagates extreme-dimension rejection");
+    CHECK_EQ(up_plane_pitch(INT_MAX, 0), 0);
+    CHECK_EQ(up_plane_pitch(INT_MAX, 1), 1073741824);
+    CHECK_EQ(up_plane_lines(INT_MAX, 0), 0);
+    CHECK_EQ(up_plane_lines(INT_MAX, 1), 1073741832);
     END();
 }
 
@@ -429,6 +465,8 @@ int main(void)
     test_round_up_pitch_negative();
     test_round_up_lines_basic();
     test_round_up_lines_negative();
+    test_round_up_lines_overflow();
+    test_chroma_dim_boundaries();
 
     test_plane_pitch_no_subsample();
     test_plane_pitch_h_subsample();
@@ -437,6 +475,7 @@ int main(void)
 
     test_plane_lines_basic();
     test_plane_lines_odd_height();
+    test_plane_geometry_extreme_height();
 
     test_zimg_plane_idx_no_swap();
     test_zimg_plane_idx_yv12_swap();

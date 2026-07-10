@@ -162,34 +162,60 @@ static void check_chroma_class(uint32_t fourcc, uint32_t cls_byte)
     check_known_class(fourcc, cls_byte, opaque, yplane);
 }
 
+static void check_pitch_result(const char *plane, int requested,
+                               int pitch, int input)
+{
+    if (pitch == 0) {
+        if (requested <= INT_MAX - (UP_PITCH_ALIGN - 1)) {
+            FAIL("%s pitch rejected representable input %d", plane, input);
+        }
+        return;
+    }
+    if (pitch < requested) {
+        FAIL("%s pitch %d < requested %d", plane, pitch, requested);
+    }
+    if (pitch % UP_PITCH_ALIGN != 0) {
+        FAIL("%s pitch %d not aligned for input %d", plane, pitch, input);
+    }
+}
+
+static void check_lines_result(const char *plane, int requested,
+                               int lines, int input)
+{
+    if (lines == 0) {
+        if (requested <= INT_MAX - UP_SCRATCH_LINE_PAD) {
+            FAIL("%s lines rejected representable input %d", plane, input);
+        }
+        return;
+    }
+    if (lines < requested) {
+        FAIL("%s lines %d < requested %d", plane, lines, requested);
+    }
+}
+
 static void check_plane_pitch_lines(int w, int h)
 {
     int yp = up_plane_pitch(w, 0);      /* luma: full width */
     int yl = up_plane_lines(h, 0);
     int cp = up_plane_pitch(w, 1);      /* 4:2:0 chroma: half width */
     int cl = up_plane_lines(h, 1);
+    int yw = up_chroma_dim(w, 0);
+    int yh = up_chroma_dim(h, 0);
+    int cw = up_chroma_dim(w, 1);
+    int ch = up_chroma_dim(h, 1);
 
-    /* Luma must accommodate at least the full width/height. */
-    if (yp < w) FAIL("plane_pitch(%d,0)=%d < w", w, yp);
-    if (yl < h) FAIL("plane_lines(%d,0)=%d < h", h, yl);
-
-    /* 4:2:0 chroma must accommodate at least ceil(w/2) and ceil(h/2). */
-    int cw_min = (w + 1) >> 1;
-    int ch_min = (h + 1) >> 1;
-    if (cp < cw_min) FAIL("plane_pitch(%d,1)=%d < ceil(w/2)=%d", w, cp, cw_min);
-    if (cl < ch_min) FAIL("plane_lines(%d,1)=%d < ceil(h/2)=%d", h, cl, ch_min);
-
-    /* Pitch must be aligned: divisible by UP_PITCH_ALIGN (64). */
-    if (yp % UP_PITCH_ALIGN != 0) FAIL("luma pitch %d not 64-aligned for w=%d", yp, w);
-    if (cp % UP_PITCH_ALIGN != 0) FAIL("chroma pitch %d not 64-aligned for w=%d", cp, w);
+    check_pitch_result("luma", yw, yp, w);
+    check_lines_result("luma", yh, yl, h);
+    check_pitch_result("chroma", cw, cp, w);
+    check_lines_result("chroma", ch, cl, h);
 }
 
 static void check_round_up(int w, int h)
 {
     int rp = up_round_up_pitch(w);
     int rl = up_round_up_lines(h);
-    if (rp < w) FAIL("round_up_pitch(%d)=%d < w", w, rp);
-    if (rl < h) FAIL("round_up_lines(%d)=%d < h", h, rl);
+    check_pitch_result("round-up", w, rp, w);
+    check_lines_result("round-up", h, rl, h);
 }
 
 static void check_zimg_plane_idx_range(void)
@@ -216,7 +242,6 @@ static void check_plane_geometry(int w, int h)
      * The minimum return is ceil(w / 2^sub_w), padded up for alignment.
      * The helpers must produce sane values for any valid (w, h). */
     if (w <= 0 || h <= 0) return;
-    if (w > 65536 || h > 65536) return;  /* skip wildly out-of-range */
 
     check_plane_pitch_lines(w, h);
     check_round_up(w, h);
@@ -431,6 +456,12 @@ int main(int argc, char **argv)
     memset(buf, 0, sizeof buf);
     int max_stripes = INT_MAX;
     memcpy(buf + 16, &max_stripes, sizeof max_stripes);
+    run_one(buf, sizeof buf);
+
+    memset(buf, 0, sizeof buf);
+    int max_dimension = INT_MAX;
+    memcpy(buf + 8, &max_dimension, sizeof max_dimension);
+    memcpy(buf + 12, &max_dimension, sizeof max_dimension);
     run_one(buf, sizeof buf);
 
     for (long i = 0; i < n; i++) {

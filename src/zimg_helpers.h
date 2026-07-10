@@ -70,6 +70,7 @@ static inline int up_round_up_pitch(int w)
 static inline int up_round_up_lines(int h)
 {
     if (h <= 0) return 0;
+    if (h > INT_MAX - UP_SCRATCH_LINE_PAD) return 0;
     return h + UP_SCRATCH_LINE_PAD;
 }
 
@@ -84,7 +85,8 @@ static inline int up_chroma_dim(int v, int sub)
 {
     if (v <= 0 || sub < 0) return 0;
     int s = (sub > 16) ? 16 : sub;
-    return (v + (1 << s) - 1) >> s;
+    int divisor = 1 << s;
+    return v / divisor + (v % divisor != 0);
 }
 
 /*
