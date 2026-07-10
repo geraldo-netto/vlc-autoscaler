@@ -35,8 +35,9 @@
  *   whole TU at three -march levels into separate .o files lets each variant
  *   inline its kernels at its own SIMD width — strictly better codegen.
  *
- * The selector's headline feature checks do not yet prove the full v3/v4
- * levels used to compile the objects. The complete guard is tracked as PORT-6.
+ * The selector uses the shared v3/v4 level probes. Current compilers query the
+ * complete levels directly; the compatibility fallback uses the strongest
+ * feature conjunction available to older compilers.
  *****************************************************************************/
 
 #include "cpu_level.h"

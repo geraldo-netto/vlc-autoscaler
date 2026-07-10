@@ -76,7 +76,7 @@ buffer, not a CPU pixel layout. Filters that need to read pixels (us,
 postproc, deinterlace, etc.) cannot consume these directly.
 
 `chroma_classify.h` exports `up_chroma_is_opaque()` which returns true
-for the 16 known opaque chroma fourccs. `Open()` calls this very early
+for the known opaque chroma fourccs. `Open()` calls this very early
 and returns `VLC_EGENERIC` if it matches, prompting VLC to insert a
 hardware-to-software download converter upstream and re-probe us with
 the resolved software chroma (typically I420).
@@ -583,14 +583,14 @@ binary across several CPU classes (for example distro packaging),
 `MULTIVERSION=1` compiles `usm_pool.c` three times at three baselines
 (SSE2 / AVX2 / AVX-512) into three separate `.o` files with renamed
 public symbols. A thin dispatcher in `src/usm_pool_dispatch.c` runs at
-`.so` load time via `__attribute__((constructor))`, queries
-`__builtin_cpu_supports()`, and points three function pointers
+`.so` load time via `__attribute__((constructor))`, calls the shared
+full-level probes, and points three function pointers
 (`up_usm_pool_create/destroy/apply`) at the highest-supported variant:
 
 ```c
-if (__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw"))
+if (up_cpu_supports_v4())
     /* point at *_avx512 entry points */
-else if (__builtin_cpu_supports("avx2"))
+else if (up_cpu_supports_v3())
     /* point at *_avx2 entry points */
 else
     /* point at *_sse2 entry points */

@@ -17,11 +17,11 @@
  *   - SIMD-specific arithmetic differences (none should exist for our
  *     bytewise clamped ops, but we verify rather than assume)
  *
- * Each variant is conditionally exercised using the dispatcher's current
- * headline feature probes (the full v3/v4 guard gap is tracked as PORT-6):
+ * Each variant is conditionally exercised using the dispatcher's shared
+ * level probes:
  *   - SSE2 always (every x86_64 has it)
- *   - AVX2 if __builtin_cpu_supports("avx2")
- *   - AVX-512 if avx512f && avx512bw
+ *   - AVX2 when the CPU satisfies x86-64-v3
+ *   - AVX-512 when the CPU satisfies x86-64-v4
  *
  * The test is a NO-OP on non-AVX-512 CPUs for the AVX-512 variant, etc.
  *****************************************************************************/
