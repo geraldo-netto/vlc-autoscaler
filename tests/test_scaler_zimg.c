@@ -64,9 +64,10 @@ static const struct zcfg CFGS[] = {
     { VLC_CODEC_I444, "I444 640x360->1280x720  t4",  640, 360, 1280, 720,  4 },
     { VLC_CODEC_I444, "I444 480x270->1280x720  t8",  480, 270, 1280, 720,  8 },
     /* Odd dims only with I444 (no chroma subsampling). Subsampled chromas
-     * (I420/YV12/I422) require even dims, which production always satisfies
-     * via up__clamp_even in up_compute_target_dims; odd dst there is not a
-     * real case. */
+     * (I420/YV12/I422) require even dims, which production satisfies on
+     * BOTH sides: dst via up__clamp_even in up_compute_target_dims, src
+     * via the REL-4 even-align in Open (odd visible crops get one
+     * row/column cropped before the scaler ever sees them). */
     { VLC_CODEC_I444, "I444 odd 853x481->1281x721 t8", 853, 481, 1281, 721, 8 },
     { VLC_CODEC_I420, "I420 tiny 64x64->128x128 t8",   64,  64,  128,  128, 8 },
     { VLC_CODEC_I420, "I420 clamp 100x16->200x32 t64", 100, 16,  200,  32, 64 },

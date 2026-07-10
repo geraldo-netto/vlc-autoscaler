@@ -31,6 +31,7 @@
 #include "usm.h"
 #include "usm_pool.h"
 #include "scaler.h"
+#include "scaler_zimg_chroma.h"
 #include "perfmon.h"
 #include "threading.h"
 #include "chroma_classify.h"
@@ -393,6 +394,23 @@ static void ResolveInputDims( const filter_t *p_filter,
                 : p_filter->fmt_in.video.i_height;
 }
 
+/* REL-4: even-align src dims on subsampled axes. zimg rejects image
+ * dims not divisible by the subsample factor, so an odd visible crop
+ * (VP9/AV1 allow them with 4:2:0) would pass Open and then fail EVERY
+ * per-stripe graph build at first frame — sticky lazy-init failure,
+ * every frame dropped. Cropping one source row/column is visually
+ * free; up__clamp_even already does the same for dst. CCN 4. */
+static void EvenAlignSrcDims( vlc_fourcc_t chroma, int *src_w, int *src_h )
+{
+    unsigned sub_w, sub_h;
+    int yv12_swap;
+    if( up_chroma_to_zimg( chroma, &sub_w, &sub_h, &yv12_swap ) )
+    {
+        if( sub_w ) *src_w &= ~1;
+        if( sub_h ) *src_h &= ~1;
+    }
+}
+
 /* Opaque-chroma rejection + backend selection. Logs the reason and returns
  * NULL when this filter cannot run on the input — Open() turns NULL into
  * VLC_EGENERIC. CCN 4. */
@@ -561,6 +579,8 @@ static int Open( vlc_object_t *p_this )
 
     int src_w, src_h;
     ResolveInputDims( p_filter, &src_w, &src_h );
+
+    EvenAlignSrcDims( p_filter->fmt_in.video.i_chroma, &src_w, &src_h );
 
     int skip_above   = var_InheritInteger( p_filter, CFG_PREFIX "skip-above" );
     int preset       = var_InheritInteger( p_filter, CFG_PREFIX "target" );
