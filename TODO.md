@@ -118,7 +118,6 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| REL-12 | open | S | `test_geometry_edge_cases.c` `test_zero_hardware` (`:37-44`) asserts nothing (prints only — cannot fail), and `test_edge_dimensions`' bypass branches check nothing; the binary is gated in `make test` (`Makefile:190`) but only the 1x1/1920x1 assert arms can ever fail. | Add expected-outcome checks (0-core/0-RAM must still yield a valid plan or a bypass per `up_decide_target_height`'s contract), or fold into `test_upscale_logic.c` and delete the file. |
 
 ## error handling
 
