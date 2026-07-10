@@ -11,7 +11,7 @@ audit tracks covering production code, tests/fuzzers/benches, build/CI/scripts,
 and documentation. New or reopened: SCAL-5..6, CON-4,
 ARCH-10, REL-6..8, ERR-3, PORT-6..8,
 BUILD-2, BUILD-11..12, BUILD-14..15,
-OBS-6..8, WIRE-4..5, DEAD-9; DG-1, DUP-9, PORT-3, and BUILD-10 were
+OBS-6..8, WIRE-5, DEAD-9; DG-1, DUP-9, PORT-3, and BUILD-10 were
 expanded with related evidence. ASan/UBSan unit tests and all deterministic
 smoke fuzzers pass; lizard is clean (538 functions, none above CCN 10).
 `make analyze` is currently red (BUILD-14).
@@ -171,7 +171,6 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| WIRE-4 | open | S | The unanchored `.gitignore` rule `corpus/` also matches `tests/corpus/`. Thirteen of the 16 curated upscale-logic seed files present in the workspace are therefore untracked and absent from CI, despite HOW_IT_WORKS documenting all 16 (`.gitignore:21-27`, `ci.yml:95-99`, `HOW_IT_WORKS.md:995-1000`). | Anchor the generated-artifact rule to `/corpus/`, then add the 13 intended seeds. `git check-ignore` confirms the current rule hides them. |
 | WIRE-5 | open | S | Production clamping defeats the pure helpers' tested/documented invalid-enum fallback: `target=999` becomes explicit 8K rather than AUTO, and `backend=999` becomes forced swscale rather than AUTO (`autoupscale.c:558-566`, `upscale_logic.h:123-125`, `scaler_pick_logic.h:85-96`, `HOW_IT_WORKS.md:181-185`). | Normalize invalid target/backend enums to their AUTO sentinel. Keep endpoint clamping only for numeric quantities. This makes the production dispatcher exercise the forward-compatible behavior its tests assert. |
 | — | | | WIRE-1 (flat-skip benchmark wiring) and WIRE-2 (single-threaded oracle documentation) remain resolved. | |
 

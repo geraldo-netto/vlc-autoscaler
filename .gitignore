@@ -24,7 +24,7 @@ timeout-*
 leak-*
 slow-unit-*
 fuzz_corpus/
-corpus/
+/corpus/
 
 # Editor / OS
 *.swp
