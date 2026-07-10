@@ -160,7 +160,9 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
     "scratch memory. The symmetric twin of zerocopy-dst (which writes VLC's " \
     "destination picture directly). 0 = off (safe fallback): the source is " \
     "copied to plugin-owned scratch first, then the worker graphs read the " \
-    "scratch. Set to 0 if you see garbled output, crashes, or instability - " \
+    "scratch. On very wide/short frames setting 0 also disables column " \
+    "tiling (fewer workers), since tiles need direct source reads. " \
+    "Set to 0 if you see garbled output, crashes, or instability - " \
     "reading VLC's pool-managed source buffers from worker threads has been " \
     "verified byte-identical to the copy-in path in our harness but, like " \
     "zerocopy-dst, cannot be fully verified across every VLC build " \

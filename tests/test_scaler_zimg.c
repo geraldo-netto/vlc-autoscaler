@@ -50,6 +50,12 @@ struct zcfg {
     uint32_t    chroma;
     const char *name;
     int sw, sh, dw, dh, threads;
+    /* 1 when up_decide_tile_grid picks cols > 1 for this geometry (short
+     * dst vs threads, wide enough for 64px column tiles). Trailing so
+     * untiled configs default to 0. SYS-5: with src_zerocopy=0 these now
+     * run a rows-only grid, whose output is NOT byte-identical to the
+     * tiled grid's (different graph partition, seam-level deltas). */
+    int col_tiled;
 };
 
 static const struct zcfg CFGS[] = {
@@ -70,13 +76,13 @@ static const struct zcfg CFGS[] = {
      * row/column cropped before the scaler ever sees them). */
     { VLC_CODEC_I444, "I444 odd 853x481->1281x721 t8", 853, 481, 1281, 721, 8 },
     { VLC_CODEC_I420, "I420 tiny 64x64->128x128 t8",   64,  64,  128,  128, 8 },
-    { VLC_CODEC_I420, "I420 clamp 100x16->200x32 t64", 100, 16,  200,  32, 64 },
+    { VLC_CODEC_I420, "I420 clamp 100x16->200x32 t64", 100, 16,  200,  32, 64, 1 },
     /* SCAL-3: wide + short -> row stripes alone can't use all threads, so the
      * grid tiles COLUMNS. dst_h/16 < threads triggers n_cols > 1. */
-    { VLC_CODEC_I420, "I420 wide 960x48->1920x96 t16",  960, 48, 1920, 96,  16 },
-    { VLC_CODEC_YV12, "YV12 wide 960x48->1920x96 t16",  960, 48, 1920, 96,  16 },
-    { VLC_CODEC_I422, "I422 wide 1280x64->2560x96 t16", 1280, 64, 2560, 96, 16 },
-    { VLC_CODEC_I444, "I444 wide 640x40->1920x80 t12",  640, 40, 1920, 80,  12 },
+    { VLC_CODEC_I420, "I420 wide 960x48->1920x96 t16",  960, 48, 1920, 96,  16, 1 },
+    { VLC_CODEC_YV12, "YV12 wide 960x48->1920x96 t16",  960, 48, 1920, 96,  16, 1 },
+    { VLC_CODEC_I422, "I422 wide 1280x64->2560x96 t16", 1280, 64, 2560, 96, 16, 1 },
+    { VLC_CODEC_I444, "I444 wide 640x40->1920x80 t12",  640, 40, 1920, 80,  12, 1 },
 };
 #define NCFG (sizeof(CFGS) / sizeof(CFGS[0]))
 
@@ -222,8 +228,18 @@ static void test_src_zerocopy_matches_copy(void)
         int r2 = run_zimg(&CFGS[i], 1, 1, 0x00, 0x70DDu, &c);  /* full zero-copy */
         CHECK(r0 == 0 && r1 == 0 && r2 == 0);
         if (r0 == 0 && r1 == 0 && r2 == 0) {
-            CHECK(same_cfg(&CFGS[i], &a, &b));
-            CHECK(same_cfg(&CFGS[i], &a, &c));
+            if (CFGS[i].col_tiled) {
+                /* SYS-5: src_zerocopy=0 runs a rows-only grid here — a
+                 * DIFFERENT graph partition from the tiled zero-copy
+                 * runs, so `a` is not byte-comparable (seam oracle
+                 * covers grid-vs-single-graph deltas). The two tiled
+                 * runs must still agree exactly, and the copy-path run
+                 * must have succeeded (checked above). */
+                CHECK(same_cfg(&CFGS[i], &b, &c));
+            } else {
+                CHECK(same_cfg(&CFGS[i], &a, &b));
+                CHECK(same_cfg(&CFGS[i], &a, &c));
+            }
         }
         zt_pic_free(&a);
         zt_pic_free(&b);
