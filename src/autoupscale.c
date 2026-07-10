@@ -781,19 +781,29 @@ static void LogProbeVerdict( filter_t *p_filter, filter_sys_t *p_sys )
 }
 
 /* Apply the post-pass USM in-place on the luma plane, when enabled.
- * No-op when amount==0, no pool allocated, or no luma plane. CCN 2. */
-static void ApplyUsmIfEnabled( filter_sys_t *p_sys, picture_t *p_out )
+ * No-op when amount==0, no pool allocated, or no luma plane. A pool
+ * failure (sticky lazy-init, OBS parity with the zimg pool's OBS-2)
+ * warns once and disables USM for the rest of playback so every later
+ * frame skips the dead call. CCN 4. */
+static void ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
+                               picture_t *p_out )
 {
     if( p_sys->usm_amount_q8 <= 0 || !p_sys->usm_pool
         || p_out->i_planes < 1 || p_sys->usm_skip_sharp )
         return;
 
     plane_t *y = &p_out->p[0];
-    up_usm_pool_apply(
-        p_sys->usm_pool,
-        y->p_pixels, y->i_pitch,
-        y->p_pixels, y->i_pitch,        /* in-place */
-        p_sys->usm_amount_q8 );
+    if( up_usm_pool_apply(
+            p_sys->usm_pool,
+            y->p_pixels, y->i_pitch,
+            y->p_pixels, y->i_pitch,        /* in-place */
+            p_sys->usm_amount_q8 ) != 0 )
+    {
+        msg_Warn( p_filter,
+                  "AutoUpscale: USM pool failed (worker spawn or scratch "
+                  "alloc); sharpening disabled for this playback" );
+        p_sys->usm_amount_q8 = 0;
+    }
 }
 
 /* OBS-3: every OBS_STATS_INTERVAL_NS, log a one-line long-run summary so
@@ -870,7 +880,7 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
         return NULL;
     }
 
-    ApplyUsmIfEnabled( p_sys, p_out );
+    ApplyUsmIfEnabled( p_filter, p_sys, p_out );
     RecordPerf( p_filter, p_sys, t_start, monotonic_ns() );
 
     picture_CopyProperties( p_out, p_in );
