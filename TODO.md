@@ -8,8 +8,8 @@ review categories. One table per category. Format: `id | status | effort | descr
 
 2026-07-10 post-fix rescan: full repository, every category, four parallel
 audit tracks covering production code, tests/fuzzers/benches, build/CI/scripts,
-and documentation. New or reopened: SCAL-6, CON-4,
-ARCH-10, REL-6..8, ERR-3, PORT-6..8,
+and documentation. New or reopened: CON-4,
+ARCH-10, REL-6..9, ERR-3, PORT-6..8,
 BUILD-2, BUILD-11..12, BUILD-14..15,
 OBS-6..8, WIRE-5, DEAD-9; DG-1, PORT-3, and BUILD-10 were
 expanded with related evidence. ASan/UBSan unit tests and all deterministic
@@ -51,13 +51,12 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| (none new) | | | No new standalone hot-path regression survived validation; worker-utilization is tracked under SCAL-6. | |
+| (none new) | | | No new standalone hot-path regression survived validation. | |
 
 ## scalability
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| SCAL-6 | open | S | `up_decide_tile_grid` maximizes row stripes first and only then floors `cols = n_threads / rows` (`zimg_helpers.h:209-230`), leaving usable workers idle. With 14 threads and a 1920x128 destination at a 16-row minimum it chooses 8x1=8 workers although 7x2=14 satisfies both minima. | Search the bounded row/column combinations for the largest valid product, then prefer the desired shape on ties. Add optimality cases to the tile-grid unit/fuzz checks. |
 | — | | | SCAL-2 remains resolved: broadcast wake plus a single counting barrier keeps per-frame main-thread dispatch O(1). | |
 
 ## concurrency
@@ -114,6 +113,7 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 | REL-6 | open | M | Non-zero VLC visible-area crop offsets are ignored. `ResolveInputDims` uses visible width/height, but zimg, swscale, and the content probe all start at raw `p_pixels` (`autoupscale.c:395-404,733-751`, `scaler_zimg.c:1092-1107`, `scaler_swscale.c:94-117`), so they scale/probe the top-left physical rectangle rather than the declared visible rectangle. | Centralize an offset-aware picture-plane view that accounts for chroma subsampling, packed/interleaved formats, and pixel pitch; validate offset plus extent. Add cropped I420/NV12/RGB tests. Distinct from DG-1/DG-3, which cover allocation geometry rather than logical crop origin. |
 | REL-7 | open | M | `scaler_backend_t::process` has only success/failure, so a transient zimg picture pre-flight rejection is indistinguishable from a fatal sticky lazy-init/barrier failure (`scaler.h:74-83`, `scaler_zimg.c:1192-1220`). `Filter()` permanently closes zimg and downgrades the playback to swscale after either. | Introduce transient-frame versus fatal-backend statuses and trigger fallback only for fatal failures. One malformed/drifted frame should be dropped without changing every later frame's backend. |
 | REL-8 | open | S | AUTO mode does not try swscale when the preferred zimg backend fails during `open`; `Open()` logs and aborts immediately (`autoupscale.c:617-634`). This includes the zimg runtime ABI-major rejection, even though swscale is the documented universal fallback. | In AUTO only, select/open swscale after zimg open failure; forced-zimg must still fail. The previously rejected Open candidate covered cleanup ownership, not fallback behavior. |
+| REL-9 | open | S | The deterministic zimg seam fuzzer exceeds its documented smooth-content bound during an extended run: `480x16 -> 1166x42`, 6 workers, I420 reaches max delta 18 versus `SEAM_MAX_DELTA=16`. | Reproduces before the SCAL-6 selector change because both selectors choose the same 2x3 grid. The standard 400-iteration gate passes, but the comment's claimed 4000+ empirical envelope is stale. Preserve the failing seed, then decide whether the quality bound, minimum cell geometry, or independent-graph tiling needs adjustment. |
 | — | | | REL-3 (runtime zimg API major-version probe) remains implemented; REL-8 tracks the missing AUTO fallback around that probe. | |
 
 ## error handling

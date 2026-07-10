@@ -427,11 +427,18 @@ static void test_decide_tile_grid(void)
     up_decide_tile_grid(16, 1920, 1080, 16, 64, &r, &c);
     CHECK_EQ(r, 16); CHECK_EQ(c, 1);
 
-    /* Wide + short: 96/16 = 6 rows max < 16 threads -> tile columns.
-     * cols = 16/6 = 2, capped by 1920/64 = 30. */
+    /* Wide + short: choose the product that uses all 16 workers. */
     up_decide_tile_grid(16, 1920, 96, 16, 64, &r, &c);
-    CHECK_EQ(r, 6); CHECK_EQ(c, 2);
+    CHECK_EQ(r, 4); CHECK_EQ(c, 4);
     CHECK(r * c <= 16);
+
+    /* Regression: row-first selection used only 8 of 14 workers. */
+    up_decide_tile_grid(14, 1920, 128, 16, 64, &r, &c);
+    CHECK_EQ(r, 7); CHECK_EQ(c, 2);
+
+    /* Equal 12-cell products prefer the grid with more row stripes. */
+    up_decide_tile_grid(13, 192, 96, 16, 64, &r, &c);
+    CHECK_EQ(r, 6); CHECK_EQ(c, 2);
 
     /* Column cap by width: dst_w=80 -> max_cols=80/64=1, so cols stays 1. */
     up_decide_tile_grid(16, 80, 96, 16, 64, &r, &c);
@@ -449,7 +456,9 @@ static void test_decide_tile_grid(void)
     up_decide_tile_grid(16, 1920, 96, -1, 64, &r, &c);   /* stripe_min<=0 */
     CHECK(r >= 1 && c >= 1 && (long long)r * c <= 16);
     up_decide_tile_grid(16, 1920, 96, 16, 0, &r, &c);    /* col_min<=0 -> cols 1 */
-    CHECK(r >= 1 && c == 1);
+    CHECK_EQ(r, 6); CHECK_EQ(c, 1);
+    up_decide_tile_grid(1000, 8192, 8192, 1, 1, &r, &c);
+    CHECK_EQ(r * c, UP_TILE_THREADS_MAX);
     up_decide_tile_grid(INT_MAX, INT_MAX, INT_MAX, 16, 64, &r, &c);
     CHECK(r >= 1 && c >= 1);
     up_decide_tile_grid(INT_MIN, INT_MIN, INT_MIN, INT_MIN, INT_MIN, &r, &c);

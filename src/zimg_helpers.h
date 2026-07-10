@@ -33,6 +33,8 @@
  * stripes hurts quality without adding throughput. */
 #define UP_STRIPE_MIN_DST_LINES 16
 
+#define UP_TILE_THREADS_MAX     64
+
 /*
  * Resolve the user-tunable zimg stripe-min-lines value. Pass 0 (or any
  * non-positive sentinel) to fall back to the compile-time default
@@ -205,31 +207,45 @@ static inline int up_compute_stripe_bounds(
  *
  * up_compute_stripe_bounds() is reused verbatim for the column axis: it is a
  * pure even-aligned 1D partition, and even column boundaries keep chroma
- * subsampling exact. Writes *rows,*cols (each >= 1); rows*cols <= n_threads.
- * CCN 7.
+ * subsampling exact. Writes *rows,*cols (each >= 1); rows*cols <= the thread
+ * budget. The bounded search maximizes active workers, preferring more rows
+ * on ties. CCN 6.
  */
+static inline int up__tile_axis_limit(int extent, int minimum,
+                                      int fallback, int budget)
+{
+    int limit = minimum > 0 ? extent / minimum : fallback;
+    if (limit < 1) limit = 1;
+    if (limit > budget) limit = budget;
+    return limit;
+}
+
 static inline void up_decide_tile_grid(int n_threads, int dst_w, int dst_h,
                                        int stripe_min, int col_min,
                                        int *rows, int *cols)
 {
-    if (n_threads < 1) n_threads = 1;
-    int max_rows = (stripe_min > 0) ? dst_h / stripe_min : n_threads;
-    if (max_rows < 1) max_rows = 1;
+    int budget = n_threads;
+    if (budget < 1) budget = 1;
+    if (budget > UP_TILE_THREADS_MAX) budget = UP_TILE_THREADS_MAX;
 
-    /* r = min(n_threads, max_rows). Written as an explicit clamp (not a
-     * ternary) so static analysis can see r may end up < n_threads. */
-    int r = n_threads;
-    if (r > max_rows) r = max_rows;
-    int c = 1;
-    if (r < n_threads) {                 /* height-bound: tile columns to fill */
-        int max_cols = (col_min > 0) ? dst_w / col_min : 1;
-        if (max_cols < 1) max_cols = 1;
-        c = n_threads / r;
-        if (c > max_cols) c = max_cols;
-        if (c < 1) c = 1;
+    int row_limit = up__tile_axis_limit(dst_h, stripe_min, budget, budget);
+    int col_limit = up__tile_axis_limit(dst_w, col_min, 1, budget);
+    int best_rows = 1;
+    int best_cols = 1;
+    int best_cells = 1;
+
+    for (int r = 1; r <= row_limit; r++) {
+        int c = budget / r;
+        if (c > col_limit) c = col_limit;
+        int cells = r * c;
+        if (cells >= best_cells) {
+            best_rows = r;
+            best_cols = c;
+            best_cells = cells;
+        }
     }
-    *rows = r;
-    *cols = c;
+    *rows = best_rows;
+    *cols = best_cols;
 }
 
 #endif /* AUTOUPSCALE_ZIMG_HELPERS_H */

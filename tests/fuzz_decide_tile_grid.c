@@ -12,7 +12,9 @@
  *   2. its output contract holds for ANY input:
  *        - *rows >= 1 and *cols >= 1, and
  *        - rows*cols <= max(1, n_threads)  (computed in 64-bit, so the check
- *          itself can't overflow).
+ *          itself can't overflow), and
+ *        - the grid maximizes active workers within the row/column limits,
+ *          preferring more row stripes on ties.
  *
  * Production only ever passes small positive values (n_threads <= 64,
  * stripe_min/col_min are positive constants), but the contract must hold for
@@ -29,6 +31,39 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static int oracle_axis_limit(int extent, int minimum,
+                             int fallback, int budget)
+{
+    int limit = minimum > 0 ? extent / minimum : fallback;
+    if (limit < 1) limit = 1;
+    if (limit > budget) limit = budget;
+    return limit;
+}
+
+static void oracle_grid(int n_threads, int dst_w, int dst_h,
+                        int stripe_min, int col_min,
+                        int *rows, int *cols)
+{
+    int budget = n_threads;
+    if (budget < 1) budget = 1;
+    if (budget > UP_TILE_THREADS_MAX) budget = UP_TILE_THREADS_MAX;
+    int row_limit = oracle_axis_limit(dst_h, stripe_min, budget, budget);
+    int col_limit = oracle_axis_limit(dst_w, col_min, 1, budget);
+    int best_cells = 0;
+    *rows = 1;
+    *cols = 1;
+    for (int r = 1; r <= row_limit; r++) {
+        int c = col_limit;
+        if (c > budget / r) c = budget / r;
+        int cells = r * c;
+        if (cells > best_cells || (cells == best_cells && r > *rows)) {
+            best_cells = cells;
+            *rows = r;
+            *cols = c;
+        }
+    }
+}
 
 static int check_grid(int n_threads, int dst_w, int dst_h,
                       int stripe_min, int col_min)
@@ -53,20 +88,31 @@ static int check_grid(int n_threads, int dst_w, int dst_h,
                 cells, budget, n_threads, dst_w, dst_h, stripe_min, col_min);
         return 1;
     }
+    int expected_rows, expected_cols;
+    oracle_grid(n_threads, dst_w, dst_h, stripe_min, col_min,
+                &expected_rows, &expected_cols);
+    if (rows != expected_rows || cols != expected_cols) {
+        fprintf(stderr, "FAIL: grid=%dx%d expected=%dx%d "
+                "for n=%d dw=%d dh=%d sm=%d cm=%d\n",
+                rows, cols, expected_rows, expected_cols,
+                n_threads, dst_w, dst_h, stripe_min, col_min);
+        return 1;
+    }
     return 0;
 }
 
-static void run_one(const uint8_t *data, size_t size)
+static int run_one(const uint8_t *data, size_t size)
 {
-    if (size < 5 * sizeof(int32_t)) return;
+    if (size < 5 * sizeof(int32_t)) return 0;
     int32_t v[5];
     memcpy(v, data, sizeof v);
-    (void)check_grid((int)v[0], (int)v[1], (int)v[2], (int)v[3], (int)v[4]);
+    return check_grid((int)v[0], (int)v[1], (int)v[2],
+                      (int)v[3], (int)v[4]);
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
-    run_one(data, size);
+    if (run_one(data, size)) abort();
     return 0;
 }
 
@@ -110,7 +156,7 @@ int main(int argc, char **argv)
             s ^= s << 13; s ^= s >> 17; s ^= s << 5;
             memcpy(buf + j, &s, 4);
         }
-        run_one(buf, sizeof buf);
+        fails += run_one(buf, sizeof buf);
     }
 
     if (fails) { printf("decide_tile_grid smoke FAILED: %d\n", fails); return 1; }

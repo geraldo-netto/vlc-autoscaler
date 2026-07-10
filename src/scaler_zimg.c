@@ -94,6 +94,9 @@
 /* SCAL-3: a column tile narrower than this isn't worth its own zimg graph. */
 #define ZIMG_COL_MIN_WIDTH 64
 
+_Static_assert(UP_TILE_THREADS_MAX == UP_THREADS_MAX,
+               "tile-grid and worker caps must match");
+
 /*
  * SCAL-4: best-effort pin one worker thread to a single CPU core. Opt-in
  * (--autoupscale-pin-threads), Linux only — isolates the non-portable
@@ -989,21 +992,23 @@ static int zimg_lazy_init(zimg_priv_t *p)
  * halo), which would silently override the --autoupscale-zerocopy-src=0
  * safety fallback the option longtext sells as the escape hatch for
  * VLC-pool instability. The user asked for the safe path: give it to
- * them — fall back to the rows-only grid (fewer workers on wide/short
- * frames) instead of forcing zero-copy reads behind their back. `rows`
- * is computed independent of `cols` in up_decide_tile_grid, so dropping
- * cols keeps the full row parallelism. CCN 4. */
-static void zimg_honor_copy_in_grid(const scaler_ctx_t *ctx, int rows,
-                                    int *cols)
+ * them — recompute a rows-only grid (fewer workers on wide/short frames)
+ * instead of forcing zero-copy reads behind their back. CCN 4. */
+static void zimg_honor_copy_in_grid(const scaler_ctx_t *ctx, int n_threads,
+                                    int stripe_min_lines,
+                                    int *rows, int *cols)
 {
     if (*cols <= 1 || ctx->zimg.src_zerocopy != 0)
         return;
+    int tiled_rows = *rows;
+    int tiled_cols = *cols;
+    up_decide_tile_grid(n_threads, ctx->dst_w, ctx->dst_h,
+                        stripe_min_lines, 0, rows, cols);
     if (ctx->log_obj)
         msg_Warn((vlc_object_t *)ctx->log_obj,
                  "AutoUpscale: zerocopy-src=0 disables column tiling; "
                  "using %d row stripes instead of %dx%d grid",
-                 rows, rows, *cols);
-    *cols = 1;
+                 *rows, tiled_rows, tiled_cols);
 }
 
 static int zimg_open(scaler_ctx_t *ctx)
@@ -1043,7 +1048,7 @@ static int zimg_open(scaler_ctx_t *ctx)
     up_decide_tile_grid(n_threads, ctx->dst_w, ctx->dst_h,
                         stripe_min_lines, ZIMG_COL_MIN_WIDTH, &rows, &cols);
 
-    zimg_honor_copy_in_grid(ctx, rows, &cols);
+    zimg_honor_copy_in_grid(ctx, n_threads, stripe_min_lines, &rows, &cols);
 
     zimg_priv_t *p = calloc(1, sizeof(*p));
     if (!p) return -1;
