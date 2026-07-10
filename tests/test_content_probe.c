@@ -202,8 +202,9 @@ static void test_bypass_clean_source_no_bypass(void)
     a.frames = 60;
     a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
     a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
-    /* Sharp source: lap mean = 1500² */
-    a.lap_sum = a.lap_samples * 1500ULL * 1500ULL;
+    /* Sharp source: lap mean 1500, inside the measured grainy band
+     * (800-2000 mean-of-squares, see content_probe.h). */
+    a.lap_sum = a.lap_samples * 1500ULL;
     /* Smooth: edge mean = 2 */
     a.edge_sum = a.edge_samples * 2;
     CHECK_EQ(up_should_bypass_for_content(&a), 0);
@@ -217,8 +218,8 @@ static void test_bypass_soft_only_no_bypass(void)
     a.frames = 60;
     a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
     a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
-    /* Very soft: lap mean = 100² */
-    a.lap_sum = a.lap_samples * 100ULL * 100ULL;
+    /* Very soft: lap mean 100, below the 200-400 blocky band */
+    a.lap_sum = a.lap_samples * 100ULL;
     /* Smooth: edge mean = 2 */
     a.edge_sum = a.edge_samples * 2;
     CHECK_EQ(up_should_bypass_for_content(&a), 0);
@@ -232,8 +233,10 @@ static void test_bypass_blocky_only_no_bypass(void)
     a.frames = 60;
     a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
     a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
-    /* Sharp: lap mean = 1500² */
-    a.lap_sum = a.lap_samples * 1500ULL * 1500ULL;
+    /* Sharp: lap mean 1500 — realistic grainy-band magnitude. Under the
+     * old squared threshold (400² = 160000) this counted as "very soft"
+     * and bypassed on blockiness alone; regression for that bug. */
+    a.lap_sum = a.lap_samples * 1500ULL;
     /* Blocky: edge mean = 12 */
     a.edge_sum = a.edge_samples * 12;
     CHECK_EQ(up_should_bypass_for_content(&a), 0);
@@ -247,11 +250,28 @@ static void test_bypass_soft_and_blocky_yes_bypass(void)
     a.frames = 60;
     a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
     a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
-    /* Very soft: lap mean = 200² */
-    a.lap_sum = a.lap_samples * 200ULL * 200ULL;
+    /* Very soft: lap mean 200, inside the measured blocky band (200-400) */
+    a.lap_sum = a.lap_samples * 200ULL;
     /* Very blocky: edge mean = 12 */
     a.edge_sum = a.edge_samples * 12;
     CHECK_EQ(up_should_bypass_for_content(&a), 1);
+    END();
+}
+
+static void test_bypass_soft_threshold_boundary(void)
+{
+    BEGIN("bypass: soft threshold is linear and exclusive at 400");
+    up_probe_accum_t a = {0};
+    a.frames = 60;
+    a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
+    a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
+    a.edge_sum = a.edge_samples * 12;           /* very blocky */
+
+    a.lap_sum = a.lap_samples * (UP_PROBE_THRESH_SOFT_LAP_MEAN - 1);
+    CHECK_EQ(up_should_bypass_for_content(&a), 1);   /* 399: soft */
+
+    a.lap_sum = a.lap_samples * UP_PROBE_THRESH_SOFT_LAP_MEAN;
+    CHECK_EQ(up_should_bypass_for_content(&a), 0);   /* 400: not soft */
     END();
 }
 
@@ -391,6 +411,7 @@ int main(void)
     test_bypass_soft_only_no_bypass();
     test_bypass_blocky_only_no_bypass();
     test_bypass_soft_and_blocky_yes_bypass();
+    test_bypass_soft_threshold_boundary();
     test_bypass_null_input();
 
     test_skip_usm_threshold_disabled_sentinel();

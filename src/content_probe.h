@@ -69,9 +69,9 @@
  * signal, and the un-normalized form is faster and doesn't require a
  * second pass.
  *
- * Returns the SUM of squared Laplacians (not mean). Caller can normalize
- * by sample count if a per-pixel value is needed; for our threshold
- * compare we use the raw sum compared against (n_samples * threshold²).
+ * Returns the SUM of squared Laplacians (not mean). Callers normalize by
+ * sample count: every threshold in this file (SOFT, SHARP) is expressed
+ * in those mean-of-squared-Laplacians units and compared linearly.
  */
 static inline uint64_t up_laplacian_variance(const uint8_t *plane,
                                              int stride, int w, int h,
@@ -252,6 +252,10 @@ static inline void up_probe_observe(up_probe_accum_t *a,
  * upscaling on grainy/textured 480p content yields ~lap-mean 800-2000
  * and edge-mean 1-4. Heavily-blocky low-bitrate content yields lap-mean
  * 200-400 and edge-mean 8-15. We bypass only in the second region.
+ *
+ * All lap thresholds are in mean-of-squared-Laplacians units — the same
+ * `lap_sum / lap_samples` value RunProbe logs — matching the measured
+ * bands above. Compared linearly, never squared.
  */
 #define UP_PROBE_THRESH_SOFT_LAP_MEAN    400   /* below = "very soft" */
 #define UP_PROBE_THRESH_BLOCKY_EDGE_MEAN  6    /* above = "very blocky" */
@@ -302,13 +306,10 @@ static inline int up_should_bypass_for_content(const up_probe_accum_t *a)
     if (a->lap_samples  < UP_PROBE_MIN_SAMPLES_PER_KIND) return 0;
     if (a->edge_samples < UP_PROBE_MIN_SAMPLES_PER_KIND) return 0;
 
-    /* Compute means as plain integers (sum / sample-count). The lap_sum
-     * is sum of (lap*lap), so we compare the mean against threshold². */
     uint64_t lap_mean  = a->lap_sum  / a->lap_samples;
     uint64_t edge_mean = a->edge_sum / a->edge_samples;
 
-    int very_soft  = (lap_mean  < (uint64_t)UP_PROBE_THRESH_SOFT_LAP_MEAN
-                                * (uint64_t)UP_PROBE_THRESH_SOFT_LAP_MEAN);
+    int very_soft  = (lap_mean  < (uint64_t)UP_PROBE_THRESH_SOFT_LAP_MEAN);
     int very_blocky = (edge_mean > (uint64_t)UP_PROBE_THRESH_BLOCKY_EDGE_MEAN);
 
     return (very_soft && very_blocky) ? 1 : 0;
