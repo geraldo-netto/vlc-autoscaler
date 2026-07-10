@@ -98,8 +98,9 @@ static void decode_params(const uint8_t *data, fuzz_params_t *p)
 
     p->width   = (u_w % FUZZ_MAX_W) + 1;
     p->height  = (u_h % FUZZ_MAX_H) + 1;
-    p->amount  = ((int)i_amount % 513) - 1;   /* -1..511 — pool clamps to [0, 256] */
-    if (p->amount < 0) p->amount = 0;
+    /* Exercise the API's signed input domain around both normal and
+     * defensive ranges; every variant must apply the same clamp. */
+    p->amount  = (int)i_amount;
     p->workers = (data[6] % 6) + 1;            /* 1..6 workers */
     p->seed    = data[7];
 }

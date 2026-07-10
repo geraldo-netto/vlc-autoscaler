@@ -54,6 +54,8 @@ static void test_amount_conversion(void)
     CHECK_EQ(up_usm_amount_pct_to_q8(30),  76);   /* 30*256/100 = 76.8 -> 76 */
     CHECK_EQ(up_usm_amount_pct_to_q8(100), 256);
     CHECK_EQ(up_usm_amount_pct_to_q8(200), 512);
+    CHECK_EQ(up_usm_amount_pct_to_q8(UP_USM_AMOUNT_MAX),
+             UP_USM_AMOUNT_Q8_NORMAL_MAX);
 
     /* Out of range clamps. */
     CHECK_EQ(up_usm_amount_pct_to_q8(-50),  0);

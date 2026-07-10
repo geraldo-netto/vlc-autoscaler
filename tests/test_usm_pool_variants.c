@@ -226,9 +226,14 @@ static void test_typical_resolutions(void)
 
 static void test_amount_sweep(void)
 {
-    /* Exercise the full amount_q8 range — saturation behavior at extremes. */
-    BEGIN("amount sweep at 1080p (0, 16, 76, 128, 200, 256, 511)");
-    int amounts[] = { 0, 16, 76, 128, 200, 256, 511 };
+    /* Cover the normal user ceiling and defensive API clamp boundaries. */
+    BEGIN("amount sweep across normal and defensive API bounds");
+    const int amounts[] = {
+        -1, 0, 16, 76, 128, 256,
+        UP_USM_AMOUNT_Q8_NORMAL_MAX,
+        UP_USM_AMOUNT_Q8_MAX,
+        UP_USM_AMOUNT_Q8_MAX + 1,
+    };
     for (size_t i = 0; i < sizeof(amounts)/sizeof(*amounts); i++) {
         check_one(2, 1920, 1080, amounts[i], 0x11111111u + (uint32_t)i);
     }

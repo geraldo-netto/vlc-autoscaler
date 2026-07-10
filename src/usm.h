@@ -37,9 +37,12 @@
 #define UP_USM_AMOUNT_DEFAULT  20
 #define UP_USM_AMOUNT_MAX      200
 
-/* Internal Q8 range: 0..512. Anything above 4096 is rejected by
- * up_usm_apply_plane as nonsensical (16x sharpening). */
-#define UP_USM_AMOUNT_Q8_MAX   4096
+/* Normal Q8 range produced from the user-facing percentage is 0..512.
+ * The callable single-threaded and pool APIs defensively accept any int and
+ * clamp it to 0..4096, preserving the historical 16x ceiling for internal
+ * and test callers without exposing that range as a user option. */
+#define UP_USM_AMOUNT_Q8_NORMAL_MAX  512
+#define UP_USM_AMOUNT_Q8_MAX         4096
 
 /*
  * Convert a user-facing percentage (0..200) into Q8 fixed-point.
@@ -120,8 +123,9 @@ typedef struct {
  *                       0    = identity (output = input)
  *                       256  = 1.0 (typical)
  *                       512  = 2.0 (strong)
- *                     Negative values are clamped to 0; values above
- *                     UP_USM_AMOUNT_Q8_MAX are clamped down.
+ *                     Normal user-derived values are 0..512. Negative
+ *                     values are clamped to 0; values above the defensive
+ *                     UP_USM_AMOUNT_Q8_MAX ceiling are clamped down.
  *   workspace       : caller-provided buffer of at least
  *                     up_usm_workspace_size(io->width, io->height) bytes.
  *                     Contents on entry don't matter; on exit they're

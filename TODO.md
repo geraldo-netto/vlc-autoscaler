@@ -76,7 +76,6 @@ implemented and tested; `git log` is the durable completion record.
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| ARCH-11 | open | S | The USM amount contract conflates the normal user-derived Q8 range (0..512) with the defensive API clamp ceiling (4096): `usm.h:40-42` says values above 4096 are rejected although `up_usm__clamp_amount_q8` clamps them. Variant tests call 0..511 the full range and the variant fuzzer claims a different 0..256 clamp. | Document the normal 0..512 range separately from the callable API's 0..4096 defensive range, correct the reject/clamp wording, and add cross-variant cases for 512, 4096, above-max, and negative values (`test_usm_pool_variants.c:227-235`, `fuzz_usm_variants.c:90-104`). |
 | ARCH-12 | open | M | Runtime and verification documentation drifted after the last sync: resolved REL-9 is still described as open; HOW_IT_WORKS still claims all USM pointers are `restrict` and per-function O3 pragmas; published test/coverage totals are stale. | Reconcile `README.md`, `Makefile`, and `docs/HOW_IT_WORKS.md` with current code. Prefer generated or non-volatile aggregate counts. Relevant HOW_IT_WORKS blocks include lines 572-590, 898-905, 929-938, and 1188-1195. PORT-6 owns its CPU-gating documentation. |
 
 ## system design

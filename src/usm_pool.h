@@ -80,9 +80,10 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
  * Output is bit-identical to up_usm_apply_plane(dst, dst_stride, src,
  * src_stride, width, height, amount_q8, workspace) for any inputs.
  *
- * amount_q8 outside [0, UP_USM_AMOUNT_Q8_MAX] is clamped (matches the
- * single-threaded behavior). amount_q8 == 0 is a fast identity copy
- * with no thread or workspace activity.
+ * Normal user-derived amount_q8 values are 0..UP_USM_AMOUNT_Q8_NORMAL_MAX.
+ * The API defensively clamps values outside [0, UP_USM_AMOUNT_Q8_MAX]
+ * (matching the single-threaded behavior). amount_q8 == 0 is a fast
+ * identity copy with no thread or workspace activity.
  */
 int up_usm_pool_apply(usm_pool_t *pool,
                       uint8_t *dst, int dst_stride,
