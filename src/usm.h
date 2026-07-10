@@ -26,7 +26,7 @@
 
 /* up_copy_plane: shared stride-aware plane copy, reused by the identity
  * fast path here and by usm_pool.c (DUP-1). Header-only, no extra deps. */
-#include "zimg_helpers.h"
+#include "plane_utils.h"
 
 /* User-facing amount range: 0..200 (percent of "1.0" sharpening).
  * 0  = off

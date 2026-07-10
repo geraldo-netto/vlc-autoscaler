@@ -24,7 +24,7 @@
  * Two entry points: LLVMFuzzerTestOneInput + a deterministic smoke main that
  * also sweeps the boundary values explicitly.
  *****************************************************************************/
-#include "../src/zimg_helpers.h"
+#include "../src/plane_utils.h"
 
 #include <limits.h>
 #include <stdint.h>

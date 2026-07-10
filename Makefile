@@ -308,13 +308,13 @@ $(BUILD)/fuzz_perfmon: tests/fuzz_perfmon.c tests/cli_parse.h src/perfmon.h | $(
 $(BUILD)/fuzz_threading: tests/fuzz_threading.c tests/cli_parse.h src/threading.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
-$(BUILD)/fuzz_copy_plane: tests/fuzz_copy_plane.c tests/cli_parse.h src/zimg_helpers.h | $(BUILD)
+$(BUILD)/fuzz_copy_plane: tests/fuzz_copy_plane.c tests/cli_parse.h src/plane_utils.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
-$(BUILD)/fuzz_stripe_bounds: tests/fuzz_stripe_bounds.c tests/cli_parse.h src/zimg_helpers.h | $(BUILD)
+$(BUILD)/fuzz_stripe_bounds: tests/fuzz_stripe_bounds.c tests/cli_parse.h src/plane_utils.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
-$(BUILD)/fuzz_decide_tile_grid: tests/fuzz_decide_tile_grid.c src/zimg_helpers.h | $(BUILD)
+$(BUILD)/fuzz_decide_tile_grid: tests/fuzz_decide_tile_grid.c src/plane_utils.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
 $(BUILD)/fuzz_frame_shape: tests/fuzz_frame_shape.c src/chroma_classify.h src/zimg_helpers.h | $(BUILD)
@@ -405,13 +405,13 @@ $(BUILD)/fuzz_perfmon_smoke: tests/fuzz_perfmon.c tests/cli_parse.h src/perfmon.
 $(BUILD)/fuzz_threading_smoke: tests/fuzz_threading.c tests/cli_parse.h src/threading.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
-$(BUILD)/fuzz_copy_plane_smoke: tests/fuzz_copy_plane.c tests/cli_parse.h src/zimg_helpers.h | $(BUILD)
+$(BUILD)/fuzz_copy_plane_smoke: tests/fuzz_copy_plane.c tests/cli_parse.h src/plane_utils.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
-$(BUILD)/fuzz_stripe_bounds_smoke: tests/fuzz_stripe_bounds.c tests/cli_parse.h src/zimg_helpers.h | $(BUILD)
+$(BUILD)/fuzz_stripe_bounds_smoke: tests/fuzz_stripe_bounds.c tests/cli_parse.h src/plane_utils.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
-$(BUILD)/fuzz_decide_tile_grid_smoke: tests/fuzz_decide_tile_grid.c src/zimg_helpers.h | $(BUILD)
+$(BUILD)/fuzz_decide_tile_grid_smoke: tests/fuzz_decide_tile_grid.c src/plane_utils.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
 $(BUILD)/fuzz_frame_shape_smoke: tests/fuzz_frame_shape.c src/chroma_classify.h src/zimg_helpers.h | $(BUILD)
@@ -722,11 +722,11 @@ $(COV_BUILD)/fuzz_perfmon: tests/fuzz_perfmon.c tests/cli_parse.h src/perfmon.h 
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/fuzz_threading: tests/fuzz_threading.c tests/cli_parse.h src/threading.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/fuzz_copy_plane: tests/fuzz_copy_plane.c tests/cli_parse.h src/zimg_helpers.h | $(COV_BUILD)
+$(COV_BUILD)/fuzz_copy_plane: tests/fuzz_copy_plane.c tests/cli_parse.h src/plane_utils.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/fuzz_stripe_bounds: tests/fuzz_stripe_bounds.c tests/cli_parse.h src/zimg_helpers.h | $(COV_BUILD)
+$(COV_BUILD)/fuzz_stripe_bounds: tests/fuzz_stripe_bounds.c tests/cli_parse.h src/plane_utils.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/fuzz_decide_tile_grid: tests/fuzz_decide_tile_grid.c src/zimg_helpers.h | $(COV_BUILD)
+$(COV_BUILD)/fuzz_decide_tile_grid: tests/fuzz_decide_tile_grid.c src/plane_utils.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/fuzz_frame_shape: tests/fuzz_frame_shape.c src/chroma_classify.h src/zimg_helpers.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)

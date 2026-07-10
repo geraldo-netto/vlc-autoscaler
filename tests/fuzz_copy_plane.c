@@ -22,7 +22,7 @@
  *      -I src tests/fuzz_copy_plane.c -o build/fuzz_copy_plane_smoke
  *****************************************************************************/
 
-#include "../src/zimg_helpers.h"
+#include "../src/plane_utils.h"
 #include "cli_parse.h"
 
 #include <stdint.h>

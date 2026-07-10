@@ -17,7 +17,7 @@
  * Two entry points: LLVMFuzzerTestOneInput + a deterministic smoke main.
  *****************************************************************************/
 
-#include "../src/zimg_helpers.h"
+#include "../src/plane_utils.h"
 #include "cli_parse.h"
 
 #include <stdint.h>
