@@ -32,7 +32,7 @@
 #define UP_PERFMON_WARMUP_FRAMES        10
 #define UP_PERFMON_MIN_FRAMES_FOR_WARN  30
 
-/* EWMA shift: ewma <- ewma + (sample - ewma) >> ALPHA_SHIFT
+/* EWMA step: ewma <- ewma + floor((sample - ewma) / 2^ALPHA_SHIFT)
  * 3 means alpha = 1/8 = 0.125. Half-life ~5.5 samples. */
 #define UP_PERFMON_ALPHA_SHIFT  3
 
@@ -44,6 +44,18 @@ typedef struct
     int     has_warned;      /* latched once warning fires */
     int     enabled;         /* 0 if monitoring disabled (e.g. target_fps<=0) */
 } up_perfmon_t;
+
+/* EWMA step = floor(diff / 2^ALPHA_SHIFT). Bit-identical to the
+ * arithmetic right shift it replaces, but fully defined: C11 6.5.7p5
+ * leaves right-shifting a negative value implementation-defined. */
+static inline int64_t up_perfmon__ewma_step(int64_t diff)
+{
+    const int64_t div = INT64_C(1) << UP_PERFMON_ALPHA_SHIFT;
+    int64_t step = diff / div;
+    if (diff < 0 && diff % div != 0)
+        step--;
+    return step;
+}
 
 /*
  * Initialize a perfmon. target_fps <= 0 disables monitoring (record_ns
@@ -91,13 +103,9 @@ static inline int up_perfmon_record_ns(up_perfmon_t *pm, int64_t frame_ns)
         return 0;
     }
 
-    /* Update EWMA: ewma += (sample - ewma) >> ALPHA_SHIFT.
-     * Right-shift on signed values is implementation-defined for
-     * negatives in C99 but well-defined in C11/C18 as arithmetic shift
-     * on twos-complement, which every target we care about uses. We
-     * also take the difference into a wider type so it can't overflow. */
-    int64_t diff = frame_ns - pm->ewma_ns;
-    pm->ewma_ns += diff >> UP_PERFMON_ALPHA_SHIFT;
+    /* ewma += floor((sample - ewma) / 2^ALPHA_SHIFT); the difference is
+     * taken in a wider type so it can't overflow. */
+    pm->ewma_ns += up_perfmon__ewma_step(frame_ns - pm->ewma_ns);
 
     /* Warn-once latch suppresses only the return value, not tracking. */
     if (pm->has_warned) return 0;

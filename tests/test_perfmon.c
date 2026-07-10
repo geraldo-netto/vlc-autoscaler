@@ -262,6 +262,41 @@ static void test_ewma_converges_to_constant(void)
     END();
 }
 
+/* UB-1 regression: the EWMA step must be floor(diff / 8) — bit-identical
+ * to the arithmetic right shift it replaced — for negative diffs too.
+ * Truncating division would round toward zero and diverge on negatives. */
+static void test_ewma_step_floor_semantics(void)
+{
+    BEGIN("ewma step is floor division for negative diffs (UB-1)");
+    const int64_t cases[] = {
+        -17, -16, -15, -9, -8, -7, -1, 0, 1, 7, 8, 9, 15, 16, 17,
+        INT64_MIN / 2, INT64_MAX / 2,
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        int64_t d = cases[i];
+        int64_t want = d / 8;
+        if (d < 0 && d % 8 != 0) want--;   /* reference floor */
+        CHECK_EQ(up_perfmon__ewma_step(d), want);
+    }
+    END();
+}
+
+static void test_ewma_converges_downward_exactly(void)
+{
+    BEGIN("ewma reaches a lower constant exactly (floor step moves on |diff|<8)");
+    up_perfmon_t pm;
+    up_perfmon_init(&pm, 60);
+
+    for (int i = 0; i < UP_PERFMON_WARMUP_FRAMES; i++)
+        up_perfmon_record_ns(&pm, 8000000LL);
+    /* Drop by 5 ns: diff = -5 each step; floor gives -1, so the EWMA
+     * walks all the way down. Truncation would give 0 and stick. */
+    for (int i = 0; i < 10; i++)
+        up_perfmon_record_ns(&pm, 8000000LL - 5);
+    CHECK_EQ(pm.ewma_ns, 8000000LL - 5);
+    END();
+}
+
 static void test_ewma_us_zero_during_warmup(void)
 {
     BEGIN("ewma_us returns 0 strictly before warmup completes");
@@ -311,6 +346,8 @@ int main(void)
     test_ignores_non_positive_samples();
     test_null_pm_safe();
     test_ewma_converges_to_constant();
+    test_ewma_step_floor_semantics();
+    test_ewma_converges_downward_exactly();
     test_ewma_us_zero_during_warmup();
     test_budget_us();
 
