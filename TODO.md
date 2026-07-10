@@ -9,7 +9,7 @@ review categories. One table per category. Format: `id | status | effort | descr
 2026-07-10 post-fix rescan: full repository, every category, four parallel
 audit tracks covering production code, tests/fuzzers/benches, build/CI/scripts,
 and documentation. New or reopened: SCAL-5..6, CON-4,
-ARCH-10, REL-6..8, ERR-3, PORT-6..8, ABI-3,
+ARCH-10, REL-6..8, ERR-3, PORT-6..8,
 BUILD-2, BUILD-11..12, BUILD-14..15,
 OBS-6..8, WIRE-4..5, DEAD-9; DG-1, DUP-9, PORT-3, and BUILD-10 were
 expanded with related evidence. ASan/UBSan unit tests and all deterministic
@@ -145,7 +145,6 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| ABI-3 | open | S | The implementation and production/tests rely on `up_usm_pool_destroy(NULL)` being a safe no-op (`usm_pool.c:612-615`, `test_lifetime.c:172-184`), but the public declaration's contract does not say NULL is accepted (`usm_pool.h:91-95`). | Document NULL as a no-op so a future implementation cannot “tighten” the function and break current callers. The test currently calls this a documented contract when it is not. |
 
 ## build/toolchain hygiene
 

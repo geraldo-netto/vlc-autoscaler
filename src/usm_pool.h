@@ -90,7 +90,8 @@ int up_usm_pool_apply(usm_pool_t *pool,
 
 /*
  * Free the pool. Joins worker threads if they were ever spawned.
- * Safe to call on a pool that never had apply() invoked.
+ * Passing NULL is a no-op. Safe to call on a pool that never had
+ * apply() invoked.
  */
 void up_usm_pool_destroy(usm_pool_t *pool);
 
