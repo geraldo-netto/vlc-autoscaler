@@ -127,7 +127,6 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| ERR-3 | open | S | Timing utilities ignore both `clock_gettime` results and then consume possibly uninitialized `timespec` values (`bench_usm_pool.c:117,123`, `bench_scaler_zimg.c:83,87`, `stress_usm_pool.c:212,219`). | Check both calls and fail the run/configuration with a clear timing error. This is distinct from production `monotonic_ns`, which handles clock failure deliberately. Re-verified still-valid 2026-07-10 at HEAD b8cbcf6 (line numbers refreshed). |
 | ERR-4 | open | S | `fuzz_scaler_seam.c` leaks the out-picture planes on failed resamples: `run_one` returns without `zt_pic_free(&ref)` when the reference resample fails after allocating `ref` (`:128-129`), and leaks `tiled` when the threaded resample fails (`:130-139` frees only on the OK path); `resample` itself allocates `out` before open/process can fail (`:78-88`). | Under the libFuzzer+ASan build (default leak detection), any legitimately failing iteration (graph-build failure on degenerate geometry, OOM) turns into a harness leak report that aborts/pollutes extended campaigns — the very runs REL-9 depends on. Free the out-param on non-OK inside `resample` or at both call sites. |
 
 ## portability/standards conformance

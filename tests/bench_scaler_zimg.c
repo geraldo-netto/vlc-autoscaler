@@ -60,6 +60,25 @@ static int parse(int argc, char **argv, struct bargs *a)
     return 0;
 }
 
+static int time_frames(scaler_ctx_t *ctx, zt_pic_t *src, zt_pic_t *dst,
+                       int frames, double *us_per_frame)
+{
+    struct timespec t0, t1;
+    int rc = 0;
+    if (clock_gettime(CLOCK_MONOTONIC, &t0) != 0) rc = 1;
+    for (int i = 0; i < frames; i++)
+        if (ctx->backend->process(ctx, &src->pic, &dst->pic)
+                != SCALER_PROCESS_OK) rc = 1;
+    if (clock_gettime(CLOCK_MONOTONIC, &t1) != 0) rc = 1;
+    if (rc != 0) {
+        fprintf(stderr, "timing/process failure; no measurement\n");
+        return 1;
+    }
+    double ns = (t1.tv_sec - t0.tv_sec) * 1.0e9 + (t1.tv_nsec - t0.tv_nsec);
+    *us_per_frame = (ns / 1000.0) / (double)frames;
+    return 0;
+}
+
 static int run_timed(const struct bargs *a, double *us_per_frame)
 {
     zt_pic_t src, dst;
@@ -79,16 +98,9 @@ static int run_timed(const struct bargs *a, double *us_per_frame)
             if (ctx.backend->process(&ctx, &src.pic, &dst.pic)
                     != SCALER_PROCESS_OK) rc = 1;
 
-        struct timespec t0, t1;
-        clock_gettime(CLOCK_MONOTONIC, &t0);
-        for (int i = 0; i < a->frames; i++)
-            if (ctx.backend->process(&ctx, &src.pic, &dst.pic)
-                    != SCALER_PROCESS_OK) rc = 1;
-        clock_gettime(CLOCK_MONOTONIC, &t1);
-
-        double ns = (t1.tv_sec - t0.tv_sec) * 1.0e9
-                  + (t1.tv_nsec - t0.tv_nsec);
-        *us_per_frame = (ns / 1000.0) / (double)a->frames;
+        if (rc == 0 && time_frames(&ctx, &src, &dst, a->frames,
+                                   us_per_frame) != 0)
+            rc = 1;
         ctx.backend->close(&ctx);
     }
     zt_pic_free(&src);

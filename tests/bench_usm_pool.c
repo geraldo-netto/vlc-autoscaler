@@ -103,6 +103,15 @@ static int run_warmup(usm_pool_t *pool, uint8_t *src, uint8_t *dst,
     return 0;
 }
 
+static int checked_now(struct timespec *ts)
+{
+    if (clock_gettime(CLOCK_MONOTONIC, ts) != 0) {
+        fprintf(stderr, "clock_gettime(CLOCK_MONOTONIC) failed\n");
+        return 1;
+    }
+    return 0;
+}
+
 static int run_timed(usm_pool_t *pool, uint8_t *src, uint8_t *dst,
                      const struct bench_args *a, int amount, double *us_per_frame)
 {
@@ -114,13 +123,13 @@ static int run_timed(usm_pool_t *pool, uint8_t *src, uint8_t *dst,
     fill_frame(src, a->width, a->height, a->mode, 0);
 
     struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    if (checked_now(&t0)) return 1;
     for (int i = 0; i < a->frames; i++) {
         if (up_usm_pool_apply(pool, dst, a->width, src, a->width, amount) != 0) {
             fprintf(stderr, "apply fail at frame %d\n", i); return 1;
         }
     }
-    clock_gettime(CLOCK_MONOTONIC, &t1);
+    if (checked_now(&t1)) return 1;
 
     double el_ns = (t1.tv_sec - t0.tv_sec) * 1.0e9 + (t1.tv_nsec - t0.tv_nsec);
     *us_per_frame = (el_ns / 1000.0) / (double)a->frames;

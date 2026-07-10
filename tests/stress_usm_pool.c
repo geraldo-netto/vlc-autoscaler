@@ -209,14 +209,24 @@ static int run_config(const stress_config_t *cfg)
     int diverged_frames = 0;
     size_t total_diff_bytes = 0;
     struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    if (clock_gettime(CLOCK_MONOTONIC, &t0) != 0) {
+        printf("CLOCK FAILED\n");
+        up_usm_pool_destroy(pool);
+        free_bufs(&b);
+        return -1;
+    }
 
     if (drive_frames(cfg, &b, pool, amount, plane_size,
                      &diverged_frames, &total_diff_bytes) != 0) {
         rc = -1;
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &t1);
+    if (clock_gettime(CLOCK_MONOTONIC, &t1) != 0) {
+        printf("CLOCK FAILED\n");
+        up_usm_pool_destroy(pool);
+        free_bufs(&b);
+        return -1;
+    }
     double elapsed_ms = (t1.tv_sec - t0.tv_sec) * 1000.0
                       + (t1.tv_nsec - t0.tv_nsec) / 1.0e6;
 
