@@ -156,12 +156,12 @@ typedef struct usm_worker_s {
 /*
  * Per-stripe flat detection (compile-time opt-in via USM_POOL_FLAT_SKIP).
  *
- * Sum of |src[x+1] - src[x]| over a single sampled row inside the stripe.
- * Below ~2 average per-pixel delta the stripe carries no detail USM
- * could enhance, and the combine pass becomes net-loss noise
+ * Sum of |src[x+1] - src[x]| over a sampled row inside the stripe. Very low
+ * horizontal activity carries little detail USM could enhance, and the
+ * combine pass becomes net-loss noise
  * amplification. Skip the combine entirely → identity copy of src→dst for
- * the stripe. Cost: O(width) per stripe vs O(width*stripe_height) for the
- * full sweep, so even at 0% skip rate the overhead is <2% of the sweep.
+ * the stripe. Sampling is O(width) versus the full O(width*stripe_height)
+ * sweep.
  *
  * Disabled by default because it sacrifices byte-identity with the
  * single-threaded reference up_usm_apply_plane on near-flat-but-not-
@@ -169,9 +169,8 @@ typedef struct usm_worker_s {
  * for bench tooling (`make bench-flatskip`) where perceptual equivalence
  * is sufficient — that is the call site the feature exists for.
  *
- * Conservative threshold: USM_FLAT_AVG_DELTA=2 means avg neighbour diff
- * < 2/255 ≈ 0.8%. Real video almost never hits this except for solid
- * colour fills (letterbox bars, plain backgrounds, fade-to-black).
+ * The conservative threshold selects only very low horizontal activity such
+ * as solid fills, letterbox bars, plain backgrounds, and fades.
  */
 #ifndef USM_POOL_FLAT_SKIP
 #  define USM_POOL_FLAT_SKIP 0

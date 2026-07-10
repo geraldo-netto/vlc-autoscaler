@@ -13,9 +13,8 @@
  * upscale_logic.h. Apply only to the Y plane of YUV pictures; sharpening
  * RGB or chroma planes causes visible colour fringing on edges.
  *
- * Performance: two passes over the plane, both memory-bound. About 2 ns
- * per pixel on a modern x86 core with `-O2`. A 1080p Y plane (~2.07 MP)
- * costs ~4 ms per frame on one core — well within budget.
+ * Performance: two memory-bound passes over the luma plane. Throughput
+ * depends on frame geometry, compiler, and CPU.
  *****************************************************************************/
 
 #ifndef AUTOUPSCALE_USM_H
@@ -77,15 +76,11 @@ static inline size_t up_usm_workspace_size(int width, int height)
 /* Horizontal 3-tap blur with [1,2,1]/4 kernel and edge replication.
  * `out` and `in` may not overlap. Width must be > 0.
  *
- * The inner pixel loop is the hottest in the entire plugin. With
- * -O2 + restrict, gcc reports "Loop costings not worthwhile" and
- * declines to vectorize; -O3 turns the vectorizer on (~3x at 1080p+),
- * and clang -O2 already emits 16-wide SIMD. We rely on the build
- * compiling the only production caller (usm_pool.c) at -O3 — the
- * Makefile's USM_POOL_CFLAGS substitutes -O2->-O3 for that TU, and the
- * benches do the same — rather than a per-function `#pragma GCC
- * optimize("O3")`, which is brittle across gcc versions and silently
- * no-ops if the function isn't inlined as expected (PERF-4). */
+ * The inner pixel loop is the hottest in the plugin. GCC's lower
+ * optimization level may decline vectorization on cost-model grounds;
+ * production therefore compiles usm_pool.c at the Makefile's hot-path
+ * optimization level. The policy stays translation-unit-wide rather than
+ * relying on compiler-specific function pragmas. */
 static inline void up_usm__hblur_row(uint8_t *restrict out,
                                      const uint8_t *restrict in,
                                      int width)
@@ -197,9 +192,8 @@ static inline void up_usm__pass1_hblur(
  * back at amount_q8/256 strength, with [0,255] clamping.
  *
  * Hottest pixel loop in the project (called height× per frame). Like
- * up_usm__hblur_row above, it relies on the production TU (usm_pool.c)
- * being compiled at -O3 for gcc's vectorizer rather than a per-function
- * pragma (PERF-4); gcc -O3 and clang -O2 both emit 16-byte SIMD here.
+ * up_usm__hblur_row above, it relies on the production translation unit's
+ * optimization level to enable vectorization; no per-function pragma is used.
  *
  * dst_row and src_row may ALIAS (in-place USM: production sharpens the
  * VLC luma plane in place) — each x is read before it is written and

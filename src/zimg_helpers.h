@@ -28,9 +28,8 @@
  * (Spline36 = 6 taps -> 3 rows above + 3 below). */
 #define UP_SCRATCH_LINE_PAD     8
 
-/* Minimum destination rows per slice-threaded stripe. Below this, the
- * resampling kernel's boundary handling dominates and adding more
- * stripes hurts quality without adding throughput. */
+/* Minimum destination rows per slice-threaded stripe. This bounds graph count
+ * and per-stripe boundary overhead. */
 #define UP_STRIPE_MIN_DST_LINES 16
 
 #define UP_TILE_THREADS_MAX     64

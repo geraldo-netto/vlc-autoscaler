@@ -3,8 +3,8 @@
  * content_probe.h - pure content-aware metrics for advisory and USM gating
  *****************************************************************************
  * Two no-reference quality proxies used to decide whether an upscale will
- * help on this particular source, computed over the first ~60 valid luma
- * views at playback start. If both metrics suggest
+ * help on this particular source, computed over a bounded initial luma window
+ * at playback start. If both metrics suggest
  * upscaling won't recover useful detail, the filter logs a one-time advisory.
  * VLC 3 cannot renegotiate the output format mid-stream, so scaling continues.
  *
@@ -248,24 +248,17 @@ static inline void up_probe_observe(up_probe_accum_t *a,
  *
  * Both conditions in conjunction are the "actively bad to upscale" case.
  *
- * Thresholds are chosen conservatively. A short clip of clean Spline36
- * upscaling on grainy/textured 480p content yields ~lap-mean 800-2000
- * and edge-mean 1-4. Heavily-blocky low-bitrate content yields lap-mean
- * 200-400 and edge-mean 8-15. We advise only in the second region.
- *
- * All lap thresholds are in mean-of-squared-Laplacians units — the same
- * `lap_sum / lap_samples` value RunProbe logs — matching the measured
- * bands above. Compared linearly, never squared.
+ * The conservative advisory requires both low detail energy and elevated
+ * block-edge intensity. Laplacian thresholds use the same
+ * `lap_sum / lap_samples` units RunProbe logs and are compared directly.
  */
 #define UP_PROBE_THRESH_SOFT_LAP_MEAN    400   /* below = "very soft" */
 #define UP_PROBE_THRESH_BLOCKY_EDGE_MEAN  6    /* above = "very blocky" */
 #define UP_PROBE_MIN_FRAMES               10   /* need this many frames */
 #define UP_PROBE_MIN_SAMPLES_PER_KIND  20000   /* need this many samples */
 
-/* How many valid picture views the caller observes before deciding. At 30fps this is
- * 2 seconds — enough for a few I-frames and a couple of GOPs to
- * characterize the encoder's quality across motion changes. Must stay
- * >= UP_PROBE_MIN_FRAMES or the bypass advisory could never fire. */
+/* Bounded observation window. Must stay at least UP_PROBE_MIN_FRAMES or the
+ * bypass advisory could never fire. */
 #define UP_PROBE_WINDOW_FRAMES 60
 _Static_assert(UP_PROBE_WINDOW_FRAMES >= UP_PROBE_MIN_FRAMES,
                "probe window shorter than the frames the verdict needs");
@@ -273,10 +266,7 @@ _Static_assert(UP_PROBE_WINDOW_FRAMES >= UP_PROBE_MIN_FRAMES,
 /* Default sharpness cutoff (sum-of-squared-laplacians per sample, i.e.
  * the same units as `lap_sum / lap_samples`). Above this value the
  * source is considered heavily textured/grainy and USM is skipped to
- * avoid noise amplification. The comment in this file notes clean
- * grainy 480p yields ~800-2000; 3500 is above that band so the gate
- * only trips on actively over-detailed sources (film grain, high-
- * noise sensors, etc.). Exposed as the default of the VLC option
+ * avoid noise amplification. Exposed as the default of the VLC option
  * `--autoupscale-usm-sharp-threshold`. */
 #define UP_PROBE_THRESH_SHARP_LAP_MEAN  3500
 

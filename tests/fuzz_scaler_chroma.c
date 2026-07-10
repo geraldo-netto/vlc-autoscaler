@@ -215,8 +215,8 @@ static void check_random_fourcc(uint32_t fourcc)
 
 static void run_one(const uint8_t *data, size_t size)
 {
-    /* Every iteration runs the deterministic known-list checks: cheap
-     * (~14 chromas total) and catches mass regressions instantly. */
+    /* Every iteration runs the deterministic known-list checks so broad
+     * mapping regressions fail immediately. */
     check_known_supported();
     check_known_unsupported();
 

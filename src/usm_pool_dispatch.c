@@ -19,9 +19,8 @@
  *   - __builtin_cpu_supports() always returns the same answer for the life
  *     of the process — there's no point re-checking.
  *
- *   - Per-call dispatch would add a pointer load + indirect call to every
- *     usm_pool_apply, which fires once per frame. Trivial cost (~3 ns), but
- *     a one-time check at load is even cheaper.
+ *   - Per-call feature selection would repeat invariant work on every frame;
+ *     load-time selection performs it once.
  *
  *   - Constructor functions run during dlopen() before any code in the .so
  *     can be called from outside, so by the time VLC's plugin loader (or
@@ -132,9 +131,7 @@ up_usm_pool_dispatch_init(void)
     up_usm_pool_variant_name = "sse2";
 }
 
-/* Public API — thin forwarding shims. The function-pointer indirection
- * is one extra load per call; ~1 ns on modern x86. Negligible against
- * the millisecond-scale work it dispatches. */
+/* Public API — thin forwarding shims through the load-time-selected table. */
 usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
                                int stripe_min_rows)
 {

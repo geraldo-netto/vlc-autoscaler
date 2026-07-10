@@ -626,13 +626,9 @@ static void test_open_rejects_unsupported(void)
     END();
 }
 
-/* An extreme src->dst ratio (8 -> 1080 luma rows) drives the stripe-bounds
- * math to its limit. Whether stripe 0's source range collapses to zero rows
- * depends on how many stripes zimg_open creates, which is clamped to the
- * machine's core count (up_threads_decide) — so on a many-core host it
- * degenerates and lazy_init returns -1, while on a 1-2 core CI runner the few
- * fat stripes stay valid and it succeeds. Either way the backend must not
- * crash or leak (ASan/UBSan enforce); accept both results. */
+/* An extreme src->dst ratio drives stripe-bounds math to its limit. Whether a
+ * source range collapses depends on the geometry- and host-clamped stripe
+ * count. Either result must remain crash- and leak-free. */
 static void test_extreme_ratio_no_crash(void)
 {
     BEGIN("extreme src->dst ratio: graceful success or fatal status");

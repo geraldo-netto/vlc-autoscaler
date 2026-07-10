@@ -7,7 +7,7 @@
  * their correctness matters:
  *
  *   - A missing entry in up_opaque_chromas means autoupscale accepts a
- *     hardware GPU surface, allocates 30 worker threads + 6 MB scratch,
+ *     hardware GPU surface, performs unnecessary worker and scratch setup,
  *     gets torn down by VLC's chain probing, and the user sees the
  *     "Too high level of recursion" cascade.
  *

@@ -281,19 +281,15 @@ int main(int argc, char **argv)
             memcpy(buf + j, &s, 4);
         }
 
-        /* Bias every 4th iteration to use a *valid* preset value. The raw
-         * xorshift bytes give roughly uniform 32-bit ints, which means
-         * meaningful presets (0..6) hit only ~1.6e-7 of the time. Without
-         * biasing, the new ladder branches would be functionally untested
-         * by the smoke runner. With biasing, every preset gets ~25%/7 ≈
-         * 3.5% of iterations, which at 100k = 3500 hits per preset. */
+        /* Regularly bias input toward valid presets; uniform raw integers
+         * would almost never exercise the resolution ladder. */
         if ((i & 3) == 0) {
             int p = (int)(s % (UP_TARGET_MAX + 1u));  /* 0..UP_TARGET_MAX */
             memcpy(buf + 12, &p, 4);
         }
 
-        /* Bias every 4th-plus-1 iteration to use realistic source heights.
-         * Otherwise random int32 src_h is almost always negative or huge. */
+        /* Also bias toward realistic source heights; raw src_h values are
+         * usually negative or huge. */
         if ((i & 3) == 1) {
             static const int common_heights[] = {
                 144, 240, 288, 360, 480, 540, 576, 720, 1080, 1440, 2160, 4320

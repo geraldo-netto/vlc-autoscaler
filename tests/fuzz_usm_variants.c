@@ -192,10 +192,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 #ifdef FUZZ_MAIN
 int main(int argc, char **argv)
 {
-    /* 5000 default: each iteration creates 3 worker pools (one per variant)
-     * with up to 6 workers each, and runs under ASan in the smoke build.
-     * That's ~90k thread spawn/joins per 5k iters. Higher counts are
-     * practical via explicit argument or in the libFuzzer build. */
+    /* Each iteration creates a worker pool for every runnable variant. The
+     * default bounds sanitizer cost; an explicit argument can raise it. */
     long n = 5000;
     if (argc > 1) {
         char *end = NULL;

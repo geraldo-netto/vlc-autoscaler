@@ -124,7 +124,7 @@ static const int BV[] = {
 };
 #define NBV ((int)(sizeof BV / sizeof BV[0]))
 
-/* Exhaustive cross-product of boundary values: NBV^5 is ~1.9M, cheap. */
+/* Exhaustive cross-product of the boundary-value table. */
 static int sweep_boundaries(void)
 {
     int fails = 0;

@@ -9,12 +9,8 @@
  * the threading has a bug (off-by-one at stripe boundaries, race in
  * workspace access, partition gap, etc.).
  *
- * We exercise:
- *   - Pool with N=1, 2, 3, 4, 8 workers
- *   - Various dimensions including non-multiples of common values
- *   - Tall narrow, short wide, square
- *   - amount = 0 (identity), 30 (typical), 100 (strong), 256 (max)
- *   - Pseudo-random source data (deterministic seed)
+ * The cases span worker counts, unusual dimensions and aspect ratios,
+ * identity and nonzero amounts, and deterministic pseudo-random input.
  *****************************************************************************/
 
 #include "usm_test_util.h"

@@ -20,9 +20,8 @@
  * VLC may pull in). The "- 2" trims further so the upscaler doesn't
  * exactly match the half-line and leaves a small absolute reserve.
  *
- * On a 32-core box the default is 14 threads; on a 16-core laptop it
- * is 6; on small machines (≤ 8 cores) it floors to 1-2 threads. Users
- * who want maximum parallelism can override with --autoupscale-threads.
+ * Users who want a different balance can override with
+ * --autoupscale-threads.
  *
  * Trade-off: the older policy (cores - 2) gave more parallelism on
  * desktops but oversubscribed cores when the rest of VLC was busy.
@@ -47,9 +46,7 @@
 /* User-visible thread-count preset (do NOT renumber). */
 #define UP_THREADS_AUTO   0
 
-/* Hard upper bound. Beyond this, scheduling overhead dominates and we
- * would also need to worry about address-space fragmentation from many
- * tmp buffers. 64 is generous and sane. */
+/* Hard upper bound on worker, synchronization, and scratch-resource growth. */
 #define UP_THREADS_MAX    64
 #define UP_CPU_COUNT_MAX  (UP_THREADS_MAX * 4)
 #define UP_CPU_ID_LIMIT   8192
@@ -97,10 +94,8 @@ typedef long (*up_sysconf_fn)(int);
  * worker pinning. If sched_getaffinity fails, the count falls back to the
  * host-wide online count and no pin IDs are exposed.
  *
- * The 4*UP_THREADS_MAX cap defends against absurdly large values that
- * could overflow downstream arithmetic (`/2 - 2`, etc.); 256 is far
- * above any realistic CPU count this decade and well above what we'd
- * ever spawn workers for.
+ * The UP_CPU_COUNT_MAX cap defends against absurdly large values that could
+ * overflow downstream arithmetic and remains above the worker limit.
  */
 static inline void up_detect_cpu_topology_with(up_cpu_topology_t *topology,
                                                 up_getaffinity_fn getaffinity,

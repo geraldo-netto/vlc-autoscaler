@@ -267,8 +267,8 @@ typedef struct
 
     /* Scratch buffers + geometry. Layouts are sized in Open(); buffers are
      * allocated on the first valid frame and retained for the plugin lifetime.
-     * Open() stays cheap so VLC's chain solver can probe us without paying for 30
-     * worker thread spawns and 6 MB of scratch per probe. */
+     * Open() stays cheap so speculative chain probes avoid full worker and
+     * scratch setup. */
     plane_buffer_t    src;
     plane_buffer_t    dst;
     int               src_w, src_h, dst_w, dst_h;
@@ -296,7 +296,7 @@ typedef struct
      * VLC's destination picture; the dy/du/dv pointers and dst pitch
      * fields above are NOT allocated and are instead overwritten per
      * frame from the picture passed to zimg_process(). Skips the final
-     * memcpy back from scratch -> VLC dst (~125 us/frame at 1080p).
+     * memcpy back from scratch to the VLC destination.
      * ON by default (autoupscale-zerocopy-dst); set the option to 0 to
      * fall back to copy-out via scratch. */
     bool              dst_zerocopy;
@@ -489,9 +489,8 @@ static void *worker_main(void *arg)
          * (see doc/example/api_example_c.c) requires plane[3] to be
          * zero when alpha is absent — `data == NULL` is the signal.
          * The braced initializer satisfies C99 §6.7.8/21 which zeros
-         * all unmentioned members. Compared to memset+assignment, gcc
-         * -O2 emits ~50% fewer stores here because it elides zero-
-         * stores to fields immediately overwritten below (plane[0..2]).
+         * all unmentioned members and lets the compiler elide stores to
+         * fields immediately overwritten below.
          * Same idiom upstream uses, also seen in mpv and ffmpeg.
          *
          * The diagnostic suppression is needed because -Wextra warns
@@ -975,10 +974,10 @@ static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
  * Why defer this? VLC's filter-chain solver instantiates filters
  * speculatively while searching for a working chain. With hardware
  * decode + a non-trivial filter chain (e.g. postproc + autoupscale),
- * the solver may construct and tear down our filter 3-4 times before
- * settling on a working configuration. Each of those Open()/Close()
- * round trips spawning 30 worker threads + allocating 6 MB of scratch
- * is wasteful. Doing it lazily means VLC pays nothing for probes that
+ * the solver may construct and tear down filters speculatively before
+ * settling on a working configuration. Spawning workers and allocating full
+ * scratch for those probes is wasteful. Doing it lazily means VLC pays
+ * nothing for probes that
  * never produce a frame; only the first valid Filter() picture triggers
  * the expensive setup.
  *

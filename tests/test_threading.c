@@ -99,12 +99,8 @@ static void test_negative_user_pref_means_auto(void)
     END();
 }
 
-/*
- * 32-core machines are the project's primary deployment target. On
- * the new policy: 32/2 - 2 = 14 worker threads. The remaining 18 cores
- * cover VLC's main thread, decoder, encoder, audio, vout, OS, plus
- * any other libraries VLC pulls in.
- */
+/* Representative high-core host: verify the automatic policy and explicit
+ * overrides from the same input topology. */
 static void test_32_core_target_machine(void)
 {
     BEGIN("32-core target: auto uses 14, explicit overrides work");

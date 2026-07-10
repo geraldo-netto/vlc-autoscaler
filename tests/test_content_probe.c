@@ -202,8 +202,7 @@ static void test_bypass_clean_source_no_bypass(void)
     a.frames = 60;
     a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
     a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
-    /* Sharp source: lap mean 1500, inside the measured grainy band
-     * (800-2000 mean-of-squares, see content_probe.h). */
+    /* Sharp source: mean stays above the soft cutoff. */
     a.lap_sum = a.lap_samples * 1500ULL;
     /* Smooth: edge mean = 2 */
     a.edge_sum = a.edge_samples * 2;
@@ -218,7 +217,7 @@ static void test_bypass_soft_only_no_bypass(void)
     a.frames = 60;
     a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
     a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
-    /* Very soft: lap mean 100, below the 200-400 blocky band */
+    /* Very soft: mean stays below the soft cutoff. */
     a.lap_sum = a.lap_samples * 100ULL;
     /* Smooth: edge mean = 2 */
     a.edge_sum = a.edge_samples * 2;
@@ -233,9 +232,8 @@ static void test_bypass_blocky_only_no_bypass(void)
     a.frames = 60;
     a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
     a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
-    /* Sharp: lap mean 1500 — realistic grainy-band magnitude. Under the
-     * old squared threshold (400² = 160000) this counted as "very soft"
-     * and advised on blockiness alone; regression for that bug. */
+    /* Sharp mean. Under the old squared-threshold bug this counted as very
+     * soft and advised on blockiness alone. */
     a.lap_sum = a.lap_samples * 1500ULL;
     /* Blocky: edge mean = 12 */
     a.edge_sum = a.edge_samples * 12;
@@ -250,7 +248,7 @@ static void test_bypass_soft_and_blocky_yes_bypass(void)
     a.frames = 60;
     a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
     a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
-    /* Very soft: lap mean 200, inside the measured blocky band (200-400) */
+    /* Very soft mean below the configured cutoff. */
     a.lap_sum = a.lap_samples * 200ULL;
     /* Very blocky: edge mean = 12 */
     a.edge_sum = a.edge_samples * 12;

@@ -151,9 +151,8 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 #define ZEROCOPY_DST_LONGTEXT N_( \
     "1 = on (default): on aligned row-only grids, workers write directly " \
     "into VLC's destination picture, skipping copy-out. Column grids " \
-    "always use per-tile scratch. Saves about 125 " \
-    "microseconds per 1080p frame (~0.8% of a 60 fps budget) and ~3 " \
-    "MB of scratch memory. 0 = off (safe fallback): worker threads " \
+    "always use per-tile scratch. This avoids a frame-sized copy and its " \
+    "persistent plane scratch. 0 = off (safe fallback): worker threads " \
     "write to plugin-owned scratch buffers and copy their output regions " \
     "into VLC's destination picture. Set to 0 if you see " \
     "garbled output, crashes, or other instability with the default - " \
@@ -205,7 +204,7 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 
 #define PROBE_TEXT N_("Content-aware quality probe")
 #define PROBE_LONGTEXT N_( \
-    "1 = on (default): observe the first ~60 valid luma pictures to " \
+    "1 = on (default): observe a fixed initial luma window to " \
     "estimate source quality. If the source is both very soft (low " \
     "mean squared Laplacian response: heavy blur or noise reduction) " \
     "AND very " \

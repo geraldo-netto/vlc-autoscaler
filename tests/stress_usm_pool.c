@@ -4,15 +4,9 @@
  *****************************************************************************
  * Different beast from a unit test or fuzzer:
  *
- *   - Drives the worker pool through THOUSANDS of frames at unusual
- *     (thread_count, width, height) combinations, including:
- *
- *       * 64 threads on a 32-line frame: stripe count gets clamped down
- *         to height/8, exposing the clamp logic.
- *       * 1 thread on a 4096x2160 frame: tests single-worker path and
- *         large workspace allocation.
- *       * 854x480 at thread counts in {1, 2, 4, 8, 16, 32, 64}, plus
- *         representative 1920x1080 configurations.
+ *   - Repeatedly drives the worker pool through unusual thread-count and
+ *     geometry combinations, including clamping, large-frame, common-video,
+ *     and single-worker paths.
  *
  *   - Verifies BYTE-IDENTICAL output to the single-threaded reference
  *     UP_TEST_USM_APPLY_PLANE() on every single frame, every config. If a
@@ -239,9 +233,8 @@ static int run_config(const stress_config_t *cfg)
 
 int main(int argc, char **argv)
 {
-    /* Allow scaling iterations from the command line for debugging or
-     * cranking up the heat. Default is enough to catch races within ~5s
-     * total wall time. */
+    /* Allow scaling iterations from the command line for debugging or a
+     * longer stress run. */
     int frame_mult = 1;
     if (argc > 1) {
         char *end = NULL;
@@ -249,16 +242,8 @@ int main(int argc, char **argv)
         if (end && *end == '\0' && v > 0 && v < 1000) frame_mult = (int)v;
     }
 
-    /* Configurations covering the interesting axes:
-     *   - thread count: 1, 2, 4, 8, 16, 32, 64
-     *   - width: 8, 64, 128, 256, 853, 854, 855, 1920, 4096
-     *   - height: 8, 32, 64, 128, 479, 480, 481, 1080, 2160
-     *
-     * The pool clamps n_threads to height/8 internally, so configs
-     * like "64 threads on 32-line frame" exercise the clamp.
-     *
-     * Frame counts are tuned so the full ASan run is under ~15s and
-     * the TSan run (slower instrumentation) under ~30s. */
+    /* Configurations cover thread-count clamping, common and unusual geometry,
+     * boundary-heavy stripes, and large-frame paths. */
     stress_config_t configs[] = {
         /* High thread count, tiny frame -> clamp down to height/8 */
         { 64,   64,   32,   100,  30, "64thr 64x32 (clamp)",       0 },

@@ -263,7 +263,7 @@ static void test_apply_stride_greater_than_width(void)
  * The identity path (amount=0) has TWO branches now:
  *   (a) unified-stride fast path: when src_stride == dst_stride == width,
  *       the whole plane is contiguous in both buffers and we collapse
- *       to a single big memcpy. (~3x faster at 1080p.)
+ *       to a single big memcpy.
  *   (b) row-by-row slow path: anything else.
  *
  * The two MUST produce identical output. These tests exercise both

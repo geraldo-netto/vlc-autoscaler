@@ -14,9 +14,8 @@
  * These bugs typically don't change visible output until they crash —
  * sometimes never on a single test run. We rely on AddressSanitizer
  * to flag them. The tests are designed to make the bug-relevant code
- * paths execute many times in patterns that surface incremental leaks
- * (1 byte * 1000 iterations = 1KB shadow trace) and partial-init
- * teardowns (immediate destroy without ever calling apply).
+ * paths execute repeatedly in patterns that surface incremental leaks and
+ * partial-init teardowns (immediate destroy without ever calling apply).
  *
  * To run with full leak detection:
  *   make build/test_lifetime && ASAN_OPTIONS=detect_leaks=1 build/test_lifetime

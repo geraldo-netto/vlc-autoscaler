@@ -71,9 +71,8 @@ static inline int up__auto_target_height(int src_h, int cores,
 {
     /* AUTO: 1080p only if we have >= 4 cores AND (>= 2 GB RAM or unknown)
      * AND the upscale ratio to 1080p stays within UP_MAX_RATIO.
-     * AUTO never picks targets above 1080p — going higher must be
-     * explicit, since 1440p+ doubles+ the per-frame work and most
-     * users won't notice on typical displays. */
+     * AUTO never picks targets above 1080p — higher targets must be explicit
+     * because they substantially increase per-frame work. */
     int ratio_ok_for_1080p = (src_h <= INT_MAX / UP_MAX_RATIO)
                           && (src_h * UP_MAX_RATIO >= 1080);
     int can_1080p = (cores >= 4)

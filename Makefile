@@ -4,8 +4,8 @@
 #   make             — build the VLC plugin
 #   make plugin      — same
 #   make test        — build and run unit tests (no VLC needed)
-#   make fuzz-smoke  — build and run 13 deterministic smoke fuzzers
-#   make fuzz        — build 13 libFuzzer targets (clang only)
+#   make fuzz-smoke  — build and run deterministic smoke fuzzers
+#   make fuzz        — build libFuzzer targets (clang only)
 #   make analyze     — run cppcheck across the source tree
 #   make install     — install the built plugin into VLC's plugins dir
 #   make uninstall
@@ -40,10 +40,9 @@ VLC_PLUGIN_DIR  := $(VLC_PLUGIN_BASE)/video_filter
 WARN := -D_GNU_SOURCE -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes
 
 # CPU baseline. Defaults to `native` because this plugin is a source
-# distribution: every user builds it on the same machine they run it on,
-# so producing a binary tuned for the local CPU costs nothing and gains
-# 5-20% on the per-frame hot path (znver4 / Skylake-X scheduling +
-# extra ISA bits like VBMI2, BF16, GFNI, VAES). The .so loads only on
+# distribution: every user builds it on the same machine they run it on.
+# Build-host tuning can use extra scheduling and ISA features on the per-frame
+# hot path. The .so loads only on
 # a CPU supporting the emitted ISA; that's the right default for a
 # build-and-run workflow. For a wider Linux x86-64 ISA baseline, override:
 #
@@ -95,12 +94,12 @@ PLUGIN_OBJS := $(patsubst src/%.c,$(BUILD)/%.o,$(PLUGIN_SRCS))
 # --------- multi-versioned USM pool ---------
 # Defaults to MULTIVERSION=0 because the build-time MARCH default is
 # `native`: the binary is already tuned for the local CPU, so the runtime
-# dispatcher and the two non-selected SIMD variants would just add ~30 KB
-# of dead code. Pair this default with MARCH=native (default) for a build
+# dispatcher and non-selected SIMD variants would add dead code. Pair this
+# default with MARCH=native (default) for a build
 # that maximizes performance on the build host.
 #
-# Set MULTIVERSION=1 to ship THREE copies
-# of usm_pool.c (SSE2 / AVX2 / AVX-512) plus a thin runtime dispatcher
+# Set MULTIVERSION=1 to ship the SIMD variants of usm_pool.c plus a thin
+# runtime dispatcher
 # (usm_pool_dispatch.c) that selects a variant at .so load time via
 # __builtin_cpu_supports(). The full-level guard gap remains PORT-6. Pair this
 # with an appropriate MARCH baseline (e.g.
@@ -120,13 +119,10 @@ USM_OBJS := \
 
 # usm_pool.c is the per-frame hot path: worker_main calls inlined hblur
 # and combine kernels for every row of every frame. Compiling it at -O3
-# (vs the rest of the plugin's -O2) is a measured perf win across all
-# thread counts and SIMD baselines — at 8 threads / 1080p it cuts pool
-# apply time roughly in half on top of what the per-kernel pragma
-# already provides. -O3 enables more aggressive inlining + loop
-# transforms in the worker dispatch and row-sweep helpers, which the
-# pragma O3 (scoped to the leaf kernels in usm.h) cannot reach. The
-# rest of the plugin (autoupscale.c, scaler*.c, scaler_zimg.c) stays
+# (vs the rest of the plugin's -O2) enables more aggressive inlining and loop
+# transforms in the worker dispatch and row-sweep helpers, which the lower
+# optimization level may not perform. The rest of the plugin
+# (autoupscale.c, scaler*.c, scaler_zimg.c) stays
 # at -O2 since it is not pixel-loop heavy and the binary-size /
 # compile-time win matters more there.
 USM_POOL_CFLAGS := $(subst -O2,-O3,$(PLUGIN_CFLAGS))
@@ -433,8 +429,8 @@ $(BUILD)/fuzz_usm_variants_smoke: tests/fuzz_usm_variants.c \
 #                            output is bitwise correct)
 #
 # Bit-identical output to single-threaded reference is required across
-# thousands of frames at unusual (n_threads, w, h) combinations including
-# 64-thread on 32-line frames (clamped down) and 1-thread on 4K.
+# repeated frames at unusual (n_threads, w, h) combinations, including worker
+# clamping and the single-worker path.
 
 STRESS_CFLAGS_ASAN := -O2 -g $(MARCH_FLAG) $(WARN) -fsanitize=address,undefined
 STRESS_LDFLAGS_ASAN := -fsanitize=address,undefined -lpthread
@@ -519,11 +515,12 @@ stress-zimg: $(BUILD)/test_scaler_zimg $(BUILD)/test_scaler_zimg_tsan
 
 # Informational line coverage for scaler_zimg.c via the harness. NOT part of
 # the gated `coverage` target (which stays VLC-free and requires every tracked
-# file and function to reach at least 80%):
-# scaler_zimg.c cannot reach 100% in a unit harness — log_zimg_open's msg_Info
+# file and function to reach the configured threshold):
+# scaler_zimg.c cannot reach complete coverage in a unit harness —
+# log_zimg_open's msg_Info
 # needs a live VLC logger object, the partial-construction retry is unreachable
 # given zimg_open's stripe clamp, and a couple of zimg-internal failure returns
-# need fault injection. The harness covers every other path (~94%).
+# need fault injection. The harness reports its coverage as informational.
 coverage-zimg:
 	@rm -rf $(BUILD)/covz && mkdir -p $(BUILD)/covz
 	$(CC) -O0 -g --coverage $(ZIMG_H_CFLAGS) -o $(BUILD)/covz/tz \
