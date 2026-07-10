@@ -365,7 +365,7 @@ static int usm_pool_alloc_scratch(usm_pool_t *p)
     return p->scratch ? 0 : -1;
 }
 
-static int usm_pool_spawn_worker(usm_pool_t *p, int i, int n)
+static int usm_pool_spawn_worker(usm_pool_t *p, int i)
 {
     usm_worker_t *w = &p->workers[i];
     w->go_lock    = &p->go_lock;
@@ -378,10 +378,9 @@ static int usm_pool_spawn_worker(usm_pool_t *p, int i, int n)
                  * (size_t)USM_POOL_SCRATCH_ROWS * (size_t)p->width;
     w->width     = p->width;
     w->height    = p->height;
-    w->y_start   = (int)((int64_t)i * p->height / n);
-    w->y_end     = (i == n - 1)
-        ? p->height
-        : (int)((int64_t)(i + 1) * p->height / n);
+    /* y_start/y_end are assigned solely by usm_pool_repartition_stripes
+     * after the spawn loop; a worker cannot read them before the first
+     * dispatch bumps the generation. */
 
     if (pthread_create(&w->thread, NULL, usm_worker_main, w) != 0)
         return -1;
@@ -389,13 +388,11 @@ static int usm_pool_spawn_worker(usm_pool_t *p, int i, int n)
     return 0;
 }
 
-/* Divide `height` into `n` contiguous stripes and write each worker's
- * y_start/y_end. The last stripe absorbs the integer-division remainder
- * so the union of stripes covers [0, height). Called unconditionally
- * after the spawn loop: when every worker spawned this is a redundant
- * (idempotent) re-assignment, but when only `constructed < n_pref`
- * workers came up it is the single place that re-balances them. Keeping
- * the call unconditional means every test path exercises this helper. */
+/* Single partitioner (DUP-8): divide `height` into `n` contiguous stripes
+ * and write each worker's y_start/y_end. The last stripe absorbs the
+ * integer-division remainder so the union of stripes covers [0, height).
+ * Called after the spawn loop with the count of workers that actually
+ * came up, before any frame can be dispatched to them. */
 static void usm_pool_repartition_stripes(usm_worker_t *workers, int n,
                                          int height)
 {
@@ -427,16 +424,13 @@ static int usm_pool_spawn_all(usm_pool_t *p)
 {
     int constructed = 0;
     for (int i = 0; i < p->n_threads_pref; i++) {
-        if (usm_pool_spawn_worker(p, i, p->n_threads_pref) != 0) break;
+        if (usm_pool_spawn_worker(p, i) != 0) break;
         constructed++;
     }
     if (constructed == 0) return -1;
 
-    /* Repartition unconditionally. When constructed == n_threads_pref
-     * this is idempotent (same math the spawn loop just used). When
-     * constructed < n_threads_pref it re-balances stripes across the
-     * actually-spawned workers; the unused slots stay zeroed and are
-     * skipped by destroy. */
+    /* Partition across the workers that actually spawned; unused slots
+     * stay zeroed and are skipped by destroy. */
     usm_pool_repartition_stripes(p->workers, constructed, p->height);
     p->n_threads = constructed;
     return 0;
