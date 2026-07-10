@@ -21,6 +21,7 @@
 #ifndef AUTOUPSCALE_SCALER_PICK_LOGIC_H
 #define AUTOUPSCALE_SCALER_PICK_LOGIC_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -33,6 +34,33 @@
 #endif
 
 typedef int (*up_supports_fn)(uint32_t chroma, int algo);
+typedef int (*up_scaler_open_fn)(void *context, const void *backend_handle);
+
+/*
+ * Try the preferred backend and, when explicitly allowed, one distinct
+ * fallback. The callback follows scaler_backend_t::open's convention:
+ * zero means success and any non-zero value means failure. Context is an
+ * opaque value passed through unchanged and may be NULL.
+ *
+ * Returns the handle whose open callback succeeded, or NULL. A missing
+ * preferred handle or callback fails without invoking anything. A fallback
+ * is never retried when it aliases the preferred handle.
+ */
+static inline const void *up_scaler_open_with_fallback(
+    const void *preferred_handle, const void *fallback_handle,
+    void *context, up_scaler_open_fn open_backend, bool allow_fallback)
+{
+    if (preferred_handle == NULL || open_backend == NULL)
+        return NULL;
+    if (open_backend(context, preferred_handle) == 0)
+        return preferred_handle;
+    if (!allow_fallback || fallback_handle == NULL ||
+        fallback_handle == preferred_handle)
+        return NULL;
+    if (open_backend(context, fallback_handle) == 0)
+        return fallback_handle;
+    return NULL;
+}
 
 static inline const void *up_pick_zimg_if_ok(
     const void *zimg_handle, up_supports_fn zimg_supports,

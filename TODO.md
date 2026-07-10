@@ -8,7 +8,7 @@ review categories. One table per category. Format: `id | status | effort | descr
 
 2026-07-10 post-fix rescan: full repository, every category, four parallel
 audit tracks covering production code, tests/fuzzers/benches, build/CI/scripts,
-and documentation. New or reopened: ARCH-10, REL-8..9, ERR-3, PORT-6..8,
+and documentation. New or reopened: ARCH-10, REL-9, ERR-3, PORT-6..8,
 BUILD-2, BUILD-11..12, BUILD-14..15,
 OBS-6..8, DEAD-9; PORT-3 and BUILD-10 were
 expanded with related evidence. ASan/UBSan unit tests and all deterministic
@@ -105,9 +105,7 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| REL-8 | open | S | AUTO mode does not try swscale when the preferred zimg backend fails during `open`; `Open()` logs and aborts immediately (`autoupscale.c:617-634`). This includes the zimg runtime ABI-major rejection, even though swscale is the documented universal fallback. | In AUTO only, select/open swscale after zimg open failure; forced-zimg must still fail. The previously rejected Open candidate covered cleanup ownership, not fallback behavior. |
 | REL-9 | open | S | The deterministic zimg seam fuzzer exceeds its documented smooth-content bound during an extended run: `480x16 -> 1166x42`, 6 workers, I420 reaches max delta 18 versus `SEAM_MAX_DELTA=16`. | Reproduces before the SCAL-6 selector change because both selectors choose the same 2x3 grid. The standard 400-iteration gate passes, but the comment's claimed 4000+ empirical envelope is stale. Preserve the failing seed, then decide whether the quality bound, minimum cell geometry, or independent-graph tiling needs adjustment. |
-| — | | | REL-3 (runtime zimg API major-version probe) remains implemented; REL-8 tracks the missing AUTO fallback around that probe. | |
 
 ## error handling
 

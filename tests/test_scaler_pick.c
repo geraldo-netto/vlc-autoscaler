@@ -49,6 +49,22 @@ static int mock_sws_supports_none(uint32_t chroma, int algo) {
 static const char ZIMG_TAG[]    = "zimg";
 static const char SWSCALE_TAG[] = "swscale";
 
+typedef struct {
+    const void *attempted[2];
+    int result[2];
+    int count;
+} mock_open_state_t;
+
+static int mock_open_backend(void *context, const void *backend_handle)
+{
+    mock_open_state_t *state = context;
+    int index = state->count++;
+    if (index >= 2)
+        return -1;
+    state->attempted[index] = backend_handle;
+    return state->result[index];
+}
+
 /* ---- test framework ---- */
 
 static int g_run = 0, g_fail = 0, g_failed_in_test = 0;
@@ -77,6 +93,95 @@ static int g_run = 0, g_fail = 0, g_failed_in_test = 0;
 
 #define PICK(zh, zs, sh, ss, pref, chroma, algo) \
     up_scaler_pick_with((zh), (zs), (sh), (ss), (pref), (chroma), (algo))
+#define OPEN(preferred, fallback, context, callback, allow) \
+    up_scaler_open_with_fallback((preferred), (fallback), (context), \
+                                 (callback), (allow))
+
+/* ---- backend open fallback ---- */
+
+static void test_open_preferred_success_stops(void)
+{
+    BEGIN("open preferred success -> preferred, no fallback attempt");
+    mock_open_state_t state = { .result = { 0, -1 } };
+    const void *r = OPEN(ZIMG_TAG, SWSCALE_TAG, &state,
+                         mock_open_backend, true);
+    CHECK_ZIMG(r);
+    CHECK_EQ_INT(state.count, 1);
+    CHECK_EQ_PTR(state.attempted[0], ZIMG_TAG);
+    END();
+}
+
+static void test_open_failure_without_fallback_stops(void)
+{
+    BEGIN("open preferred failure + fallback disabled -> NULL");
+    mock_open_state_t state = { .result = { -1, 0 } };
+    const void *r = OPEN(ZIMG_TAG, SWSCALE_TAG, &state,
+                         mock_open_backend, false);
+    CHECK_NULL(r);
+    CHECK_EQ_INT(state.count, 1);
+    CHECK_EQ_PTR(state.attempted[0], ZIMG_TAG);
+    END();
+}
+
+static void test_open_fallback_success_preserves_order(void)
+{
+    BEGIN("open preferred failure -> distinct fallback success in order");
+    mock_open_state_t state = { .result = { -1, 0 } };
+    const void *r = OPEN(ZIMG_TAG, SWSCALE_TAG, &state,
+                         mock_open_backend, true);
+    CHECK_SWSCALE(r);
+    CHECK_EQ_INT(state.count, 2);
+    CHECK_EQ_PTR(state.attempted[0], ZIMG_TAG);
+    CHECK_EQ_PTR(state.attempted[1], SWSCALE_TAG);
+    END();
+}
+
+static void test_open_both_fail_returns_null(void)
+{
+    BEGIN("open preferred and fallback failures -> NULL");
+    mock_open_state_t state = { .result = { -1, 1 } };
+    const void *r = OPEN(ZIMG_TAG, SWSCALE_TAG, &state,
+                         mock_open_backend, true);
+    CHECK_NULL(r);
+    CHECK_EQ_INT(state.count, 2);
+    CHECK_EQ_PTR(state.attempted[0], ZIMG_TAG);
+    CHECK_EQ_PTR(state.attempted[1], SWSCALE_TAG);
+    END();
+}
+
+static void test_open_null_inputs_make_no_calls(void)
+{
+    BEGIN("open NULL preferred or callback -> NULL without calls");
+    mock_open_state_t state = { .result = { 0, 0 } };
+    CHECK_NULL(OPEN(NULL, SWSCALE_TAG, &state, mock_open_backend, true));
+    CHECK_EQ_INT(state.count, 0);
+    CHECK_NULL(OPEN(ZIMG_TAG, SWSCALE_TAG, &state, NULL, true));
+    CHECK_EQ_INT(state.count, 0);
+    END();
+}
+
+static void test_open_null_fallback_is_not_called(void)
+{
+    BEGIN("open preferred failure + NULL fallback -> NULL after one call");
+    mock_open_state_t state = { .result = { -1, 0 } };
+    const void *r = OPEN(ZIMG_TAG, NULL, &state, mock_open_backend, true);
+    CHECK_NULL(r);
+    CHECK_EQ_INT(state.count, 1);
+    CHECK_EQ_PTR(state.attempted[0], ZIMG_TAG);
+    END();
+}
+
+static void test_open_same_handle_is_not_retried(void)
+{
+    BEGIN("open preferred failure + aliased fallback -> no retry");
+    mock_open_state_t state = { .result = { -1, 0 } };
+    const void *r = OPEN(ZIMG_TAG, ZIMG_TAG, &state,
+                         mock_open_backend, true);
+    CHECK_NULL(r);
+    CHECK_EQ_INT(state.count, 1);
+    CHECK_EQ_PTR(state.attempted[0], ZIMG_TAG);
+    END();
+}
 
 /* ---- AUTO preference ---- */
 
@@ -289,6 +394,14 @@ static void test_process_status_contract(void)
 int main(void)
 {
     printf("Running scaler_pick tests...\n");
+
+    test_open_preferred_success_stops();
+    test_open_failure_without_fallback_stops();
+    test_open_fallback_success_preserves_order();
+    test_open_both_fail_returns_null();
+    test_open_null_inputs_make_no_calls();
+    test_open_null_fallback_is_not_called();
+    test_open_same_handle_is_not_retried();
 
     test_auto_zimg_supports_returns_zimg();
     test_auto_zimg_unsupported_falls_back_to_swscale();

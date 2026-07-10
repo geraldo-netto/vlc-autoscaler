@@ -31,6 +31,7 @@
 #include "usm.h"
 #include "usm_pool.h"
 #include "scaler.h"
+#include "scaler_pick_logic.h"
 #include "scaler_zimg_chroma.h"
 #include "perfmon.h"
 #include "threading.h"
@@ -455,6 +456,47 @@ static const scaler_backend_t *PickBackendOrReject(
     return be;
 }
 
+static int OpenBackendAttempt( void *context, const void *backend_handle )
+{
+    scaler_ctx_t *sc = context;
+    const scaler_backend_t *be = backend_handle;
+    sc->backend = be;
+    return be->open( sc );
+}
+
+/* AUTO may recover from a preferred zimg open failure through the universal
+ * swscale backend. Explicit backend selections remain strict. CCN 6. */
+static int OpenScalerOrFallback( filter_t *p_filter, filter_sys_t *p_sys )
+{
+    scaler_ctx_t *sc = &p_sys->scaler;
+    const scaler_backend_t *preferred = sc->backend;
+    const bool allow_fallback = p_sys->backend_pref == SCALER_BACKEND_AUTO
+                             && preferred->id == SCALER_BACKEND_ZIMG;
+    const scaler_backend_t *fallback = allow_fallback
+        ? scaler_pick( SCALER_BACKEND_SWSCALE, sc->chroma, sc->algo )
+        : NULL;
+    const scaler_backend_t *selected = up_scaler_open_with_fallback(
+        preferred, fallback, sc, OpenBackendAttempt, allow_fallback );
+
+    if( selected == preferred )
+        return 0;
+    if( fallback && selected == fallback )
+    {
+        msg_Warn( p_filter,
+                  "AutoUpscale: %s backend open failed; using %s fallback",
+                  preferred->name, fallback->name );
+        return 0;
+    }
+    if( allow_fallback && fallback )
+        msg_Err( p_filter,
+                 "AutoUpscale: %s and %s fallback backend open failed",
+                 preferred->name, fallback->name );
+    else
+        msg_Err( p_filter, "AutoUpscale: %s backend open failed",
+                 preferred->name );
+    return -1;
+}
+
 /* Populate the scaler_ctx_t from filter parameters and VLC vars. CCN 2. */
 static void ConfigureScaler( scaler_ctx_t *sc,
                              const scaler_backend_t *be,
@@ -632,9 +674,8 @@ static int Open( vlc_object_t *p_this )
     ConfigureScaler( &p_sys->scaler, be, p_filter, p_this,
                      chroma, algo, src_w, src_h, target );
 
-    if( be->open( &p_sys->scaler ) != 0 )
+    if( OpenScalerOrFallback( p_filter, p_sys ) != 0 )
     {
-        msg_Err( p_filter, "AutoUpscale: %s backend open failed", be->name );
         free( p_sys );
         return VLC_EGENERIC;
     }
@@ -658,7 +699,8 @@ static int Open( vlc_object_t *p_this )
               "(backend=%s preset=%d algo=%d usm=%d fps_target=%d "
               "threads=%d cores=%d mem=%luMB simd=%s)",
               src_w, src_h, target.width, target.height,
-              be->name, preset, algo, usm_pct, p_sys->target_fps,
+              p_sys->scaler.backend->name,
+              preset, algo, usm_pct, p_sys->target_fps,
               threads_resolved, cores, mem_mb, up_usm_pool_variant_name );
 
     return VLC_SUCCESS;

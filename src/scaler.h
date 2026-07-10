@@ -77,7 +77,8 @@ struct scaler_backend_s
     int  (*supports)( vlc_fourcc_t chroma, int algo );
 
     /* Allocate and initialise priv. ctx fields (src/dst dims, algo,
-     * chroma) must already be set. Returns 0 on success, -1 on failure. */
+     * chroma) must already be set. Returns 0 on success, -1 on failure;
+     * failure must leave ctx->priv NULL so AUTO can try another backend. */
     int  (*open)   ( scaler_ctx_t *ctx );
 
     /* Process one frame. TRANSIENT drops only this frame; FATAL means the
