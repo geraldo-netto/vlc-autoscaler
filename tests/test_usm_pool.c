@@ -15,6 +15,7 @@
 
 #include "usm_test_util.h"
 #include "../src/usm_pool.h"
+#include "../src/threading.h"
 #include "barrier_fault_inject.h"
 
 #include <errno.h>
@@ -28,11 +29,18 @@
 
 static atomic_int g_fail_next_aligned_alloc;
 static atomic_uint g_aligned_alloc_calls;
+static atomic_size_t g_max_aligned_alloc_size;
 
 void *__real_aligned_alloc(size_t alignment, size_t size);
 void *__wrap_aligned_alloc(size_t alignment, size_t size)
 {
     atomic_fetch_add_explicit(&g_aligned_alloc_calls, 1,
+                              memory_order_relaxed);
+    /* Pool allocations happen on the calling thread only, so a plain
+     * compare-then-store max is race-free here. */
+    if (size > atomic_load_explicit(&g_max_aligned_alloc_size,
+                                    memory_order_relaxed))
+        atomic_store_explicit(&g_max_aligned_alloc_size, size,
                               memory_order_relaxed);
     if (atomic_exchange_explicit(&g_fail_next_aligned_alloc, 0,
                                  memory_order_relaxed)) {
@@ -58,6 +66,12 @@ static int aligned_alloc_failure_consumed(void)
 {
     return atomic_load_explicit(&g_fail_next_aligned_alloc,
                                 memory_order_relaxed) == 0;
+}
+
+static size_t max_aligned_alloc_size(void)
+{
+    return atomic_load_explicit(&g_max_aligned_alloc_size,
+                                memory_order_relaxed);
 }
 
 static int g_run = 0, g_fail = 0, g_cur_fail = 0;
@@ -257,6 +271,24 @@ static void test_inplace_matches_oracle(void)
                               up_usm_amount_pct_to_q8(200), 0x35) == 0);
     /* Identity in-place stays a no-op fast path. */
     CHECK(run_compare_inplace(4, 854, 480, 0, 0x36) == 0);
+    END();
+}
+
+/* MEM-2 regression: create() must clamp n_threads at UP_THREADS_MAX even
+ * when the stripe-height clamp alone would allow thousands of workers —
+ * otherwise a direct caller can drive the worker-array and scratch size
+ * multiplies to absurd values (wrapping them on ILP32). Observable via
+ * the wrapped aligned_alloc: every pool allocation stays bounded by the
+ * clamped worker count, and output stays byte-identical. */
+static void test_create_clamps_huge_thread_count(void)
+{
+    BEGIN("create clamps n_threads at UP_THREADS_MAX (MEM-2)");
+    enum { W = 64, H = 100000 };
+    atomic_store_explicit(&g_max_aligned_alloc_size, 0,
+                          memory_order_relaxed);
+    CHECK(run_compare_inplace(INT_MAX, W, H,
+                              up_usm_amount_pct_to_q8(30), 0x4d) == 0);
+    CHECK(max_aligned_alloc_size() <= (size_t)UP_THREADS_MAX * 4096);
     END();
 }
 
@@ -613,6 +645,7 @@ int main(void)
     test_identity_pool_strided_slow_path();
     test_typical_30pct();
     test_inplace_matches_oracle();
+    test_create_clamps_huge_thread_count();
     test_inplace_stride_mismatch_rejected();
     test_aggressive_100pct();
 

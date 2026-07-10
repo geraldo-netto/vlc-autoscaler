@@ -452,6 +452,11 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
 {
     if (n_threads < 1 || width <= 0 || height <= 0) return NULL;
 
+    /* Cap at the pool-wide maximum here, not only in up_threads_decide:
+     * a direct API caller with a huge n_threads and a tall frame would
+     * otherwise size the worker array from an unchecked multiply. */
+    if (n_threads > UP_THREADS_MAX) n_threads = UP_THREADS_MAX;
+
     /* stripe_min_rows <= 0 → use compile-time default. */
     if (stripe_min_rows <= 0) stripe_min_rows = USM_STRIPE_MIN_ROWS;
 

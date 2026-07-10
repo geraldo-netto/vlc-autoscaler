@@ -23,7 +23,6 @@ allocation-size arithmetic overflow-checked at every seam; all format strings li
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | MEM-1 | open | S | `tests/zimg_test_util.h:73-78` `zt_pic_alloc` returns -1 mid-loop leaving planes `[0,k)` allocated; callers `run_zimg` (tests/test_scaler_zimg.c:98) and `resample` (tests/fuzz_scaler_seam.c:106-107) then return without `zt_pic_free(&src)`, leaking the partial picture. | OOM-only. Fix inside `zt_pic_alloc` (free partial planes before returning -1) closes every caller at once; pairs with UB-3. |
-| MEM-2 | open | S | `src/usm_pool.c:415-416` `usm_pool_alloc_workers` computes `(size_t)n_threads_pref * sizeof(*p->workers)` unchecked, and `up_usm_pool_create` (usm_pool.c:450-461) caps `n_threads` only by `height/stripe_min_rows`, not `UP_THREADS_MAX` — a direct API caller on ILP32 could wrap the multiply. | Unreachable from production (`up_threads_decide` caps at 64); defensive gap at a public API boundary. Clamp create() to `UP_THREADS_MAX` (also fixes the missing-cap asymmetry vs the zimg pool). |
 | MEM-3 | open | S | `tests/test_scaler_zimg.c:775-778` `test_tiling_matches_untiled` does `CHECK(0); continue;` on reference-run failure without `zt_pic_free(&ref)`; leaks the ref planes when `run_zimg_threads_in` fails after allocating out (process failure, not alloc failure). | Test-only leak under ASan-visible conditions; add the free before `continue`. |
 
 ## performance
