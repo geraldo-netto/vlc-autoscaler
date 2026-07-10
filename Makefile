@@ -126,6 +126,16 @@ PLUGIN_OBJS := $(patsubst src/%.c,$(BUILD)/%.o,$(PLUGIN_SRCS))
 #   make MARCH=x86-64    MULTIVERSION=1   # original x86-64/SSE2 baseline
 MULTIVERSION ?= 0
 
+# The SIMD variants are hardcoded at -march=x86-64-v3/v4; on any other
+# architecture the build would only die deep into the compile (or at the
+# usm_pool_dispatch.c #error). Check the compiler's target up front.
+ifeq ($(MULTIVERSION),1)
+  CC_TARGET := $(shell $(CC) -dumpmachine 2>/dev/null)
+  ifeq ($(findstring x86_64,$(CC_TARGET)),)
+    $(error MULTIVERSION=1 requires an x86-64 compiler target ($(CC) -dumpmachine says '$(CC_TARGET)'); build with MULTIVERSION=0 instead)
+  endif
+endif
+
 ifeq ($(MULTIVERSION),1)
 USM_OBJS := \
     $(BUILD)/usm_pool_sse2.o \
