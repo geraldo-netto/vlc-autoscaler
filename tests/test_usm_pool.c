@@ -17,26 +17,47 @@
 #include "../src/usm_pool.h"
 #include "barrier_fault_inject.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
 
-/*
- * AddressSanitizer aborts the program when an allocation request
- * exceeds its internal hard cap (0x10000000000 = 1 TB). We deliberately
- * trigger a huge `aligned_alloc` in test_apply_lazy_init_oom_sticky to
- * exercise the workspace-alloc failure path; without this override
- * ASan would kill the test runner instead of letting aligned_alloc
- * return NULL. The override only affects this test binary; real
- * production builds have no ASan.
- */
-__attribute__((used))
-const char *__asan_default_options(void)
+static atomic_int g_fail_next_aligned_alloc;
+static atomic_uint g_aligned_alloc_calls;
+
+void *__real_aligned_alloc(size_t alignment, size_t size);
+void *__wrap_aligned_alloc(size_t alignment, size_t size)
 {
-    return "allocator_may_return_null=1";
+    atomic_fetch_add_explicit(&g_aligned_alloc_calls, 1,
+                              memory_order_relaxed);
+    if (atomic_exchange_explicit(&g_fail_next_aligned_alloc, 0,
+                                 memory_order_relaxed)) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    return __real_aligned_alloc(alignment, size);
+}
+
+static void fail_next_aligned_alloc(void)
+{
+    atomic_store_explicit(&g_fail_next_aligned_alloc, 1,
+                          memory_order_relaxed);
+}
+
+static unsigned aligned_alloc_call_count(void)
+{
+    return atomic_load_explicit(&g_aligned_alloc_calls,
+                                memory_order_relaxed);
+}
+
+static int aligned_alloc_failure_consumed(void)
+{
+    return atomic_load_explicit(&g_fail_next_aligned_alloc,
+                                memory_order_relaxed) == 0;
 }
 
 static int g_run = 0, g_fail = 0, g_cur_fail = 0;
@@ -479,58 +500,30 @@ static void test_create_stripe_min_rows_boundaries(void)
     END();
 }
 
-/*
- * Coverage for the lazy-init failure paths in usm_pool.c.
- *
- * When `up_usm_pool_apply` first runs (lazy init), it allocates the
- * shared rolling-scratch block (USM_POOL_SCRATCH_ROWS * width bytes per
- * worker) via `aligned_alloc`. Sizing that request past available
- * virtual memory (and past ASan's ~1 TB allocator cap) makes the
- * allocation return NULL — exercising the `lazy_init_failed = true`
- * sticky path. The pool must:
- *   1. return -1 from the first apply()
- *   2. continue to return -1 from subsequent apply() calls without
- *      re-attempting the allocation (the "sticky" contract)
- *   3. destroy cleanly without leaking the partial state
- *
- * Scratch is five rows per worker (the old design allocated a full
- * width*height workspace), so a single worker on an INT_MAX-wide frame is
- * roughly 10 GB and might succeed. We request many workers on a very tall
- * frame so 5 * n_threads * INT_MAX deterministically exceeds
- * the cap; create() keeps all of them because height/stripe_min is huge.
- * The scratch alloc fails before any worker thread is spawned.
- */
-static void test_apply_lazy_init_oom_sticky(void)
+static void test_apply_lazy_init_alloc_failure_sticky(void)
 {
-    BEGIN("apply: lazy_init OOM -> sticky failure across subsequent calls");
-
-    /* 3 * 512 * INT_MAX ≈ 3.3 TB — past ASan's ~1 TB cap and past any
-     * real machine's memory, so aligned_alloc deterministically fails. */
-    usm_pool_t *p = up_usm_pool_create(512, INT_MAX, INT_MAX, 0);
-    /* create() doesn't allocate the scratch — only the small priv
-     * struct — so it must succeed. */
+    BEGIN("apply: injected lazy-init allocation failure is sticky");
+    enum { W = 8, H = 8 };
+    const uint8_t src[W * H] = {0};
+    uint8_t dst[W * H] = {0};
+    usm_pool_t *p = up_usm_pool_create(1, W, H, 0);
     CHECK(p != NULL);
     if (!p) { END(); return; }
 
-    /* Tiny dst/src pointers — apply() never reaches them because
-     * lazy_init fails before any frame work. Strides match width to
-     * pass the pre-init validation. */
-    uint8_t scratch[16] = {0};
     int amount = up_usm_amount_pct_to_q8(30);
+    unsigned calls_before = aligned_alloc_call_count();
+    fail_next_aligned_alloc();
 
-    int rc1 = up_usm_pool_apply(p, scratch, INT_MAX,
-                                 scratch, INT_MAX, amount);
+    int rc1 = up_usm_pool_apply(p, dst, W, src, W, amount);
     CHECK(rc1 == -1);
+    CHECK(aligned_alloc_failure_consumed());
+    CHECK(aligned_alloc_call_count() == calls_before + 1);
 
-    /* Sticky: a second call must also fail without retry. The pool's
-     * `lazy_init_failed` flag is set on the first failed init and
-     * short-circuits future calls. */
-    int rc2 = up_usm_pool_apply(p, scratch, INT_MAX,
-                                 scratch, INT_MAX, amount);
+    unsigned calls_after_failure = aligned_alloc_call_count();
+    int rc2 = up_usm_pool_apply(p, dst, W, src, W, amount);
     CHECK(rc2 == -1);
+    CHECK(aligned_alloc_call_count() == calls_after_failure);
 
-    /* Destroy must clean up safely even though lazy init never
-     * completed (no workers spawned, no workspace allocated). */
     up_usm_pool_destroy(p);
     END();
 }
@@ -634,7 +627,7 @@ int main(void)
     /* API safety */
     test_create_invalid_args();
     test_create_stripe_min_rows_boundaries();
-    test_apply_lazy_init_oom_sticky();
+    test_apply_lazy_init_alloc_failure_sticky();
     test_barrier_failure_drains_and_sticks();
     test_destroy_null_safe();
     test_destroy_unused_pool();

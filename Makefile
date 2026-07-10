@@ -78,6 +78,7 @@ endif
 TEST_CFLAGS  := -O2 -g $(MARCH_FLAG) $(WARN) -fsanitize=address,undefined
 TEST_LDFLAGS := -fsanitize=address,undefined
 BARRIER_WRAP_LDFLAGS := -Wl,--wrap=sem_wait -Wl,--wrap=pthread_cond_broadcast
+USM_POOL_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc
 
 FUZZ_SAN     := -fsanitize=fuzzer,address,undefined
 FUZZ_CFLAGS  := -O1 -g $(MARCH_FLAG) $(WARN) $(FUZZ_SAN)
@@ -650,7 +651,7 @@ $(COV_BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_class
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_usm_pool: tests/test_usm_pool.c tests/usm_test_util.h tests/barrier_fault_inject.h src/usm_pool.c src/usm_pool.h src/usm.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< src/usm_pool.c $(COV_LDFLAGS) \
-	    $(BARRIER_WRAP_LDFLAGS) -lpthread
+	    $(USM_POOL_WRAP_LDFLAGS) -lpthread
 $(COV_BUILD)/test_content_probe: tests/test_content_probe.c src/content_probe.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h src/scaler_status.h | $(COV_BUILD)
@@ -785,7 +786,7 @@ $(BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.
 
 $(BUILD)/test_usm_pool: tests/test_usm_pool.c tests/usm_test_util.h tests/barrier_fault_inject.h src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< src/usm_pool.c $(TEST_LDFLAGS) \
-	    $(BARRIER_WRAP_LDFLAGS) -lpthread
+	    $(USM_POOL_WRAP_LDFLAGS) -lpthread
 
 # Cross-variant byte-equivalence test: links all three SIMD variants and the
 # dispatcher's variant_name symbol. Each variant .o is the same usm_pool.c
