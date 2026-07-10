@@ -42,6 +42,15 @@
 #include "usm.h"
 #include "threading.h"
 
+#include <pthread.h>
+#include <semaphore.h>
+#include <stdalign.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
 /*
  * Multi-versioning support: when this TU is compiled with -DUSM_VARIANT=name,
  * the public functions get suffixed (e.g. up_usm_pool_create -> up_usm_pool_create_avx2).
@@ -68,15 +77,6 @@
     * the user already knows. Unit tests don't need a real value. */
    const char *up_usm_pool_variant_name = "default";
 #endif
-
-#include <pthread.h>
-#include <semaphore.h>
-#include <stdalign.h>
-#include <stdatomic.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
 
 /* Each stripe at least this many rows tall; smaller stripes are
  * dominated by kernel boundary handling and not worth threading. */
