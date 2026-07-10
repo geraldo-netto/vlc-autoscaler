@@ -544,9 +544,10 @@ bench-flatskip: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip
 	@printf "flatskip," ; $(BUILD)/bench_usm_pool_flatskip 8 1920 1080 300 30 rand
 
 # --------- coverage ---------
-# Build the unit tests with gcov instrumentation, run them, then report
-# per-file line coverage. ASan is dropped here because it conflicts with
-# --coverage on some toolchains and we already test under ASan elsewhere.
+# Build the unit tests and deterministic fuzzers with gcov instrumentation,
+# run them, then report per-file and per-function line coverage. ASan is
+# dropped here because it conflicts with --coverage on some toolchains and we
+# already test under ASan elsewhere.
 #
 # Coverage is meaningful for the testable header/.c surface only. The VLC-
 # typed translation units (autoupscale.c, scaler_zimg.c) are NOT covered
@@ -554,6 +555,9 @@ bench-flatskip: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip
 # modules (upscale_logic.h, content_probe.h, etc.) precisely so it CAN be
 # unit-tested. See `make coverage-summary` for the per-module % numbers.
 COV_BUILD := $(BUILD)/cov
+# Coverage profiles are compiler-specific; override these as a matched GCC pair.
+COV_CC      ?= gcc
+GCOV        ?= gcov
 COV_CFLAGS  := -O0 -g $(MARCH_FLAG) $(WARN) --coverage -fprofile-arcs -ftest-coverage
 COV_LDFLAGS := --coverage
 
@@ -569,33 +573,69 @@ COV_TESTS := \
     $(COV_BUILD)/test_scaler_pick \
     $(COV_BUILD)/test_lifetime
 
+COV_FUZZERS := \
+    $(COV_BUILD)/fuzz_upscale_logic \
+    $(COV_BUILD)/fuzz_usm \
+    $(COV_BUILD)/fuzz_perfmon \
+    $(COV_BUILD)/fuzz_threading \
+    $(COV_BUILD)/fuzz_copy_plane \
+    $(COV_BUILD)/fuzz_stripe_bounds \
+    $(COV_BUILD)/fuzz_decide_tile_grid \
+    $(COV_BUILD)/fuzz_frame_shape \
+    $(COV_BUILD)/fuzz_scaler_chroma \
+    $(COV_BUILD)/fuzz_content_probe
+
+COV_BINS := $(COV_TESTS) $(COV_FUZZERS)
+
 $(COV_BUILD):
 	mkdir -p $(COV_BUILD)
 
 $(COV_BUILD)/test_upscale_logic: tests/test_upscale_logic.c src/upscale_logic.h | $(COV_BUILD)
-	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_usm: tests/test_usm.c src/usm.h | $(COV_BUILD)
-	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_perfmon: tests/test_perfmon.c src/perfmon.h | $(COV_BUILD)
-	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_threading: tests/test_threading.c src/threading.h | $(COV_BUILD)
-	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $(COV_BUILD)
-	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.h | $(COV_BUILD)
-	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_usm_pool: tests/test_usm_pool.c src/usm_pool.c src/usm_pool.h src/usm.h | $(COV_BUILD)
-	$(CC) $(COV_CFLAGS) -o $@ $< src/usm_pool.c $(COV_LDFLAGS) -lpthread
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< src/usm_pool.c $(COV_LDFLAGS) -lpthread
 $(COV_BUILD)/test_content_probe: tests/test_content_probe.c src/content_probe.h | $(COV_BUILD)
-	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h | $(COV_BUILD)
-	$(CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_lifetime: tests/test_lifetime.c src/usm_pool.c src/usm_pool.h src/usm.h | $(COV_BUILD)
-	$(CC) $(COV_CFLAGS) -o $@ $< src/usm_pool.c $(COV_LDFLAGS) -lpthread
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< src/usm_pool.c $(COV_LDFLAGS) -lpthread
+
+$(COV_BUILD)/fuzz_upscale_logic: tests/fuzz_upscale_logic.c src/upscale_logic.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/fuzz_usm: tests/fuzz_usm.c src/usm.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/fuzz_perfmon: tests/fuzz_perfmon.c src/perfmon.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/fuzz_threading: tests/fuzz_threading.c src/threading.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/fuzz_copy_plane: tests/fuzz_copy_plane.c src/zimg_helpers.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/fuzz_stripe_bounds: tests/fuzz_stripe_bounds.c src/zimg_helpers.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/fuzz_decide_tile_grid: tests/fuzz_decide_tile_grid.c src/zimg_helpers.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/fuzz_frame_shape: tests/fuzz_frame_shape.c src/chroma_classify.h src/zimg_helpers.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/fuzz_scaler_chroma: tests/fuzz_scaler_chroma.c src/scaler_zimg_chroma.h src/chroma_classify.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/fuzz_content_probe: tests/fuzz_content_probe.c src/content_probe.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 
 .PHONY: coverage coverage-summary
-coverage: $(COV_TESTS)
-	@for t in $(COV_TESTS); do $$t > /dev/null 2>&1 || true; done
+coverage: $(COV_BINS)
+	@rm -f $(COV_BUILD)/*.gcda
+	@set -e; for t in $(COV_BINS); do $$t > /dev/null 2>&1; done
 	@# Invoke gcov from the project root so embedded relative source
 	@# paths resolve correctly (e.g. "tests/../src/upscale_logic.h").
 	@# A header compiled into several test binaries (e.g. usm.h) yields a
@@ -603,19 +643,22 @@ coverage: $(COV_TESTS)
 	@# dir would let the last clobber the rest and lose coverage proved by
 	@# another binary. Keep each binary's gcov set in its own subdir and let
 	@# coverage_report.sh union them per line.
-	@rm -rf $(COV_BUILD)/gcov && mkdir -p $(COV_BUILD)/gcov
-	@for gcda in $(COV_BUILD)/*.gcda; do \
-	    gcov -r -m -o $(COV_BUILD) "$$gcda" > /dev/null 2>&1 || true; \
-	    d=$(COV_BUILD)/gcov/$$(basename "$$gcda" .gcda); mkdir -p "$$d"; \
-	    mv ./*.gcov "$$d"/ 2>/dev/null || true; \
+	@rm -rf $(COV_BUILD)/gcov $(COV_BUILD)/gcov-json
+	@mkdir -p $(COV_BUILD)/gcov $(COV_BUILD)/gcov-json
+	@set -e; for gcda in $(COV_BUILD)/*.gcda; do \
+	    stem=$$(basename "$$gcda" .gcda); \
+	    gcda=$$(realpath "$$gcda"); \
+	    cov_dir=$(abspath $(COV_BUILD)); \
+	    text_dir=$$cov_dir/gcov/$$stem; \
+	    json_dir=$$cov_dir/gcov-json/$$stem; \
+	    mkdir -p "$$text_dir" "$$json_dir"; \
+	    ln -s $(abspath src) "$$text_dir/src"; \
+	    ln -s $(abspath tests) "$$text_dir/tests"; \
+	    ln -s $(abspath src) "$$json_dir/src"; \
+	    ln -s $(abspath tests) "$$json_dir/tests"; \
+	    (cd "$$text_dir" && $(GCOV) -r -m -o "$$cov_dir" "$$gcda" > /dev/null); \
+	    (cd "$$json_dir" && $(GCOV) -j -r -m -o "$$cov_dir" "$$gcda" > /dev/null); \
 	done
-	@# Per-function coverage: re-run gcov with -f so each function's
-	@# summary is printed on stdout, then collected for the function-
-	@# level threshold check (independent of the per-file check below).
-	@for gcda in $(COV_BUILD)/*.gcda; do \
-	    gcov -f -r -m -o $(COV_BUILD) "$$gcda" 2>/dev/null; \
-	done > $(COV_BUILD)/functions.txt
-	@rm -f ./*.gcov  # gcov -f re-emits .gcov in CWD; discard duplicates.
 	@COV_DIR=$(COV_BUILD) THRESHOLD=80 ./scripts/coverage_report.sh
 	@COV_DIR=$(COV_BUILD) THRESHOLD=80 ./scripts/coverage_per_function.sh
 

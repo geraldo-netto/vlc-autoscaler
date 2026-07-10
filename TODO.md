@@ -9,12 +9,12 @@ review categories. One table per category. Format: `id | status | effort | descr
 2026-07-10 post-fix rescan: full repository, every category, four parallel
 audit tracks covering production code, tests/fuzzers/benches, build/CI/scripts,
 and documentation. New or reopened: UB-5..7, SCAL-5..6, CON-4, COMP-1,
-ARCH-10, REL-6..8, ERR-3, PORT-6..8, ABI-3, BUILD-2/11..15,
+ARCH-10, REL-6..8, ERR-3, PORT-6..8, ABI-3,
+BUILD-2, BUILD-11..12, BUILD-14..15,
 OBS-6..8, WIRE-4..5, DEAD-9; DG-1, DUP-9, PORT-3, and BUILD-10 were
 expanded with related evidence. ASan/UBSan unit tests and all deterministic
 smoke fuzzers pass; lizard is clean (538 functions, none above CCN 10).
-`make analyze` is currently red (BUILD-14), and the nominally passing coverage
-result is not trustworthy until BUILD-13 is fixed.
+`make analyze` is currently red (BUILD-14).
 
 Effort: S (small) / M (medium) / L (large). Remove a row once its fix is
 implemented + tested + merged (`git log` is the durable record). Keep deferred
@@ -160,7 +160,6 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 | BUILD-10 | open | S | Makefile/CI nits: (a) `stress` is absent from `.PHONY`; (b) the `build-bench:` rule splits its surrounding comment sentence (`Makefile:511-520`); (c) the `fuzz` echo list omits the tile-grid fuzzer it builds; (d) CI says local builds default to x86-64-v4 although `MARCH ?= native` (`ci.yml:14-20`, `Makefile:63`). | Four localized documentation/target-list fixes. |
 | BUILD-11 | open | S | Bare `make` builds only `build/usm_pool.o`, not the plugin: the conditional USM object rule is the first target in the file (`Makefile:135-151`), before `all` at line 158. `make -pn` confirms `.DEFAULT_GOAL := build/usm_pool.o`, contradicting README's primary build command. | Set `.DEFAULT_GOAL := all` before any conditional object rule, or move `all` first; add a dry-run/default-goal check. |
 | BUILD-12 | open | M | Build configuration is not part of object freshness. Existing objects do not depend on `CC`, `MARCH`, `MULTIVERSION`, feature detection, or effective flags; after one build, changing `MARCH=x86-64` to `x86-64-v3` reports nothing to rebuild. A documented “portable” build can therefore silently retain native instructions. | Use configuration-keyed build directories or a generated command/flag stamp that every affected object depends on. Include `HAVE_ZIMG`/pkg-config changes as well as compiler and ISA flags. |
-| BUILD-13 | open | M | Coverage can report false green. `make coverage` ignores every instrumented test failure and first-pass gcov failure (`Makefile:597-620`); both report scripts accept zero discovered files/functions; and the per-function parser clears header-function blocks when the next `File` record is an untracked test TU, so the current report silently covers only `usm_pool.c` functions. | Propagate test/gcov errors, require every applicable tracked file and a nonzero function set, and parse gcov records with correct file ownership. Confirmed both scripts exit 0 against empty coverage inputs. |
 | BUILD-14 | open | S | The required static-analysis target is currently red: `make analyze` exits 2 because cppcheck reports `tests/test_usm_pool.c:249` `variableScope`. CI invokes this same target. | Move the static buffer into its actual use scope or add a narrowly justified suppression; rerun the full analyzer gate. |
 | BUILD-15 | open | M | Non-plugin test/fuzz/stress/coverage/bench targets lack generated dependency files and several manual prerequisites omit included headers. For example `usm.h` includes `zimg_helpers.h`, but touching it leaves `build/test_usm` up to date; `threading.h` likewise does not rebuild stress/pool binaries (`Makefile:79-86,226-594,679-720`). | Generate/include depfiles for every compiled target instead of maintaining incomplete transitive header lists by hand. The historical depfile fix covered plugin objects only. |
 

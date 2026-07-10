@@ -7,7 +7,7 @@
 #
 # Usage: COV_DIR=build_dev/cov THRESHOLD=80 scripts/coverage_report.sh
 
-set -u
+set -euo pipefail
 COV_DIR="${COV_DIR:-build/cov}"
 THRESHOLD="${THRESHOLD:-80}"
 
@@ -22,9 +22,9 @@ TRACKED=(
     threading.h
     zimg_helpers.h
     chroma_classify.h
+    scaler_zimg_chroma.h
     content_probe.h
     scaler_pick_logic.h
-    usm_pool.h
     usm_pool.c
 )
 
@@ -41,6 +41,7 @@ fi
 # summing counts — summing would multiply-count a header's lines once per
 # binary and report bogus totals.
 declare -A FILE_TOTAL FILE_COVERED
+missing=0
 
 shopt -s nullglob globstar
 for t in "${TRACKED[@]}"; do
@@ -49,13 +50,17 @@ for t in "${TRACKED[@]}"; do
     files=( "$COV_DIR/$t.gcov" "$COV_DIR"/gcov/*/"$t.gcov" )
     present=()
     for f in "${files[@]}"; do [[ -f "$f" ]] && present+=("$f"); done
-    [[ ${#present[@]} -gt 0 ]] || continue
+    if [[ ${#present[@]} -eq 0 ]]; then
+        echo "ERROR: no coverage artifact for $t" >&2
+        missing=1
+        continue
+    fi
 
     # gcov line format: "<count>:<lineno>:<source>"
     #   '-'             non-executable (decl/comment/blank)
     #   '#####'/'=====' executable but uncovered
     #   '<digit>+'      covered with that hit count
-    read -r runnable covered < <(awk -F: '
+    if ! counts=$(awk -F: '
         NF>=3 {
             ln=$2; gsub(/^ +/,"",ln);
             c=$1;  gsub(/^ +/,"",c);
@@ -67,16 +72,30 @@ for t in "${TRACKED[@]}"; do
             t=0; cv=0;
             for (l in run) { t++; if (l in cov) cv++; }
             print t, cv;
-        }' "${present[@]}")
+        }' "${present[@]}"); then
+        echo "ERROR: failed to aggregate coverage for $t" >&2
+        missing=1
+        continue
+    fi
+    read -r runnable covered <<< "$counts"
+    if [[ ! "$runnable" =~ ^[0-9]+$ || ! "$covered" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: malformed coverage totals for $t" >&2
+        missing=1
+        continue
+    fi
 
     FILE_TOTAL[$t]=$(( runnable + 0 ))
     FILE_COVERED[$t]=$(( covered + 0 ))
+    if [[ "$runnable" -eq 0 ]]; then
+        echo "ERROR: no executable lines found for $t" >&2
+        missing=1
+    fi
 done
 
 printf "%-30s %8s %8s %8s\n" "file" "lines" "covered" "pct"
 printf "%-30s %8s %8s %8s\n" "------------------------------" "--------" "--------" "--------"
 
-fail=0
+fail=$missing
 total_lines=0
 total_covered=0
 for t in "${TRACKED[@]}"; do
