@@ -556,11 +556,15 @@ coverage-zimg:
 	    tests/test_scaler_zimg.c src/scaler_zimg.c --coverage \
 	    $(BARRIER_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
 	@$(BUILD)/covz/tz >/dev/null 2>&1 || true
-	@gcov -m -o $(BUILD)/covz $(BUILD)/covz/tz-scaler_zimg.gcda >/dev/null 2>&1 || true
+	@# Run gcov inside covz (with src/tests symlinks so embedded relative
+	@# paths resolve) — .gcov output stays out of the repo root even when
+	@# a run is interrupted.
+	@ln -sfn $(abspath src) $(BUILD)/covz/src
+	@ln -sfn $(abspath tests) $(BUILD)/covz/tests
+	@(cd $(BUILD)/covz && gcov -m -o . tz-scaler_zimg.gcda >/dev/null 2>&1) || true
 	@awk -F: 'NF>=2{c=$$1;gsub(/[ \t]/,"",c); if(c!="-"&&c!=""){t++; if(c=="#####"||c=="=====")u++}} \
 	    END{printf "scaler_zimg.c: %d/%d lines = %.1f%% (harness; informational)\n", t-u, t, (t-u)*100.0/t}' \
-	    scaler_zimg.c.gcov
-	@rm -f *.gcov
+	    $(BUILD)/covz/scaler_zimg.c.gcov
 
 bench-zimg: $(BUILD)/bench_scaler_zimg
 	@echo "threads,chroma,src,dst,frames,zc,us_per_frame"

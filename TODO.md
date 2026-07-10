@@ -164,7 +164,6 @@ Test-harness pic leaks are tracked as MEM-1/MEM-3.
 | BUILD-7 | open | S | `.github/workflows/ci.yml:124` — `actions/upload-artifact@v4` is tag-pinned while checkout and sonarqube-scan-action are SHA-pinned; inconsistent supply-chain pinning. | Pin by SHA. |
 | BUILD-8 | open | S | CI applies `-Werror` only to the two plugin builds (ci.yml:56-72); `make test`, `test-zimg`, `fuzz-smoke`, `stress`, `coverage` compile large test/harness TUs without it, so new warnings there pass CI silently. | Currently warning-clean (verified in scratch build); add `EXTRA_CFLAGS=-Werror` to the test jobs. |
 | BUILD-9 | open | S | The libFuzzer CI job builds 13 fuzzers but runs only 5 (ci.yml:91-120); `fuzz_scaler_seam` is neither in `make fuzz` nor buildable in that job (no libzimg), so `tests/corpus_scaler_seam/` (80+ curated seeds) and `corpus_usm_variants/` are never replayed under libFuzzer in CI. | The seam smoke variant does run via test-zimg; add libzimg + the missing fuzzers/corpora to the fuzz job. |
-| BUILD-10 | open | S | `Makefile:529-539` `coverage-zimg` runs gcov in the repo root and cleans with blanket `rm -f *.gcov`; interrupted runs leave stray `.gcov` files at the root (observed five), and the blanket rm would delete user-owned `.gcov` files. | Run gcov in a build subdir (`-o`/`cd`), clean only generated names. |
 
 ## observability
 
