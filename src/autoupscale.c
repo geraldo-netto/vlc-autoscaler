@@ -231,7 +231,7 @@ vlc_module_begin()
     add_integer_with_range( CFG_PREFIX "algo", UP_ALGO_SPLINE36,
                             UP_ALGO_FAST_BILINEAR, UP_ALGO_MAX,
                             ALGO_TEXT, ALGO_LONGTEXT, false )
-    add_integer_with_range( CFG_PREFIX "skip-above", 720, 1, 8192,
+    add_integer_with_range( CFG_PREFIX "skip-above", 720, 0, 8192,
                             SKIP_TEXT, SKIP_LONGTEXT, false )
     add_integer_with_range( CFG_PREFIX "usm", UP_USM_AMOUNT_DEFAULT,
                             0, UP_USM_AMOUNT_MAX,

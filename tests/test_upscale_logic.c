@@ -286,6 +286,22 @@ static void test_plan_skip_above_only_for_auto(void)
     END();
 }
 
+static void test_plan_skip_above_zero_disables_gate(void)
+{
+    BEGIN("plan_upscale: skip_above <= 0 disables the gate (option minimum is 0)");
+    up_dims_t d = {0};
+    /* 900p source: gated by the default 720 threshold... */
+    int rc = up_plan_upscale(1600, 900, 720, UP_TARGET_AUTO, 32, 65536, &d);
+    CHECK_EQ_INT(rc, 0);
+
+    /* ...but with the gate off, AUTO engages on any sub-target source. */
+    d.width = d.height = 0;
+    rc = up_plan_upscale(1600, 900, 0, UP_TARGET_AUTO, 32, 65536, &d);
+    CHECK_EQ_INT(rc, 1);
+    CHECK_EQ_INT(d.height, 1080);
+    END();
+}
+
 /* ---------- design-rule guards (regression tests for the new ladder) ---------- */
 
 static void test_auto_never_above_1080p(void)
@@ -793,6 +809,7 @@ int main(void)
     test_plan_skip_above_lowered();
     test_plan_skip_above_boundaries();
     test_plan_skip_above_only_for_auto();
+    test_plan_skip_above_zero_disables_gate();
     test_plan_invalid();
     test_plan_anamorphic();
     test_plan_pathological_aspect_regression();
