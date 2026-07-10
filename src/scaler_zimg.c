@@ -317,18 +317,23 @@ static zimg_resample_filter_e AlgoToZimg(int algo)
 
 /* ---------- worker thread ---------- */
 
-/*
- * Internal: fill one plane of a zimg image buffer (writable). The const
- * variant aliases the same layout (plane.data is `void *` in both, so
- * casting through here is safe). data + offset_rows*stride is the row-0
- * pointer for this stripe; the mask covers the full graph height
- * (BUFFER_MAX = no wraparound). CCN 1.
- */
+/* Internal: fill one plane of a writable zimg image buffer. CCN 1. */
 static inline void set_buf_plane(zimg_image_buffer *b, int idx,
-                                 const void *data, int stride,
+                                 void *data, int stride,
                                  int offset_rows)
 {
-    b->plane[idx].data   = (uint8_t *)(uintptr_t)data
+    b->plane[idx].data   = (uint8_t *)data
+                         + (size_t)offset_rows * (size_t)stride;
+    b->plane[idx].stride = stride;
+    b->plane[idx].mask   = ZIMG_BUFFER_MAX;
+}
+
+/* zimg's const and writable descriptors are distinct tagged types. CCN 1. */
+static inline void set_const_buf_plane(zimg_image_buffer_const *b, int idx,
+                                       const void *data, int stride,
+                                       int offset_rows)
+{
+    b->plane[idx].data   = (const uint8_t *)data
                          + (size_t)offset_rows * (size_t)stride;
     b->plane[idx].stride = stride;
     b->plane[idx].mask   = ZIMG_BUFFER_MAX;
@@ -486,8 +491,8 @@ static void *worker_main(void *arg)
         const int src_offs[3]    = { src_off_y, src_off_c, src_off_c };
         const int dst_offs[3]    = { dst_off_y, dst_off_c, dst_off_c };
         for (int p = 0; p < 3; p++) {
-            set_buf_plane((zimg_image_buffer *)&sb, p,
-                          src_planes[p], src_strides[p], src_offs[p]);
+            set_const_buf_plane(&sb, p,
+                                src_planes[p], src_strides[p], src_offs[p]);
             set_buf_plane(&db, p,
                           dst_planes[p], dst_strides[p], dst_offs[p]);
         }
