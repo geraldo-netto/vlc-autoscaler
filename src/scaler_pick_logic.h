@@ -34,11 +34,6 @@
 
 typedef int (*up_supports_fn)(uint32_t chroma, int algo);
 
-/* The supports callback offsets must match scaler_backend_t's layout.
- * In the production struct, `supports` is the second field after `name`.
- * We expose them as parallel arrays so this header doesn't need to
- * know about the rest of the backend struct. */
-
 static inline const void *up_pick_zimg_if_ok(
     const void *zimg_handle, up_supports_fn zimg_supports,
     uint32_t chroma, int algo)
