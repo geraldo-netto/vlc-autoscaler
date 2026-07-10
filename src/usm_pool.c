@@ -547,8 +547,8 @@ static int usm_pool_validate_args(const usm_pool_t *p,
                                   const uint8_t *src, int src_stride)
 {
     if (!p) return -1;
-    if (!dst || !src) return -1;
-    if (dst_stride < p->width || src_stride < p->width) return -1;
+    if (!up_usm__plane_args_ok(dst, dst_stride, src, src_stride, p->width))
+        return -1;
     /* In-place means EXACT aliasing: same base, same stride. A stride
      * mismatch on the same base would interleave reads and writes of
      * different rows — reject rather than corrupt. */

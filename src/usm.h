@@ -241,6 +241,19 @@ static inline void up_usm__pass2_combine(
     }
 }
 
+/* Shared plane-argument core (DUP-5): non-null buffers and strides wide
+ * enough for `width` pixels. The single-plane oracle and the pool layer
+ * their own extra checks (dims here, in-place aliasing there) on top. */
+static inline int up_usm__plane_args_ok(
+    const uint8_t *dst, int dst_stride,
+    const uint8_t *src, int src_stride,
+    int width)
+{
+    if (dst == NULL || src == NULL) return 0;
+    if (dst_stride < width || src_stride < width) return 0;
+    return 1;
+}
+
 /* Extracted to cap the CCN of up_usm_apply_plane at <=10. The six
  * boolean clauses below would otherwise count one branch each in the
  * caller. */
@@ -249,10 +262,8 @@ static inline int up_usm__args_valid(
     const uint8_t *src, int src_stride,
     int width, int height)
 {
-    if (dst == NULL || src == NULL) return 0;
     if (width <= 0 || height <= 0) return 0;
-    if (dst_stride < width || src_stride < width) return 0;
-    return 1;
+    return up_usm__plane_args_ok(dst, dst_stride, src, src_stride, width);
 }
 
 static inline int up_usm_apply_plane(
