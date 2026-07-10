@@ -38,8 +38,12 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
 #include <sched.h>
 #include <semaphore.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <sys/types.h>
 #include <unistd.h>     /* sysconf */
 
@@ -231,6 +235,130 @@ static inline int up_sem_wait_nointr(sem_t *s)
     int rc;
     do { rc = sem_wait(s); } while (rc == -1 && errno == EINTR);
     return rc;
+}
+
+/*
+ * Shared worker-pool dispatch gate (DUP-1). One home for the broadcast
+ * wake gate + counting done-barrier both pools (usm_pool.c,
+ * scaler_zimg.c) previously maintained as parallel copies.
+ *
+ * Wake side (SCAL-2): the main thread arms `pending` and bumps
+ * `generation` once per dispatch under `lock`, then wakes every worker
+ * with ONE pthread_cond broadcast; each worker sleeps until the
+ * generation advances past its private seen_gen. Per-frame worker state
+ * written by the main thread between dispatches needs no extra fences:
+ * the unlock releases it and the worker re-acquires the same lock to
+ * observe the new generation.
+ *
+ * Done side: each worker finishes with an acq_rel fetch_sub on
+ * `pending`; those RMWs form a release sequence, so the worker that
+ * drives it to zero observes every other worker's writes, and its
+ * sem_post -> the main thread's sem_wait publishes them all. The main
+ * thread waits exactly once per dispatch (EINTR-retried); a non-EINTR
+ * wait failure means the barrier is broken and the caller must poison
+ * and stop the pool rather than proceed.
+ *
+ * The lock/arm/unlock split exists so a pool can reset per-worker state
+ * (e.g. result codes) inside the critical section: a worker that wakes
+ * must never observe stale values.
+ */
+typedef struct {
+    pthread_mutex_t lock;
+    pthread_cond_t  cv;
+    uint64_t        generation;   /* bumped per dispatch, guarded by lock */
+    atomic_int      pending;      /* live workers this dispatch */
+    sem_t           all_done;     /* posted once when pending hits 0 */
+    bool            cv_inited;    /* destroy guards for partial init */
+    bool            sem_inited;
+} up_pool_gate_t;
+
+static inline int up_pool_gate_init(up_pool_gate_t *g)
+{
+    g->generation = 0;
+    atomic_init(&g->pending, 0);
+    g->cv_inited  = false;
+    g->sem_inited = false;
+    if (pthread_mutex_init(&g->lock, NULL) != 0) return -1;
+    if (pthread_cond_init(&g->cv, NULL) != 0) {
+        pthread_mutex_destroy(&g->lock);
+        return -1;
+    }
+    g->cv_inited = true;
+    if (sem_init(&g->all_done, 0, 0) != 0) return -1;
+    g->sem_inited = true;
+    return 0;
+}
+
+/* Safe on a zeroed (never-initialized) or partially-initialized gate. */
+static inline void up_pool_gate_destroy(up_pool_gate_t *g)
+{
+    if (g->sem_inited) sem_destroy(&g->all_done);
+    if (g->cv_inited) {
+        pthread_cond_destroy(&g->cv);
+        pthread_mutex_destroy(&g->lock);
+    }
+    g->sem_inited = false;
+    g->cv_inited  = false;
+}
+
+/* True once init succeeded far enough that workers may be blocked on the
+ * cv (pools spawn threads only after full gate init). */
+static inline bool up_pool_gate_ready(const up_pool_gate_t *g)
+{
+    return g->cv_inited;
+}
+
+static inline void up_pool_gate_lock(up_pool_gate_t *g)
+{
+    pthread_mutex_lock(&g->lock);
+}
+
+/* Arm the done-barrier for n workers and open the gate. Caller holds the
+ * lock (up_pool_gate_lock) and has reset any per-worker state. */
+static inline void up_pool_gate_arm_locked(up_pool_gate_t *g, int n)
+{
+    atomic_store_explicit(&g->pending, n, memory_order_relaxed);
+    g->generation++;
+}
+
+static inline void up_pool_gate_unlock_broadcast(up_pool_gate_t *g)
+{
+    pthread_cond_broadcast(&g->cv);
+    pthread_mutex_unlock(&g->lock);
+}
+
+/*
+ * Worker side: block until a new dispatch (returns true) or an exit
+ * request with no unseen generation (returns false). An unseen dispatch
+ * is completed before exit so fatal-barrier recovery can join without
+ * leaving a partly-written frame. *should_exit is read under the gate
+ * lock; the pool sets it under the same lock before broadcasting.
+ */
+static inline bool up_pool_gate_wait_for_go(up_pool_gate_t *g,
+                                            uint64_t *seen_gen,
+                                            const bool *should_exit)
+{
+    pthread_mutex_lock(&g->lock);
+    while (g->generation == *seen_gen && !*should_exit)
+        pthread_cond_wait(&g->cv, &g->lock);
+    bool run = g->generation != *seen_gen;
+    *seen_gen = g->generation;
+    pthread_mutex_unlock(&g->lock);
+    return run;
+}
+
+/* Worker side: signal completion. The last finisher posts the barrier. */
+static inline void up_pool_gate_worker_done(up_pool_gate_t *g)
+{
+    if (atomic_fetch_sub_explicit(&g->pending, 1, memory_order_acq_rel) == 1)
+        sem_post(&g->all_done);
+}
+
+/* Main-thread side: wait for every worker of this dispatch. Returns 0 on
+ * success; non-zero means the barrier is broken (poison + stop). */
+static inline int up_pool_gate_wait_all(up_pool_gate_t *g)
+{
+    return up_sem_wait_nointr(&g->all_done);
 }
 
 #endif /* AUTOUPSCALE_THREADING_H */

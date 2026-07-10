@@ -693,7 +693,7 @@ $(COV_BUILD)/test_perfmon: tests/test_perfmon.c src/perfmon.h | $(COV_BUILD)
 $(COV_BUILD)/test_cli_parse: tests/test_cli_parse.c tests/cli_parse.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_threading: tests/test_threading.c src/threading.h | $(COV_BUILD)
-	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS) -lpthread
 $(COV_BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.h | $(COV_BUILD)
@@ -834,12 +834,12 @@ $(BUILD):
 -include $(wildcard $(BUILD)/*.d)
 -include $(wildcard $(COV_BUILD)/*.d)
 $(BUILD)/test_threading: tests/test_threading.c src/threading.h | $(BUILD)
-	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
+	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS) -lpthread
 
 # PORT-1: same suite compiled with the affinity machinery forced off,
 # proving the sysconf-only fallback (non-glibc libcs) builds and passes.
 $(BUILD)/test_threading_noaffinity: tests/test_threading.c src/threading.h | $(BUILD)
-	$(CC) $(TEST_CFLAGS) -DUP_NO_CPU_AFFINITY -o $@ $< $(TEST_LDFLAGS)
+	$(CC) $(TEST_CFLAGS) -DUP_NO_CPU_AFFINITY -o $@ $< $(TEST_LDFLAGS) -lpthread
 
 $(BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)

@@ -325,6 +325,100 @@ static void test_detect_cores_invariants(void)
 
 #endif /* UP_HAVE_CPU_AFFINITY */
 
+/* ---------- shared pool gate (DUP-1) ---------- */
+
+typedef struct {
+    up_pool_gate_t *gate;
+    uint64_t        seen_gen;
+    bool            should_exit;
+    atomic_int      runs;
+    pthread_t       thread;
+} gate_worker_t;
+
+static void *gate_worker_main(void *arg)
+{
+    gate_worker_t *w = (gate_worker_t *)arg;
+    while (up_pool_gate_wait_for_go(w->gate, &w->seen_gen,
+                                    &w->should_exit)) {
+        atomic_fetch_add_explicit(&w->runs, 1, memory_order_relaxed);
+        up_pool_gate_worker_done(w->gate);
+    }
+    return NULL;
+}
+
+static void gate_worker_start(gate_worker_t *w, up_pool_gate_t *gate)
+{
+    w->gate        = gate;
+    w->seen_gen    = gate->generation;
+    w->should_exit = false;
+    atomic_init(&w->runs, 0);
+    CHECK_EQ(pthread_create(&w->thread, NULL, gate_worker_main, w), 0);
+}
+
+static void test_pool_gate_dispatch_cycles(void)
+{
+    BEGIN("pool gate: N workers x M dispatches, then clean exit");
+    enum { N = 4, M = 25 };
+    up_pool_gate_t gate;
+    CHECK_EQ(up_pool_gate_init(&gate), 0);
+    CHECK_EQ(up_pool_gate_ready(&gate), 1);
+
+    static gate_worker_t ws[N];
+    for (int i = 0; i < N; i++)
+        gate_worker_start(&ws[i], &gate);
+
+    for (int gen = 0; gen < M; gen++) {
+        up_pool_gate_lock(&gate);
+        up_pool_gate_arm_locked(&gate, N);
+        up_pool_gate_unlock_broadcast(&gate);
+        CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
+    }
+
+    up_pool_gate_lock(&gate);
+    for (int i = 0; i < N; i++)
+        ws[i].should_exit = true;
+    up_pool_gate_unlock_broadcast(&gate);
+    for (int i = 0; i < N; i++) {
+        pthread_join(ws[i].thread, NULL);
+        CHECK_EQ(atomic_load(&ws[i].runs), M);
+    }
+
+    up_pool_gate_destroy(&gate);
+    up_pool_gate_destroy(&gate);  /* double destroy must be a no-op */
+    CHECK_EQ(up_pool_gate_ready(&gate), 0);
+    END();
+}
+
+/* The exit contract both pools depend on for fatal-barrier recovery: a
+ * worker asked to exit still completes a dispatch it has not yet seen. */
+static void test_pool_gate_exit_completes_unseen(void)
+{
+    BEGIN("pool gate: exit request still completes an unseen dispatch");
+    up_pool_gate_t gate;
+    CHECK_EQ(up_pool_gate_init(&gate), 0);
+
+    static gate_worker_t w;
+    w.gate        = &gate;
+    w.seen_gen    = gate.generation;
+    w.should_exit = false;
+    atomic_init(&w.runs, 0);
+
+    /* Arm a dispatch AND the exit flag before the worker even starts:
+     * it must run the unseen generation exactly once, then exit. */
+    up_pool_gate_lock(&gate);
+    up_pool_gate_arm_locked(&gate, 1);
+    w.should_exit = true;
+    up_pool_gate_unlock_broadcast(&gate);
+
+    CHECK_EQ(pthread_create(&w.thread, NULL, gate_worker_main, &w), 0);
+    CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
+    pthread_join(w.thread, NULL);
+    CHECK_EQ(atomic_load(&w.runs), 1);
+
+    up_pool_gate_destroy(&gate);
+    END();
+}
+
 /*
  * Composition: detect + decide should always produce something the
  * worker pools can handle. This isn't testing the formula again — it's
@@ -376,6 +470,8 @@ int main(void)
     test_detect_topology_synthetic();
     test_detect_cores_invariants();
 #endif
+    test_pool_gate_dispatch_cycles();
+    test_pool_gate_exit_completes_unseen();
     test_detect_then_decide();
     test_explicit_at_max_boundary();
 

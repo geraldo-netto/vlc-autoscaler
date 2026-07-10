@@ -109,35 +109,21 @@ typedef struct usm_worker_s {
     bool       thread_started;
     bool       should_exit;   /* finish unseen generation, then exit */
 
-    /* Dispatch gate, shared across workers and owned by the pool — the
-     * same design as the zimg pool (SCAL-2): the main thread bumps
-     * *generation under *go_lock and wakes everyone with ONE
-     * pthread_cond broadcast; each worker sleeps until *generation
-     * advances past its own seen_gen. Completion is a counting barrier:
-     * each worker decrements *pending after its stripe; the one that
-     * drives it to zero posts *all_done, which the main thread waits on
-     * exactly once. */
-    pthread_mutex_t *go_lock;
-    pthread_cond_t  *go_cv;
-    uint64_t        *generation;   /* shared, guarded by *go_lock */
-    uint64_t         seen_gen;
-    atomic_int      *pending;
-    sem_t           *all_done;
+    /* Dispatch gate, owned by the pool and shared with the zimg pool's
+     * design via up_pool_gate_t (DUP-1) — see threading.h for the full
+     * wake/done protocol and memory-ordering rationale. */
+    up_pool_gate_t *gate;
+    uint64_t        seen_gen;
 
     /* Per-worker constants set at lazy_init. */
     int        y_start, y_end;
     int        width, height;
     uint8_t   *scratch;       /* 5*width: 3 rolling rows + 2 halo snapshots */
 
-    /* Per-frame state set by main thread before the dispatch.
-     *
-     * The fence that makes these reads race-free is the go gate: the
-     * main thread writes every field below, then bumps *generation under
-     * *go_lock (the unlock releases); the worker re-acquires *go_lock to
-     * observe the new generation before reading them. On the done side
-     * the worker's acq_rel fetch_sub on *pending plus the
-     * sem_post/sem_wait on *all_done publish its dst writes back to the
-     * main thread before the next frame's set_per_frame. */
+    /* Per-frame state set by main thread before the dispatch. The gate
+     * protocol (threading.h) makes these reads race-free: written before
+     * the generation bump, observed after the worker re-acquires the
+     * gate lock; dst writes flow back through the done barrier. */
     const uint8_t  *src;
     uint8_t        *dst;
     int             src_stride;
@@ -216,14 +202,9 @@ struct usm_pool_s {
 
     usm_worker_t  *workers;
 
-    /* SCAL-2-style wake gate + counting done-barrier (see usm_worker_s). */
-    pthread_mutex_t go_lock;
-    pthread_cond_t  go_cv;
-    uint64_t        generation;     /* bumped per dispatch under go_lock */
-    bool            go_gate_inited; /* destroy guard: mutex+cond init'd */
-    atomic_int      pending;        /* live workers this dispatch */
-    sem_t           all_done;       /* posted once when pending hits 0 */
-    bool            all_done_inited;
+    /* Shared wake gate + counting done-barrier (DUP-1, threading.h).
+     * calloc zeroing marks it not-yet-initialized for destroy. */
+    up_pool_gate_t gate;
 
     uint8_t       *scratch;         /* 5*width per worker, contiguous block */
 
@@ -291,30 +272,15 @@ static void usm_worker_run(usm_worker_t *w)
     usm_worker_sweep(w);
 }
 
-/* Block until the main thread bumps *generation (new dispatch) or sets
- * should_exit. An unseen dispatch is completed before exit so fatal barrier
- * recovery can join without leaving a partly-written frame. */
-static bool usm_worker_wait_for_go(usm_worker_t *w)
-{
-    pthread_mutex_lock(w->go_lock);
-    while (*w->generation == w->seen_gen && !w->should_exit)
-        pthread_cond_wait(w->go_cv, w->go_lock);
-    bool run = *w->generation != w->seen_gen;
-    w->seen_gen = *w->generation;
-    pthread_mutex_unlock(w->go_lock);
-    return run;
-}
-
 static void *usm_worker_main(void *arg)
 {
     usm_worker_t *w = (usm_worker_t *)arg;
     for (;;) {
-        if (!usm_worker_wait_for_go(w)) break;
+        if (!up_pool_gate_wait_for_go(w->gate, &w->seen_gen,
+                                      &w->should_exit))
+            break;
         usm_worker_run(w);
-        /* Last worker to finish posts all_done exactly once. acq_rel so
-         * the dst writes above join the release sequence on *pending. */
-        if (atomic_fetch_sub_explicit(w->pending, 1, memory_order_acq_rel) == 1)
-            sem_post(w->all_done);
+        up_pool_gate_worker_done(w->gate);
     }
     return NULL;
 }
@@ -329,12 +295,7 @@ static void *usm_worker_main(void *arg)
  * =========================================================================*/
 static int usm_pool_init_gate(usm_pool_t *p)
 {
-    if (pthread_mutex_init(&p->go_lock, NULL) != 0) return -1;
-    if (pthread_cond_init(&p->go_cv, NULL) != 0) { pthread_mutex_destroy(&p->go_lock); return -1; }
-    p->go_gate_inited = true;
-    if (sem_init(&p->all_done, 0, 0) != 0) return -1;
-    p->all_done_inited = true;
-    return 0;
+    return up_pool_gate_init(&p->gate);
 }
 
 /*
@@ -367,12 +328,8 @@ static int usm_pool_alloc_scratch(usm_pool_t *p)
 static int usm_pool_spawn_worker(usm_pool_t *p, int i)
 {
     usm_worker_t *w = &p->workers[i];
-    w->go_lock    = &p->go_lock;
-    w->go_cv      = &p->go_cv;
-    w->generation = &p->generation;
-    w->seen_gen   = p->generation;  /* don't run a frame before the first dispatch */
-    w->pending    = &p->pending;
-    w->all_done   = &p->all_done;
+    w->gate       = &p->gate;
+    w->seen_gen   = p->gate.generation;  /* don't run a frame before the first dispatch */
     w->scratch   = p->scratch + (size_t)i
                  * (size_t)USM_POOL_SCRATCH_ROWS * (size_t)p->width;
     w->width     = p->width;
@@ -467,8 +424,6 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
 
     usm_pool_t *p = calloc(1, sizeof(*p));
     if (!p) return NULL;
-    /* calloc's zero bytes are not a portable _Atomic initialisation. */
-    atomic_init(&p->pending, 0);
     p->n_threads_pref = n_threads;
     p->n_threads      = n_threads;  /* updated by lazy_init if it shrinks */
     p->width          = width;
@@ -536,13 +491,11 @@ static void usm_pool_stop_workers(usm_pool_t *p);
 
 static int usm_pool_run(usm_pool_t *p)
 {
-    pthread_mutex_lock(&p->go_lock);
-    atomic_store_explicit(&p->pending, p->n_threads, memory_order_relaxed);
-    p->generation++;
-    pthread_cond_broadcast(&p->go_cv);
-    pthread_mutex_unlock(&p->go_lock);
+    up_pool_gate_lock(&p->gate);
+    up_pool_gate_arm_locked(&p->gate, p->n_threads);
+    up_pool_gate_unlock_broadcast(&p->gate);
 
-    if (up_sem_wait_nointr(&p->all_done) == 0) return 0;
+    if (up_pool_gate_wait_all(&p->gate) == 0) return 0;
     p->pool_broken = true;
     usm_pool_stop_workers(p);
     return -1;
@@ -605,13 +558,12 @@ static void usm_pool_wake_all_for_exit(usm_pool_t *p)
 {
     /* If the gate never initialized, no thread was ever spawned (spawn
      * runs after gate init), so there is nothing to wake. */
-    if (!p->go_gate_inited) return;
-    pthread_mutex_lock(&p->go_lock);
+    if (!up_pool_gate_ready(&p->gate)) return;
+    up_pool_gate_lock(&p->gate);
     for (int i = 0; i < p->n_threads; i++)
         if (p->workers[i].thread_started)
             p->workers[i].should_exit = true;
-    pthread_cond_broadcast(&p->go_cv);
-    pthread_mutex_unlock(&p->go_lock);
+    up_pool_gate_unlock_broadcast(&p->gate);
 }
 
 static void usm_pool_stop_workers(usm_pool_t *p)
@@ -633,11 +585,7 @@ void up_usm_pool_destroy(usm_pool_t *p)
         usm_pool_stop_workers(p);
         free(p->workers);
     }
-    if (p->all_done_inited) sem_destroy(&p->all_done);
-    if (p->go_gate_inited) {
-        pthread_cond_destroy(&p->go_cv);
-        pthread_mutex_destroy(&p->go_lock);
-    }
+    up_pool_gate_destroy(&p->gate);
     free(p->scratch);
     free(p);
 }
