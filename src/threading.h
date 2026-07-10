@@ -43,6 +43,17 @@
 #include <sys/types.h>
 #include <unistd.h>     /* sysconf */
 
+/* Affinity-mask topology detection needs the glibc/Linux CPU_*_S macro
+ * family (PORT-1). Where <sched.h> doesn't provide it — or when a test
+ * forces UP_NO_CPU_AFFINITY — fall back to sysconf-only core counting
+ * with no pin IDs, which disables worker pinning downstream. */
+#if defined(CPU_ALLOC) && defined(CPU_ALLOC_SIZE) && \
+    !defined(UP_NO_CPU_AFFINITY)
+#define UP_HAVE_CPU_AFFINITY 1
+#else
+#define UP_HAVE_CPU_AFFINITY 0
+#endif
+
 /* User-visible thread-count preset (do NOT renumber). */
 #define UP_THREADS_AUTO   0
 
@@ -65,6 +76,19 @@ static inline int up__clamp_core_count(long count)
     return (int)count;
 }
 
+typedef long (*up_sysconf_fn)(int);
+
+/* Shared fallback: count-only topology from sysconf, no pin IDs. */
+static inline void up__topology_from_sysconf(up_cpu_topology_t *topology,
+                                             up_sysconf_fn getcores)
+{
+    long fallback = getcores != NULL ? getcores(_SC_NPROCESSORS_ONLN) : 1;
+    topology->allowed_count = up__clamp_core_count(fallback);
+    topology->pin_count = 0;
+}
+
+#if UP_HAVE_CPU_AFFINITY
+
 static inline int up_cpu_topology_from_set(up_cpu_topology_t *topology,
                                             const cpu_set_t *set,
                                             size_t set_size)
@@ -86,7 +110,6 @@ static inline int up_cpu_topology_from_set(up_cpu_topology_t *topology,
 }
 
 typedef int (*up_getaffinity_fn)(pid_t, size_t, cpu_set_t *);
-typedef long (*up_sysconf_fn)(int);
 
 /*
  * Detect CPUs available to this process. The allowed count is clamped into
@@ -117,15 +140,24 @@ static inline void up_detect_cpu_topology_with(up_cpu_topology_t *topology,
         CPU_FREE(set);
     }
 
-    long fallback = getcores != NULL ? getcores(_SC_NPROCESSORS_ONLN) : 1;
-    topology->allowed_count = up__clamp_core_count(fallback);
-    topology->pin_count = 0;
+    up__topology_from_sysconf(topology, getcores);
 }
 
 static inline void up_detect_cpu_topology(up_cpu_topology_t *topology)
 {
     up_detect_cpu_topology_with(topology, sched_getaffinity, sysconf);
 }
+
+#else /* !UP_HAVE_CPU_AFFINITY */
+
+static inline void up_detect_cpu_topology(up_cpu_topology_t *topology)
+{
+    if (topology == NULL) return;
+    *topology = (up_cpu_topology_t){ 0 };
+    up__topology_from_sysconf(topology, sysconf);
+}
+
+#endif /* UP_HAVE_CPU_AFFINITY */
 
 static inline int up_detect_cores(void)
 {

@@ -206,7 +206,7 @@ $(BUILD)/%.o: src/%.c | $(BUILD)
 # works on machines without lizard installed.
 check: complexity test
 
-test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants
+test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_threading_noaffinity $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/test_upscale_logic
@@ -225,6 +225,9 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/tes
 	@echo
 	@echo "=== threading ==="
 	@$(BUILD)/test_threading
+	@echo
+	@echo "=== threading (no-affinity fallback) ==="
+	@$(BUILD)/test_threading_noaffinity
 	@echo
 	@echo "=== zimg_helpers ==="
 	@$(BUILD)/test_zimg_helpers
@@ -832,6 +835,11 @@ $(BUILD):
 -include $(wildcard $(COV_BUILD)/*.d)
 $(BUILD)/test_threading: tests/test_threading.c src/threading.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
+
+# PORT-1: same suite compiled with the affinity machinery forced off,
+# proving the sysconf-only fallback (non-glibc libcs) builds and passes.
+$(BUILD)/test_threading_noaffinity: tests/test_threading.c src/threading.h | $(BUILD)
+	$(CC) $(TEST_CFLAGS) -DUP_NO_CPU_AFFINITY -o $@ $< $(TEST_LDFLAGS)
 
 $(BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)

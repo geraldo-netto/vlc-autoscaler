@@ -115,7 +115,6 @@ mappings, flat switches); proposing more would violate the "only when it improve
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| PORT-1 | open | M | `src/threading.h:41-127` uses glibc/Linux-only APIs (`cpu_set_t`, `CPU_ALLOC*/CPU_ISSET_S`, `sched_getaffinity`, `<sched.h>` under `_GNU_SOURCE`) unconditionally, with no `__linux__`/glibc guard — included by usm_pool.c in every build mode. | Rest of codebase guards platform code (`sysinfo` at autoupscale.c:371, `pthread_setaffinity_np` at scaler_zimg.c:114). Add a guarded fallback (`up_cpu_count` via `sysconf`, pinning as no-op) for non-glibc. |
 | PORT-2 | open | S | `src/chroma_classify.h:34-43` — `UP_FOURCC`'s big-endian branch keys off `WORDS_BIGENDIAN`, which only VLC's config.h defines; the plugin build defines no endian macro, so a BE host takes the LE branch. | Mitigated loudly: `_Static_assert`s at autoupscale.c:48-53 turn it into a compile break on BE, not silent corruption — but the header's "both endianness paths" claim only holds if the build supplies the macro. Use `__BYTE_ORDER__` as fallback or fix the comment. |
 
 UB-1 (perfmon signed shift) is also a portability item; tracked once under undefined behavior.

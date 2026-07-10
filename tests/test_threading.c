@@ -125,6 +125,51 @@ static void test_core_count_clamp(void)
     END();
 }
 
+/* Fallback path shared by both build modes (PORT-1): sysconf-only
+ * topology has no pin IDs and clamps degenerate core counts. */
+static long g_fb_core_count;
+static long fb_sysconf(int name)
+{
+    (void)name;
+    return g_fb_core_count;
+}
+
+static void test_topology_sysconf_fallback(void)
+{
+    BEGIN("sysconf-only fallback: clamped count, no pin IDs");
+    up_cpu_topology_t topology = { 0 };
+
+    g_fb_core_count = 12;
+    up__topology_from_sysconf(&topology, fb_sysconf);
+    CHECK_EQ(topology.allowed_count, 12);
+    CHECK_EQ(topology.pin_count, 0);
+
+    g_fb_core_count = 0;
+    up__topology_from_sysconf(&topology, fb_sysconf);
+    CHECK_EQ(topology.allowed_count, 1);
+
+    g_fb_core_count = LONG_MAX;
+    up__topology_from_sysconf(&topology, fb_sysconf);
+    CHECK_EQ(topology.allowed_count, UP_CPU_COUNT_MAX);
+
+    up__topology_from_sysconf(&topology, NULL);
+    CHECK_EQ(topology.allowed_count, 1);
+
+    /* The public entry point works in both modes; without affinity it
+     * must report a sane count and zero pin IDs. */
+    up_cpu_topology_t detected;
+    up_detect_cpu_topology(&detected);
+    CHECK_EQ(detected.allowed_count >= 1, 1);
+    CHECK_EQ(detected.allowed_count <= UP_CPU_COUNT_MAX, 1);
+#if !UP_HAVE_CPU_AFFINITY
+    CHECK_EQ(detected.pin_count, 0);
+    up_detect_cpu_topology(NULL);  /* must not crash */
+#endif
+    END();
+}
+
+#if UP_HAVE_CPU_AFFINITY
+
 static void test_topology_from_sparse_set(void)
 {
     BEGIN("CPU topology: preserves sparse allowed CPU IDs");
@@ -278,6 +323,8 @@ static void test_detect_cores_invariants(void)
     END();
 }
 
+#endif /* UP_HAVE_CPU_AFFINITY */
+
 /*
  * Composition: detect + decide should always produce something the
  * worker pools can handle. This isn't testing the formula again — it's
@@ -322,10 +369,13 @@ int main(void)
     test_negative_user_pref_means_auto();
     test_32_core_target_machine();
     test_core_count_clamp();
+    test_topology_sysconf_fallback();
+#if UP_HAVE_CPU_AFFINITY
     test_topology_from_sparse_set();
     test_topology_caps_counts();
     test_detect_topology_synthetic();
     test_detect_cores_invariants();
+#endif
     test_detect_then_decide();
     test_explicit_at_max_boundary();
 
