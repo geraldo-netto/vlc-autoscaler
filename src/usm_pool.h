@@ -6,12 +6,10 @@
  * plane in horizontal stripes. Bit-identical output to up_usm_apply_plane
  * for any combination of (width, height, amount_q8, src) inputs.
  *
- * Algorithm: two-phase dispatch with a barrier between phases.
- *   Phase 1: each worker hblurs its assigned rows into a shared workspace.
- *   Barrier: main thread sem_waits all N pass-1 done signals.
- *   Phase 2: each worker combines src + workspace[y-1, y, y+1] -> dst on
- *            its assigned rows. Workspace reads are race-free because
- *            phase 1 fully completed before any phase 2 work began.
+ * Algorithm: fused single-pass sweep — one dispatch per frame; each
+ * worker hblurs into three private rolling row buffers and combines on
+ * the fly, re-hblurring stripe-boundary rows locally so no worker reads
+ * another's memory (full rationale in usm_pool.c's header note).
  *
  * The pool follows the same lifecycle as the zimg backend: cheap
  * create() allocates only the small priv struct; the workspace and
