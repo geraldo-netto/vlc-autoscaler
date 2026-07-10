@@ -28,6 +28,7 @@
 #define ZIMG_TEST_DEFINE_MODULE_NAME
 #include "zimg_test_util.h"
 #include "barrier_fault_inject.h"
+#include "../src/threading.h"
 
 #include <stdio.h>
 #include <sys/resource.h>
@@ -60,23 +61,23 @@ struct zcfg {
 };
 
 static const struct zcfg CFGS[] = {
-    { VLC_CODEC_I420, "I420 640x360->1280x720  t1",  640, 360, 1280, 720,  1 },
-    { VLC_CODEC_I420, "I420 640x360->1280x720  t4",  640, 360, 1280, 720,  4 },
-    { VLC_CODEC_I420, "I420 854x480->1920x1080 t8",  854, 480, 1920, 1080, 8 },
-    { VLC_CODEC_I420, "I420 854x480->1920x1080 t16", 854, 480, 1920, 1080, 16 },
-    { VLC_CODEC_YV12, "YV12 640x360->1280x720  t4",  640, 360, 1280, 720,  4 },
-    { VLC_CODEC_YV12, "YV12 720x404->1920x1080 t8",  720, 404, 1920, 1080, 8 },
-    { VLC_CODEC_I422, "I422 640x360->1280x720  t4",  640, 360, 1280, 720,  4 },
-    { VLC_CODEC_I422, "I422 854x480->1920x1080 t8",  854, 480, 1920, 1080, 8 },
-    { VLC_CODEC_I444, "I444 640x360->1280x720  t4",  640, 360, 1280, 720,  4 },
-    { VLC_CODEC_I444, "I444 480x270->1280x720  t8",  480, 270, 1280, 720,  8 },
+    { VLC_CODEC_I420, "I420 640x360->1280x720  t1",  640, 360, 1280, 720,  1, 0 },
+    { VLC_CODEC_I420, "I420 640x360->1280x720  t4",  640, 360, 1280, 720,  4, 0 },
+    { VLC_CODEC_I420, "I420 854x480->1920x1080 t8",  854, 480, 1920, 1080, 8, 0 },
+    { VLC_CODEC_I420, "I420 854x480->1920x1080 t16", 854, 480, 1920, 1080, 16, 0 },
+    { VLC_CODEC_YV12, "YV12 640x360->1280x720  t4",  640, 360, 1280, 720,  4, 0 },
+    { VLC_CODEC_YV12, "YV12 720x404->1920x1080 t8",  720, 404, 1920, 1080, 8, 0 },
+    { VLC_CODEC_I422, "I422 640x360->1280x720  t4",  640, 360, 1280, 720,  4, 0 },
+    { VLC_CODEC_I422, "I422 854x480->1920x1080 t8",  854, 480, 1920, 1080, 8, 0 },
+    { VLC_CODEC_I444, "I444 640x360->1280x720  t4",  640, 360, 1280, 720,  4, 0 },
+    { VLC_CODEC_I444, "I444 480x270->1280x720  t8",  480, 270, 1280, 720,  8, 0 },
     /* Odd dims only with I444 (no chroma subsampling). Subsampled chromas
      * (I420/YV12/I422) require even dims, which production satisfies on
      * BOTH sides: dst via up__clamp_even in up_compute_target_dims, src
      * via the REL-4 even-align in Open (odd visible crops get one
      * row/column cropped before the scaler ever sees them). */
-    { VLC_CODEC_I444, "I444 odd 853x481->1281x721 t8", 853, 481, 1281, 721, 8 },
-    { VLC_CODEC_I420, "I420 tiny 64x64->128x128 t8",   64,  64,  128,  128, 8 },
+    { VLC_CODEC_I444, "I444 odd 853x481->1281x721 t8", 853, 481, 1281, 721, 8, 0 },
+    { VLC_CODEC_I420, "I420 tiny 64x64->128x128 t8",   64,  64,  128,  128, 8, 0 },
     { VLC_CODEC_I420, "I420 clamp 100x16->200x32 t64", 100, 16,  200,  32, 64, 1 },
     /* SCAL-3: wide + short -> row stripes alone can't use all threads, so the
      * grid tiles COLUMNS. dst_h/16 < threads triggers n_cols > 1. */
@@ -441,6 +442,60 @@ static void test_cropped_tiled_alignment_fallback(void)
         CHECK(cmp_visible(&expected, &actual) == 0);
     zt_pic_free(&expected);
     zt_pic_free(&actual);
+    END();
+}
+
+static void test_rows_only_transition_preserves_dst_mode(void)
+{
+    BEGIN("rows-only transition restores eligible destination direct I/O");
+    if (up_detect_cores() < 2) { END(); return; }
+
+    const struct {
+        int src_zerocopy;
+        int dst_zerocopy;
+        scaler_process_status_t shifted_status;
+    } modes[] = {
+        { 1, 1, SCALER_PROCESS_TRANSIENT },
+        { 1, 0, SCALER_PROCESS_OK },
+        { 0, 1, SCALER_PROCESS_TRANSIENT },
+    };
+    for (size_t i = 0; i < sizeof modes / sizeof modes[0]; i++) {
+        zt_pic_t src = {0}, dst = {0};
+        int allocated = zt_pic_alloc(&src, VLC_CODEC_I420, 960, 8) == 0
+                     && zt_pic_alloc(&dst, VLC_CODEC_I420, 1918, 16) == 0;
+        CHECK(allocated);
+        if (!allocated) {
+            zt_pic_free(&src);
+            zt_pic_free(&dst);
+            continue;
+        }
+
+        scaler_ctx_t ctx;
+        zt_ctx_init(&ctx, VLC_CODEC_I420, 960, 8, 1918, 16, 2,
+                    modes[i].dst_zerocopy);
+        ctx.zimg.src_zerocopy = modes[i].src_zerocopy;
+        int open_rc = ctx.backend->open(&ctx);
+        CHECK(open_rc == 0);
+        if (open_rc == 0) {
+            zt_pic_fill(&src, 0xD0010u + (uint32_t)i);
+            uint8_t *src_u = src.pic.p[1].p_pixels;
+            src.pic.p[1].p_pixels = src_u + 1;
+            CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+                  == SCALER_PROCESS_OK);
+
+            uint8_t *dst_y = dst.pic.p[0].p_pixels;
+            dst.pic.p[0].p_pixels = dst_y + 1;
+            CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+                  == modes[i].shifted_status);
+            dst.pic.p[0].p_pixels = dst_y;
+            CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+                  == SCALER_PROCESS_OK);
+            src.pic.p[1].p_pixels = src_u;
+            ctx.backend->close(&ctx);
+        }
+        zt_pic_free(&src);
+        zt_pic_free(&dst);
+    }
     END();
 }
 
@@ -810,6 +865,7 @@ int main(void)
     test_asymmetric_chroma_pitches();
     test_cropped_origin_and_poison_margins();
     test_cropped_tiled_alignment_fallback();
+    test_rows_only_transition_preserves_dst_mode();
     test_supports();
     test_all_algos();
     test_transient_preflight_recovers();

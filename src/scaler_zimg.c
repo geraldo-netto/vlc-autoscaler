@@ -1035,27 +1035,23 @@ static int zimg_lazy_init(zimg_priv_t *p)
  * per-cell graphs - that all happens lazily on the first valid Filter()
  * call. See zimg_lazy_init() for rationale.
  */
-/* SYS-5: column tiles NEED source-direct reads (full-width active_region
- * halo), which would silently override the --autoupscale-zerocopy-src=0
- * safety fallback the option longtext sells as the escape hatch for
- * VLC-pool instability. The user asked for the safe path: give it to
- * them — recompute a rows-only grid (fewer workers on wide/short frames)
- * instead of forcing zero-copy reads behind their back. */
-static void zimg_honor_copy_in_grid(const scaler_ctx_t *ctx, int n_threads,
-                                    int stripe_min_lines,
-                                    int *rows, int *cols)
+/* Column tiles require source-direct reads. When source copy-in is selected,
+ * transition the grid and both I/O modes together so their invariant has one
+ * owner. Returns true when a tiled grid changed to rows-only. */
+static bool zimg_use_rows_only(zimg_priv_t *p, int worker_budget,
+                               int stripe_min_lines, bool dst_zerocopy)
 {
-    if (*cols <= 1 || ctx->zimg.src_zerocopy != 0)
-        return;
-    int tiled_rows = *rows;
-    int tiled_cols = *cols;
-    up_decide_tile_grid(n_threads, ctx->dst_w, ctx->dst_h,
-                        stripe_min_lines, 0, rows, cols);
-    if (ctx->log_obj)
-        msg_Warn((vlc_object_t *)ctx->log_obj,
-                 "AutoUpscale: zerocopy-src=0 disables column tiling; "
-                 "using %d row stripes instead of %dx%d grid",
-                 *rows, tiled_rows, tiled_cols);
+    if (!p->col_tiled || p->src_zerocopy) return false;
+    int rows, cols;
+    up_decide_tile_grid(worker_budget, p->dst_w, p->dst_h,
+                        stripe_min_lines, 0, &rows, &cols);
+    p->n_rows = rows;
+    p->n_cols = cols;
+    p->n_threads = rows * cols;
+    p->col_tiled = false;
+    p->src_zerocopy = false;
+    p->dst_zerocopy = dst_zerocopy;
+    return true;
 }
 
 static int zimg_open(scaler_ctx_t *ctx)
@@ -1095,8 +1091,6 @@ static int zimg_open(scaler_ctx_t *ctx)
     up_decide_tile_grid(n_threads, ctx->dst_w, ctx->dst_h,
                         stripe_min_lines, ZIMG_COL_MIN_WIDTH, &rows, &cols);
 
-    zimg_honor_copy_in_grid(ctx, n_threads, stripe_min_lines, &rows, &cols);
-
     zimg_priv_t *p = calloc(1, sizeof(*p));
     if (!p) return -1;
     p->n_rows    = rows;
@@ -1111,11 +1105,17 @@ static int zimg_open(scaler_ctx_t *ctx)
     p->dst_zerocopy  = (ctx->zimg.zerocopy != 0);
     p->src_zerocopy  = (ctx->zimg.src_zerocopy != 0);
 
-    /* Column tiles read the full-width source directly (active_region crops,
-     * with halo) and write a per-worker tile dst scratch that is copied out.
-     * So force source-direct read + dst copy-out for the tiled path. */
-    if (p->col_tiled) {
-        p->src_zerocopy = true;
+    /* Source copy-in cannot feed column graphs. Preserve the destination
+     * option when switching to rows-only; a retained tiled grid must copy its
+     * per-cell output back into the destination. */
+    if (zimg_use_rows_only(p, n_threads, stripe_min_lines,
+                           p->dst_zerocopy)) {
+        if (ctx->log_obj)
+            msg_Warn((vlc_object_t *)ctx->log_obj,
+                     "AutoUpscale: zerocopy-src=0 disables column tiling; "
+                     "using %d row stripes instead of %dx%d grid",
+                     p->n_rows, rows, cols);
+    } else if (p->col_tiled) {
         p->dst_zerocopy = false;
     }
 
@@ -1246,19 +1246,14 @@ static void zimg_prepare_first_frame_io(zimg_priv_t *p,
                                         const up_picture_view_t *dst)
 {
     if (p->lazy_init_done || p->lazy_init_failed) return;
-    if (!zimg_view_aligned(src)) p->src_zerocopy = false;
-    if (!zimg_view_aligned(dst)) p->dst_zerocopy = false;
-    if (!p->col_tiled || p->src_zerocopy) return;
-
-    int rows, cols;
+    const bool src_aligned = zimg_view_aligned(src);
+    const bool dst_aligned = zimg_view_aligned(dst);
+    if (!src_aligned) p->src_zerocopy = false;
+    if (!dst_aligned) p->dst_zerocopy = false;
     const int stripe_min = up_zimg_stripe_min_lines(
         ctx->zimg.min_stripe_lines);
-    up_decide_tile_grid(p->n_threads, p->dst_w, p->dst_h,
-                        stripe_min, 0, &rows, &cols);
-    p->n_rows = rows;
-    p->n_cols = cols;
-    p->n_threads = rows * cols;
-    p->col_tiled = false;
+    zimg_use_rows_only(p, p->n_threads, stripe_min,
+                       ctx->zimg.zerocopy != 0 && dst_aligned);
 }
 
 /* A later frame may drift to different storage. Copy paths accept arbitrary
