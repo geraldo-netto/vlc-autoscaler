@@ -339,6 +339,13 @@ struct filter_sys_t
      * spamming the log every frame (OBS-1). */
     int                process_fail_logged;
 
+    /* SYS-2 runtime fallback state. backend_pref is the user's
+     * --autoupscale-backend so a forced zimg is respected; fallback_tried
+     * makes the swap one-shot. A failed swap leaves scaler.backend NULL
+     * (backend dead — Filter drops without touching the closed priv). */
+    int                backend_pref;
+    int                fallback_tried;
+
     uint64_t           frame_count;
 
     /* OBS-3: periodic long-run visibility (frames processed/dropped + EWMA). */
@@ -615,6 +622,7 @@ static int Open( vlc_object_t *p_this )
     filter_sys_t *p_sys = calloc( 1, sizeof(*p_sys) );
     if( !p_sys ) return VLC_ENOMEM;
 
+    p_sys->backend_pref = backend_pref;   /* SYS-2: fallback respects it */
     ConfigureScaler( &p_sys->scaler, be, p_filter, p_this,
                      chroma, algo, src_w, src_h, target );
 
@@ -869,10 +877,59 @@ static void RecordPerf( filter_t *p_filter, filter_sys_t *p_sys,
     MaybeLogStats( p_filter, p_sys, t_end );
 }
 
+/* SYS-2: one-shot runtime fallback to swscale after the active backend
+ * fails to process a frame. zimg defers its heavy setup (worker spawn,
+ * scratch alloc, per-stripe graph build) to the FIRST frame, so a
+ * first-frame failure (OOM under pressure, graph-build edge case) is
+ * sticky: Open() already succeeded, VLC committed to this filter, and
+ * without a swap every frame of the playback would be dropped — the
+ * universal-fallback role swscale exists for would never engage. The
+ * scaler_ctx_t geometry is backend-agnostic, so closing zimg and opening
+ * swscale on the same ctx is a clean swap; one frame is dropped. A
+ * forced --autoupscale-backend=1 (zimg) is respected. On a failed swap
+ * the backend is left NULL and Filter() drops every frame — same
+ * behavior as before, minus the dead process() call. CCN 5. */
+static void TryBackendFallback( filter_t *p_filter, filter_sys_t *p_sys )
+{
+    if( p_sys->fallback_tried )
+        return;
+    p_sys->fallback_tried = 1;
+
+    scaler_ctx_t *ctx = &p_sys->scaler;
+    if( ctx->backend->id != SCALER_BACKEND_ZIMG
+     || p_sys->backend_pref == SCALER_BACKEND_ZIMG )
+        return;
+
+    const scaler_backend_t *sw = scaler_pick( SCALER_BACKEND_SWSCALE,
+                                              ctx->chroma, ctx->algo );
+    ctx->backend->close( ctx );
+    ctx->priv    = NULL;
+    ctx->backend = NULL;
+    if( !sw || sw->open( ctx ) != 0 )
+    {
+        msg_Err( p_filter,
+                 "AutoUpscale: swscale fallback open failed; "
+                 "dropping all frames for this playback" );
+        return;
+    }
+    ctx->backend = sw;
+    msg_Warn( p_filter,
+              "AutoUpscale: zimg failed at runtime; "
+              "fell back to swscale for the rest of this playback" );
+}
+
 static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
 {
     filter_sys_t *p_sys = p_filter->p_sys;
     if( !p_in ) return NULL;
+
+    /* SYS-2: a failed backend fallback leaves no live backend. */
+    if( !p_sys->scaler.backend )
+    {
+        p_sys->dropped_count++;
+        picture_Release( p_in );
+        return NULL;
+    }
 
     if( p_sys->probe_active && p_in->i_planes >= 1 )
         RunProbe( p_filter, p_sys, p_in );
@@ -896,6 +953,7 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
                       "dropping frame(s) (this is logged only once)",
                       p_sys->scaler.backend->name );
         }
+        TryBackendFallback( p_filter, p_sys );
         p_sys->dropped_count++;
         picture_Release( p_out );
         picture_Release( p_in );
