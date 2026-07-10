@@ -3,7 +3,7 @@
  * bench_usm_pool.c — minimal perf bench for the USM pool.
  *
  * Usage: bench_usm_pool <threads> <width> <height> [frames] [amount] [fill]
- *   amount default = 30, frames default = 100
+ *   amount default = 20, frames default = 100
  *   fill: rand (default) / flat / mixed (top half flat, bottom random)
  *
  * Output: one CSV line:
@@ -63,7 +63,7 @@ static int parse_args(int argc, char **argv, struct bench_args *a)
     a->width      = atoi(argv[2]);
     a->height     = atoi(argv[3]);
     a->frames     = (argc >= 5) ? atoi(argv[4]) : 100;
-    a->amount_pct = (argc >= 6) ? atoi(argv[5]) : 30;
+    a->amount_pct = (argc >= 6) ? atoi(argv[5]) : 20;
     a->fill       = (argc >= 7) ? argv[6] : "rand";
 
     if (!args_in_range(a)) {

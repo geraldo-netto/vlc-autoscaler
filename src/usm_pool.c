@@ -23,12 +23,15 @@
  *   private buffers also mean workers never read each other's memory, so
  *   no inter-thread barrier is needed within a frame.
  *
- * - The 3-row scratch is one pool-level allocation of 3*width bytes per
- *   worker; far smaller than the old width*height workspace and the only
- *   allocation that can fail in lazy init (sticky on failure).
+ * - One pool allocation provides five width-sized rows per worker: three
+ *   rolling blur rows plus two in-place halo snapshots. Lazy init can also
+ *   fail while allocating worker slots or initializing the shared gate/barrier.
+ *   If no thread can spawn the failure is sticky; a partial spawn succeeds
+ *   with a smaller, repartitioned pool.
  *
- * - The thread pool is lazy: created on the first apply() call so that
- *   probing-only Open/Close cycles (chain solver) cost nothing.
+ * - The descriptor is cheap; worker storage, synchronization, and threads are
+ *   initialized on the first non-identity apply so probe-only Open/Close
+ *   cycles cost almost nothing.
  *
  * - amount_q8 == 0 short-circuits to an identity copy with no thread
  *   activity. This matches up_usm_apply_plane's behavior and keeps the
@@ -124,7 +127,7 @@ typedef struct usm_worker_s {
     /* Per-worker constants set at lazy_init. */
     int        y_start, y_end;
     int        width, height;
-    uint8_t   *scratch;       /* 3*width private rolling rows, owned by pool */
+    uint8_t   *scratch;       /* 5*width: 3 rolling rows + 2 halo snapshots */
 
     /* Per-frame state set by main thread before the dispatch.
      *
@@ -223,7 +226,7 @@ struct usm_pool_s {
     sem_t           all_done;       /* posted once when pending hits 0 */
     bool            all_done_inited;
 
-    uint8_t       *scratch;         /* 3*width per worker, contiguous block */
+    uint8_t       *scratch;         /* 5*width per worker, contiguous block */
 
     bool           lazy_init_done;
     bool           lazy_init_failed;
@@ -349,7 +352,7 @@ static size_t usm_pool_scratch_bytes(int n, int width)
     return per * (size_t)n;
 }
 
-/* Allocate the shared worker scratch block (3*width per worker). Returns
+/* Allocate the shared worker scratch block (5*width per worker). Returns
  * 0 on success, -1 on overflow or allocation failure. CCN 3. */
 static int usm_pool_alloc_scratch(usm_pool_t *p)
 {

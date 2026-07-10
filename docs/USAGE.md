@@ -40,12 +40,13 @@ vlc --video-filter=autoupscale path/to/video.mp4
 
 **When it works:**
 - Sub-720p source (the filter's design point)
-- Source chroma is I420, YV12, I422, I444, or NV12 (VLC will auto-convert
-  hardware chromas to I420)
+- Source chroma is one of I420, YV12, I422, I444, NV12, NV21, RGB24, RGBA,
+  or BGRA (VLC will normally download hardware chromas to a CPU format)
 
 **When it breaks:**
 - Hardware-decoded sources may hit `Too high level of recursion (3)` because
-  VLC inserts a converter, then postproc, then autoupscale. See [Recipe 2](#recipe-2-transcode-pipeline-bypassing-the-recursion-limit).
+  VLC's hardware-download and chroma-compensation chain around autoupscale can
+  exhaust the chain solver's depth. See [Recipe 2](#recipe-2-transcode-pipeline-bypassing-the-recursion-limit).
 - 4K-or-higher source: AutoUpscale bypasses (won't downscale), so
   filter does nothing.
 
@@ -58,20 +59,22 @@ typical 480p→1080p use this is fine.
 
 ## Recipe 2: Transcode pipeline (bypassing the recursion limit)
 
-This is the recipe that survived all our testing. It runs the filter
-inside the transcode stage, which has its own filter chain separate from
-the display's chain — so VLC's `CHAIN_LEVEL_MAX=2` (error at level > 2 = 3) doesn't bite.
+This places `postproc` and AutoUpscale inside the transcode stage, whose filter
+chain is separate from the display chain, so VLC's `CHAIN_LEVEL_MAX=2` (error
+at level > 2 = 3) does not bite. If the source does not benefit from
+`postproc`, use Recipe 4.
 
 ```sh
 vlc --autoupscale-threads=16 \
+    --postproc-q=6 \
     --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,
                        venc=x264{preset=ultrafast,tune=zerolatency},
-                       vfilter=autoupscale}:display' \
+                       vfilter=postproc:autoupscale}:display' \
     path/to/video.mp4
 ```
 
 **What it does:**
-- Transcodes the video stream through autoupscale → x264
+- Transcodes the video stream through postproc → autoupscale → x264
 - Encoded H.264 + AAC are then displayed
 - Bypasses the `CHAIN_LEVEL_MAX=2` chroma-chain limit that affects the direct display path
 
@@ -192,7 +195,7 @@ vlc --avcodec-hw=none \
 - Forces VLC to use software decode regardless of available HW acceleration
 - Avoids VLC's hardware→software converter (one less filter in the chain)
 - Eliminates the chain-depth recursion that was caused by inserting that
-  converter ahead of postproc and autoupscale
+  converter ahead of autoupscale
 
 **Cost:**
 - Software H.264 decode at 1080p uses ~10-15% of one core
@@ -203,7 +206,8 @@ vlc --avcodec-hw=none \
 `patches/vlc-3.0-raise-chain-level.patch` which raises `CHAIN_LEVEL_MAX`
 from 2 to 5 in `modules/video_chroma/chain.c`. If you build VLC yourself
 this is a permanent fix; if you use distro packages, the `--avcodec-hw=none`
-workaround is your only option.
+session workaround and Recipe 2's transcode-stage placement are available
+alternatives.
 
 ---
 
@@ -242,9 +246,11 @@ vlc --autoupscale-threads=24 \
   conservative path.
 
 **Cost:**
-- USM at 50% costs ~2.5× the default 20%
+- Any nonzero USM amount performs essentially the same convolution work;
+  50% changes strength, not the number of passes
 - Spline36 is already default, so no change there
-- The copy-out path adds ~1-2 ms per frame at 1080p
+- The copy-out path adds one frame-sized memory copy; cost depends on host,
+  resolution, and memory pressure
 
 **When NOT to use this:**
 - Real-time playback of 60 fps source: budget too tight
@@ -268,23 +274,24 @@ vlc --file-caching=300 \
 ```
 
 **What each option does:**
-- `--file-caching=300` and `--network-caching=300` — cap input buffering
-  at 300 ms (default is 1000+ ms; that's where most "VLC is slow" comes from)
+- `--file-caching=300` and `--network-caching=300` — request 300 ms of
+  input buffering. Distro/build defaults vary, so compare against your VLC
+  configuration rather than assuming one universal baseline.
 - `--clock-jitter=0 --clock-synchro=0` — disable VLC's clock-drift correction.
   Better for live streams where the source clock IS the truth.
 - `--autoupscale-threads=8` — fewer workers means lower per-frame overhead
   from thread dispatch (the synchronization is small but non-zero)
-- `--autoupscale-usm=0` — disables sharpening entirely. USM takes a fast
-  identity path when amount=0 — no thread spawn, no workspace allocation.
+- `--autoupscale-usm=0` — disables sharpening entirely. The plugin never
+  creates or calls the USM pool, so there is no USM worker or scratch setup.
 
 **Cost:**
 - Lower buffering means more sensitive to network jitter; if your source
   has bursty delivery, you'll get more dropped frames
 - Disabling sharpening loses image quality
 
-**Trade-off:**
-- This recipe trades **about 20% of perceptual quality** for **~700 ms
-  less playback latency**. Worth it for live; not for movies.
+**Trade-off:** lower buffering and disabled USM reduce latency and work, but
+the exact latency and quality change depend on the source, network, and VLC
+build. Measure with the stream you care about.
 
 ---
 
@@ -364,13 +371,16 @@ vlc --autoupscale-threads=16 \
   culprit, see [Recipe 4](#recipe-4-without-postproc-recommended-default)).
   You're done.
 
-### Step 3: Disable zero-copy
+### Step 3: Force zimg and disable zero-copy
 
-Both the source and destination sides default to zero-copy, so disable
-both to fully rule out the zero-copy paths:
+The zero-copy switches affect only zimg. First confirm the engagement log says
+`backend=zimg`, then force zimg and disable both sides to rule out its direct
+buffer paths. If forced zimg declines, this diagnostic does not apply to that
+source/build.
 
 ```sh
 vlc --autoupscale-threads=16 \
+    --autoupscale-backend=1 \
     --autoupscale-zerocopy-dst=0 \
     --autoupscale-zerocopy-src=0 \
     --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,
@@ -390,8 +400,10 @@ vlc --autoupscale-threads=16 \
 
 ```sh
 vlc --autoupscale-threads=1 \
+    --autoupscale-backend=1 \
     --autoupscale-target=1 \
     --autoupscale-zerocopy-dst=0 \
+    --autoupscale-zerocopy-src=0 \
     --autoupscale-usm=0 \
     --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,
                        venc=x264{preset=ultrafast,tune=zerolatency},
@@ -549,8 +561,8 @@ suffer the same desync problems.
 vlc --file-caching=2000 --network-caching=2000 ...
 ```
 
-Default file caching is ~300 ms; bumping it to 2 seconds gives the
-audio pipeline more headroom before declaring underflow. Doesn't
+Requesting 2 seconds gives the audio pipeline more headroom before declaring
+underflow; the default varies by VLC build and input type. This doesn't
 fix the root cause but reduces the rate of complaints.
 
 ### Approach 3: Enable audio time-stretching
@@ -620,10 +632,10 @@ and reappear with it, you may be:
 - Targeting too high a resolution for your CPU at the source's
   framerate. Lower `--autoupscale-target` (try `=2` for 1080p or
   `=1` for 720p).
-- Running the SSE2 fallback variant. Check the engagement log — it
-  should show `simd=avx512` or `simd=avx2` on a modern CPU; if it
-  shows `simd=sse2` you're missing the SIMD speedup. Rebuild without
-  `MULTIVERSION=0`, or with the right `MARCH=` baseline.
+- Running an unexpectedly low ISA baseline. A default
+  `MARCH=native MULTIVERSION=0` build reports `simd=default`; a
+  `MULTIVERSION=1` build reports `simd=avx512`, `avx2`, or `sse2`.
+  Check the build flags before treating the label as a performance problem.
 
 ---
 
@@ -644,7 +656,7 @@ vlc \
   --autoupscale-target=0 \
   --autoupscale-threads=0 \
   --autoupscale-content-probe=1 \
-  --sout='#transcode{vcodec=h264,vb=10000,venc=x264{preset=ultrafast},vfilter=autoupscale}:display' \
+  --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast},vfilter=autoupscale}:display' \
   /path/to/your/video.mp4
 ```
 
@@ -654,16 +666,16 @@ vlc \
 |---|---|
 | `--aout=alsa` | Bypass PulseAudio's clock-sync layer. Eliminates `vlcpulse` warnings entirely. Drop this if you need Bluetooth or per-app PulseAudio routing — leave it in if you're tired of the warnings and have ALSA configured. |
 | `--audio-time-stretch` | Audio adjusts to track the input PTS instead of forcing video to chase a wandering audio clock. Reduces the frame-drop cascade when timestamps drift. |
-| `--file-caching=2000` | 2-second buffer (default ~300 ms) absorbs short clock jitter without underflowing. |
+| `--file-caching=2000` | Request a 2-second file buffer; the VLC/build default varies. |
 | `--network-caching=2000` | Same buffer for network sources. |
 | `--no-stats` | Suppresses end-of-playback statistics dump. |
 | `--verbose=0` | Only show actual errors; hide warnings and debug. |
 | `--autoupscale-target=0` | AUTO mode — picks 720p or 1080p based on source. Never goes above 1080p in AUTO. |
 | `--autoupscale-threads=0` | Auto: `cores/2 − 2` workers, counting only CPUs allowed by the process's taskset/cgroup affinity. On an unrestricted 32-core box that's 14 — leaves 18 cores for decoder, encoder, audio, OS. |
 | `--autoupscale-pin-threads=0` | Off by default. `1` pins scaler workers across the exact allowed CPU IDs (Linux, best-effort) — only worth it on a dedicated high-core/NUMA transcode box where you measured a gain; can hurt on a shared desktop. |
-| `--autoupscale-content-probe=1` | Diagnostic only — measures source content quality and logs an advisory if upscaling looks unhelpful. ~27 µs/frame for 60 frames at startup, then off. |
+| `--autoupscale-content-probe=1` | Enables the observe-only advisory after 60 valid luma observations. Setting it to 0 suppresses the advisory; metrics still run when the USM sharpness threshold needs them. |
 | `#transcode{...}:display` | Re-encode in a single pipeline, then display. Avoids the recursion mode that `vfilter=` directly into display sometimes hits. |
-| `vcodec=h264,vb=10000,venc=x264{preset=ultrafast}` | x264 ultrafast preset — costs ~5-8 ms/frame, well under the 16.7 ms budget for 60 fps. |
+| `vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast}` | Encode video with x264 ultrafast and keep audio in the same pipeline via AAC. Actual frame cost is host- and content-dependent. |
 
 **For file output instead of display**, replace `:display` with:
 
@@ -700,16 +712,16 @@ for context on when this is needed.
 vlc --verbose=2 [rest of args] 2>&1 | grep "AutoUpscale engaged"
 ```
 
-Expected output:
+Expected output on a zimg-enabled build with sufficient CPU/RAM:
 
 ```
-AutoUpscale engaged: 854x480 -> 1280x720 (backend=zimg preset=0 algo=3 \
-  usm=20 fps_target=60 threads=14 cores=32 mem=...MB simd=avx512)
+AutoUpscale engaged: 854x480 -> 1920x1080 (backend=zimg preset=0 algo=3 \
+  usm=20 fps_target=60 threads=14 cores=32 mem=...MB simd=default)
 ```
 
-The `simd=avx512` confirms the runtime dispatcher picked the AVX-512
-variant. On Zen 1-3 you'll see `simd=avx2`; on pre-Haswell hardware
-`simd=sse2`.
+`simd=default` is expected for the default single-baseline
+`MARCH=native MULTIVERSION=0` build. With `MULTIVERSION=1`, the label reports
+the runtime choice (`avx512`, `avx2`, or `sse2`).
 
 ---
 

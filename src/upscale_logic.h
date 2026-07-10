@@ -112,8 +112,8 @@ static const int UP_PRESET_HEIGHTS[UP_TARGET_MAX + 1] = {
  * hardware capacity.
  *
  *   src_h   : source height in pixels (must be > 0)
- *   preset  : UP_TARGET_AUTO | UP_TARGET_720P | UP_TARGET_1080P
- *             (anything else is treated as AUTO)
+ *   preset  : any UP_TARGET_* value through UP_TARGET_8K
+ *             (anything outside that range is treated as AUTO)
  *   cores   : number of CPU cores available (>= 1; 0 treated as 1)
  *   mem_mb  : total RAM in MB; 0 means "unknown -> assume sufficient"
  *
@@ -244,7 +244,7 @@ static inline int up__plan_result_ok(int src_w, int src_h,
  * Top-level: should we upscale, and if so, to what?
  *
  *   src_w, src_h : source dimensions
- *   skip_above   : if src_h >= skip_above, do nothing (typical: 720)
+ *   skip_above   : in AUTO, if positive and src_h >= it, bypass (typical: 720)
  *   preset       : UP_TARGET_*
  *   cores, mem_mb: hardware capacity (see up_decide_target_height)
  *   out          : populated with (width, height) of upscale target,

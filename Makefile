@@ -4,8 +4,8 @@
 #   make             — build the VLC plugin
 #   make plugin      — same
 #   make test        — build and run unit tests (no VLC needed)
-#   make fuzz-smoke  — build and run a deterministic 100k-iter smoke fuzzer
-#   make fuzz        — build a libFuzzer target (clang only) at build/fuzz
+#   make fuzz-smoke  — build and run 13 deterministic smoke fuzzers
+#   make fuzz        — build 13 libFuzzer targets (clang only)
 #   make analyze     — run cppcheck across the source tree
 #   make install     — install the built plugin into VLC's plugins dir
 #   make uninstall
@@ -44,18 +44,18 @@ WARN := -D_GNU_SOURCE -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes
 # so producing a binary tuned for the local CPU costs nothing and gains
 # 5-20% on the per-frame hot path (znver4 / Skylake-X scheduling +
 # extra ISA bits like VBMI2, BF16, GFNI, VAES). The .so loads only on
-# the CPU it was built for; that's the right default for a build-and-run
-# workflow. For a portable binary, override:
+# a CPU supporting the emitted ISA; that's the right default for a
+# build-and-run workflow. For a wider Linux x86-64 ISA baseline, override:
 #
 #   make MARCH=x86-64-v4    # AVX-512F + BW + CD + DQ + VL
 #                           # — Skylake-X 2017+, AMD Zen 4 2022+
-#   make MARCH=x86-64-v3    # AVX2 baseline (Haswell 2013+, Zen 1 2017+)
-#                           # — broadly compatible modern default
+#   make MARCH=x86-64-v3    # full v3 level (AVX2, BMI1/2, FMA, etc.)
+#                           # — Haswell 2013+, Zen 1 2017+
 #   make MARCH=x86-64       # legacy SSE2 only — runs anywhere x86-64
 #
-# Combine with MULTIVERSION=1 to produce a portable binary that still
-# picks the best SIMD path at runtime — see the multi-versioned section
-# below.
+# Combine with MULTIVERSION=1 to include several SIMD variants selected at
+# runtime. The whole plugin must still use a baseline supported by every
+# deployment CPU; the variant-guard limitation is tracked as PORT-6.
 #
 # Decoded MD5 is byte-identical across all SIMD widths because the
 # kernels do bytewise saturating arithmetic; SIMD just runs more lanes
@@ -99,15 +99,16 @@ PLUGIN_OBJS := $(patsubst src/%.c,$(BUILD)/%.o,$(PLUGIN_SRCS))
 # of dead code. Pair this default with MARCH=native (default) for a build
 # that maximizes performance on the build host.
 #
-# Set MULTIVERSION=1 to produce a portable binary that ships THREE copies
+# Set MULTIVERSION=1 to ship THREE copies
 # of usm_pool.c (SSE2 / AVX2 / AVX-512) plus a thin runtime dispatcher
-# (usm_pool_dispatch.c) that picks the best variant at .so load time via
-# __builtin_cpu_supports(). Pair this with a portable MARCH (e.g.
-# x86-64-v3 or x86-64) so the rest of the plugin also runs on older CPUs:
+# (usm_pool_dispatch.c) that selects a variant at .so load time via
+# __builtin_cpu_supports(). The full-level guard gap remains PORT-6. Pair this
+# with an appropriate MARCH baseline (e.g.
+# x86-64-v3 or x86-64) so the rest of the plugin uses the intended baseline:
 #
-#   make MARCH=x86-64-v3 MULTIVERSION=1   # portable down to Haswell/Zen 1,
-#                                          # USM hot path picks best at load
-#   make MARCH=x86-64    MULTIVERSION=1   # portable down to original x86_64
+#   make MARCH=x86-64-v3 MULTIVERSION=1   # compatible with Haswell/Zen 1+,
+#                                          # selects a USM variant at load
+#   make MARCH=x86-64    MULTIVERSION=1   # original x86-64/SSE2 baseline
 MULTIVERSION ?= 0
 
 ifeq ($(MULTIVERSION),1)
@@ -154,7 +155,7 @@ endif
 
 PLUGIN_OBJS += $(USM_OBJS)
 
-.PHONY: all plugin test fuzz fuzz-smoke fuzz-seam analyze scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress-zimg bench-zimg coverage-zimg
+.PHONY: all plugin test fuzz fuzz-smoke fuzz-seam analyze scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
 
 all: plugin
 
@@ -172,7 +173,7 @@ $(BUILD)/$(PLUGIN).so: $(PLUGIN_OBJS) | $(BUILD)
 		echo "Install libswscale-dev / libavutil-dev."; \
 		exit 1; \
 	fi
-	@echo "  CPU baseline:    -march=$(MARCH)$(if $(filter native,$(MARCH)), (build host CPU; binary not portable),$(if $(filter x86-64-v4,$(MARCH)), (Intel Skylake-X 2017+ / AMD Zen 4 2022+),$(if $(filter x86-64-v3,$(MARCH)), (Intel Haswell 2013+ / AMD Zen 1 2017+),$(if $(filter x86-64,$(MARCH)), (universal x86_64 / SSE2 only),))))"
+	@echo "  CPU baseline:    -march=$(MARCH)$(if $(filter native,$(MARCH)), (build-host ISA),$(if $(filter x86-64-v4,$(MARCH)), (Intel Skylake-X 2017+ / AMD Zen 4 2022+),$(if $(filter x86-64-v3,$(MARCH)), (Intel Haswell 2013+ / AMD Zen 1 2017+),$(if $(filter x86-64,$(MARCH)), (Linux x86-64 / SSE2 baseline),))))"
 	@if [ "$(MULTIVERSION)" = "1" ]; then \
 	    echo "  USM SIMD:        multi-versioned (SSE2 + AVX2 + AVX-512, runtime dispatch)"; \
 	 else \
@@ -251,6 +252,7 @@ fuzz: $(BUILD)/fuzz_upscale_logic $(BUILD)/fuzz_usm $(BUILD)/fuzz_perfmon $(BUIL
 	@echo "  $(BUILD)/fuzz_threading"
 	@echo "  $(BUILD)/fuzz_copy_plane"
 	@echo "  $(BUILD)/fuzz_stripe_bounds"
+	@echo "  $(BUILD)/fuzz_decide_tile_grid"
 	@echo "  $(BUILD)/fuzz_frame_shape"
 	@echo "  $(BUILD)/fuzz_scaler_chroma"
 	@echo "  $(BUILD)/fuzz_scaler_open"
@@ -510,7 +512,8 @@ stress-zimg: $(BUILD)/test_scaler_zimg $(BUILD)/test_scaler_zimg_tsan
 	@$(BUILD)/test_scaler_zimg_tsan
 
 # Informational line coverage for scaler_zimg.c via the harness. NOT part of
-# the gated `coverage` target (which stays VLC-free and is held to 100%):
+# the gated `coverage` target (which stays VLC-free and requires every tracked
+# file and function to reach at least 80%):
 # scaler_zimg.c cannot reach 100% in a unit harness — log_zimg_open's msg_Info
 # needs a live VLC logger object, the partial-construction retry is unreachable
 # given zimg_open's stripe clamp, and a couple of zimg-internal failure returns
@@ -543,8 +546,6 @@ endif
 
 # --------- micro-benchmark ---------
 # Wall-clock us/frame for the USM pool at -O3 (matches the production
-build-bench: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip $(if $(HAVE_ZIMG),$(BUILD)/bench_scaler_zimg)
-
 # USM_POOL_CFLAGS optimization level). No sanitizers — this measures
 # real throughput. `bench` runs the default kernel; `bench-flatskip`
 # builds the SAME source with USM_POOL_FLAT_SKIP=1 so the per-stripe
@@ -553,6 +554,8 @@ build-bench: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip $(if $(HAV
 # comparison so the skip's payoff is visible.
 BENCH_CFLAGS := -O3 $(MARCH_FLAG) $(WARN)
 
+build-bench: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip $(if $(HAVE_ZIMG),$(BUILD)/bench_scaler_zimg)
+
 $(BUILD)/bench_usm_pool: tests/bench_usm_pool.c src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) -o $@ $< src/usm_pool.c -lpthread
 $(BUILD)/bench_usm_pool_flatskip: tests/bench_usm_pool.c src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
@@ -560,21 +563,21 @@ $(BUILD)/bench_usm_pool_flatskip: tests/bench_usm_pool.c src/usm_pool.c src/usm_
 
 bench: $(BUILD)/bench_usm_pool
 	@echo "threads,width,height,frames,amount,fill,us_per_frame"
-	@$(BUILD)/bench_usm_pool 1 1920 1080 300 30 rand
-	@$(BUILD)/bench_usm_pool 2 1920 1080 300 30 rand
-	@$(BUILD)/bench_usm_pool 4 1920 1080 300 30 rand
-	@$(BUILD)/bench_usm_pool 8 1920 1080 300 30 rand
-	@$(BUILD)/bench_usm_pool 4 1280 720 300 30 rand
-	@$(BUILD)/bench_usm_pool 8 3840 2160 100 30 rand
+	@$(BUILD)/bench_usm_pool 1 1920 1080 300 20 rand
+	@$(BUILD)/bench_usm_pool 2 1920 1080 300 20 rand
+	@$(BUILD)/bench_usm_pool 4 1920 1080 300 20 rand
+	@$(BUILD)/bench_usm_pool 8 1920 1080 300 20 rand
+	@$(BUILD)/bench_usm_pool 4 1280 720 300 20 rand
+	@$(BUILD)/bench_usm_pool 8 3840 2160 100 20 rand
 
 bench-flatskip: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip
 	@echo "kernel,threads,width,height,frames,amount,fill,us_per_frame"
-	@printf "default,"  ; $(BUILD)/bench_usm_pool          8 1920 1080 300 30 flat
-	@printf "flatskip," ; $(BUILD)/bench_usm_pool_flatskip 8 1920 1080 300 30 flat
-	@printf "default,"  ; $(BUILD)/bench_usm_pool          8 1920 1080 300 30 mixed
-	@printf "flatskip," ; $(BUILD)/bench_usm_pool_flatskip 8 1920 1080 300 30 mixed
-	@printf "default,"  ; $(BUILD)/bench_usm_pool          8 1920 1080 300 30 rand
-	@printf "flatskip," ; $(BUILD)/bench_usm_pool_flatskip 8 1920 1080 300 30 rand
+	@printf "default,"  ; $(BUILD)/bench_usm_pool          8 1920 1080 300 20 flat
+	@printf "flatskip," ; $(BUILD)/bench_usm_pool_flatskip 8 1920 1080 300 20 flat
+	@printf "default,"  ; $(BUILD)/bench_usm_pool          8 1920 1080 300 20 mixed
+	@printf "flatskip," ; $(BUILD)/bench_usm_pool_flatskip 8 1920 1080 300 20 mixed
+	@printf "default,"  ; $(BUILD)/bench_usm_pool          8 1920 1080 300 20 rand
+	@printf "flatskip," ; $(BUILD)/bench_usm_pool_flatskip 8 1920 1080 300 20 rand
 
 # --------- coverage ---------
 # Build the unit tests and deterministic fuzzers with gcov instrumentation,

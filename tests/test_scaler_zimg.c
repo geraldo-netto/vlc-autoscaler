@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
- * test_scaler_zimg.c — invariant tests for the slice-threaded zimg backend
+ * test_scaler_zimg.c — invariant tests for the grid-threaded zimg backend
  *****************************************************************************
  * scaler_zimg.c had no automated coverage because it is VLC-typed and
  * resamples real frames. This harness drives backend->open/process/close on
@@ -8,8 +8,8 @@
  * runs under ASan/UBSan (and a TSan build) across many (chroma, dims,
  * thread-count, zerocopy) combinations.
  *
- * The per-stripe graphs do NOT produce byte-identical output to a single
- * full-frame resize (independent boundary handling per stripe), so we assert
+ * Independent per-cell graphs do NOT produce byte-identical output to a single
+ * full-frame resize (each graph can restart resize phase), so we assert
  * INVARIANTS rather than an exact reference:
  *
  *   1. full-write   — every visible destination byte is written. Run with

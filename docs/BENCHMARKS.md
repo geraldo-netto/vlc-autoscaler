@@ -1,30 +1,34 @@
-# Benchmarks — performance and gains
+# Historical benchmark snapshots
 
-Per-frame wall-clock for the two hot paths the optimization work this cycle
-touched: the threaded USM (unsharp-mask) post-pass and the slice-threaded zimg
-resample. "Before" is the pre-optimization source from git; "After" is the
-current tree. Both columns use the **same** benchmark harness, so the delta is
-the code change, not the harness.
+Per-frame wall-clock snapshots captured while the named optimization commits
+were developed. "Before" and "After" refer to each note's pre-change revision
+and listed commit, not the current tree. Treat these as historical evidence of
+direction, not as current throughput guidance.
 
 ## How to reproduce
 
 ```sh
-make bench           # USM pool throughput (us/frame) across threads/res
+make build-bench     # build all locally available benchmark executables
+make bench           # six fixed USM single-trial smoke measurements
 make bench-flatskip  # USM default vs flat-skip on flat/mixed/random content
-make bench-zimg      # zimg backend throughput (needs libzimg)
+make bench-zimg      # fixed 200-frame zimg single trials (needs VLC + libzimg)
+
+# Repeated USM matrix, median of three runs per cell:
+scripts/bench_matrix.sh build/bench_usm_pool 100 20 rand
 ```
 
-Both benches fill the source once and time `apply()` / `process()` only
-(resampling cost is content-independent), so they measure the kernel, not
-frame generation. Figures below are the **median of 5–9 runs**, 400–2000
-frames each, on a 32-core x86-64 host at `-march=native -O3`.
+The benches fill the source once and time `apply()` / `process()` only, so they
+measure kernels rather than frame generation. The historical table was
+reported as medians of 5–9 runs on a 32-core x86-64 host, but its raw samples
+and complete toolchain provenance were not retained. Current measurements
+should record those details and use the commands above.
 
 > Caveat: these are microbenchmarks. At high thread counts on small frames
 > (e.g. 8 threads at 1080p) per-frame work drops to ~0.2 ms and the result is
 > dominated by semaphore-dispatch jitter — treat those rows as "within noise".
 > The gains are clearest where memory bandwidth or copy cost dominates (lower
-> thread counts, 4K, the flat-skip fast path). Absolute numbers are
-> host-specific; the **ratio** is the portable signal.
+> thread counts, 4K, the flat-skip fast path). Absolute numbers and ratios are
+> host-specific; compare revisions only on the same Linux x86-64 host.
 
 ## Gains
 
@@ -48,10 +52,9 @@ frames each, on a 32-core x86-64 host at `-march=native -O3`.
   instead of twice. Output stays byte-identical (proven by the byte-identity,
   cross-SIMD and ASan/TSan stress suites). Win grows with frame size and
   shrinks into the noise floor when stripes get tiny (8 thr × 1080p).
-- **PERF-1 (commit b0d327f)** — moved the per-frame source copy-in off the main
-  thread into the workers (each copies its own stripe). The serial copy was a
-  fixed per-frame tax; parallelizing it scales with thread count, hence the
-  clean 1.09–1.20× that grows with both threads and resolution.
+- **PERF-1 (commit b0d327f)** — moved source copy-in off the main thread into
+  the workers when `zerocopy-src=0`. Source zero-copy is the production
+  default, so these figures apply only to the explicit copy-in path.
 - **WIRE-1 (commit cc71221)** — opt-in per-stripe flat detection (`make
   bench-flatskip`): on visually flat content (letterbox bars, fades) the
   combine pass is skipped for an identity copy. ~5.7× on fully flat frames;
@@ -61,8 +64,9 @@ frames each, on a 32-core x86-64 host at `-march=native -O3`.
   the `-O3` assembly is byte-for-byte identical, 287 == 287 vector ops) — a
   brittleness cleanup with zero measured delta.
 
-These per-path gains compound in the full `Filter()` pipeline (zimg resample
-then USM post-pass run back to back per frame).
+PERF-1 and PERF-2 can affect the same `Filter()` call when source copy-in is
+explicitly enabled. WIRE-1 cannot compound in the production default because
+flat-skip is benchmark-only and disabled there.
 
 ## SIMD microarchitecture scaling (MULTIVERSION)
 
@@ -89,6 +93,7 @@ byte-identical across all three (the kernels do the same saturating integer
 math; SIMD just runs more lanes), verified by `make test` /
 `fuzz_usm_variants`.
 
-Reproduce: `make MARCH=x86-64 MULTIVERSION=1` (or `-v3` / `-v4`) builds the
-selected baseline; the variant equivalence is checked by
-`tests/test_usm_pool_variants.c`.
+For a fresh same-host comparison, clean and run `make build-bench
+MARCH=x86-64 MULTIVERSION=0`, then repeat with `MARCH=x86-64-v3` and
+`MARCH=x86-64-v4`; do not reuse objects across flag changes (see `BUILD-12`).
+Variant byte equivalence is checked by `tests/test_usm_pool_variants.c`.

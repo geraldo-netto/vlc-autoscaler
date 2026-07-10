@@ -91,8 +91,8 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 #define ALGO_LONGTEXT   N_( \
     "0 = fast bilinear (cheapest), " \
     "1 = bicubic (balanced), " \
-    "2 = lanczos (default), " \
-    "3 = spline36 (best for upscaling; zimg only — falls back to lanczos " \
+    "2 = lanczos, " \
+    "3 = spline36 (default; best for upscaling; zimg only — falls back to lanczos " \
     "on swscale).")
 
 #define SKIP_TEXT       N_("Skip-above height")
@@ -100,8 +100,8 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
     "Source heights >= this value are passed through untouched. " \
     "Default 720 — anything 720p or higher is left alone. " \
     "Only honoured when --autoupscale-target=0 (AUTO); explicit " \
-    "presets (1..6) bypass the skip-above gate so a 1080p source " \
-    "can still be requested up to 4K. Values <= 0 disable the gate " \
+    "presets (1..6) bypass the skip-above gate and remain subject " \
+    "to the 4x upscale cap. Value 0 disables the gate " \
     "(AUTO engages on any sub-target source).")
 
 #define USM_TEXT        N_("Unsharp-mask amount (post-upscale, percent)")
@@ -112,9 +112,10 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 
 #define BACKEND_TEXT    N_("Scaler backend")
 #define BACKEND_LONGTEXT N_( \
-    "0 = auto (zimg if compiled in, else swscale), " \
-    "1 = force zimg (fail if unavailable), " \
-    "2 = force swscale.")
+    "0 = auto: prefer zimg, use swscale on support/open failure, and " \
+    "switch once after a fatal zimg processing failure. Transient frame " \
+    "failures do not switch. 1 = strict zimg (fail if unavailable), " \
+    "2 = strict swscale.")
 
 #define TARGET_FPS_TEXT N_("Target frames per second for performance warning")
 #define TARGET_FPS_LONGTEXT N_( \
@@ -122,12 +123,15 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
     "plugin emits a one-time warning suggesting how to tune down. Set to " \
     "0 to disable performance monitoring. Default 60.")
 
-#define THREADS_TEXT    N_("Number of worker threads for the zimg scaler")
+#define THREADS_TEXT    N_("Worker preference for zimg and USM")
 #define THREADS_LONGTEXT N_( \
-    "0 = auto (cores/2 - 2, clamped to [1,64]); 1..64 = explicit count. " \
-    "The zimg backend partitions each frame into N horizontal stripes " \
-    "and runs one persistent worker thread per stripe. swscale backend " \
-    "runs single-threaded regardless. Higher values reduce per-frame " \
+    "Worker preference shared by zimg and USM. 0 = auto (cores/2 - 2, " \
+    "clamped to [1,64]); 1..64 = explicit preference, capped by CPUs " \
+    "allowed to the process. Each pool may clamp lower for frame geometry. " \
+    "The zimg backend normally uses horizontal stripes and adds column " \
+    "tiles for very wide/short frames. It runs one persistent worker " \
+    "per grid cell; swscale remains single-threaded. Higher values can " \
+    "reduce per-frame " \
     "latency at the cost of more memory and lower per-thread cache " \
     "locality; the auto default reserves half the machine for the rest " \
     "of VLC and other libraries. Override if you measured otherwise.")
@@ -144,12 +148,13 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 
 #define ZEROCOPY_DST_TEXT N_("Write directly to VLC's destination picture")
 #define ZEROCOPY_DST_LONGTEXT N_( \
-    "1 = on (default): worker threads write directly into VLC's " \
-    "destination picture, skipping a final memcpy. Saves about 125 " \
+    "1 = on (default): on aligned row-only grids, workers write directly " \
+    "into VLC's destination picture, skipping copy-out. Column grids " \
+    "always use per-tile scratch. Saves about 125 " \
     "microseconds per 1080p frame (~0.8% of a 60 fps budget) and ~3 " \
     "MB of scratch memory. 0 = off (safe fallback): worker threads " \
-    "write to plugin-owned scratch buffers, then a final memcpy moves " \
-    "the result into VLC's destination picture. Set to 0 if you see " \
+    "write to plugin-owned scratch buffers and copy their output regions " \
+    "into VLC's destination picture. Set to 0 if you see " \
     "garbled output, crashes, or other instability with the default - " \
     "the writeback to VLC's destination picture has been verified " \
     "byte-identical to the copy-out path in our testing but cannot be " \
@@ -158,8 +163,8 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 #define ZEROCOPY_SRC_TEXT N_("Read VLC's source picture directly")
 #define ZEROCOPY_SRC_LONGTEXT N_( \
     "1 = on (default): zimg worker threads read VLC's source picture " \
-    "directly, skipping the copy-in to scratch and ~half the per-frame " \
-    "scratch memory. The symmetric twin of zerocopy-dst (which writes VLC's " \
+    "directly, skipping copy-in and its persistent plane scratch. The " \
+    "symmetric twin of zerocopy-dst (which writes VLC's " \
     "destination picture directly). 0 = off (safe fallback): the source is " \
     "copied to plugin-owned scratch first, then the worker graphs read the " \
     "scratch. On very wide/short frames setting 0 also disables column " \
@@ -186,7 +191,7 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 
 #define USM_SHARP_THRESH_TEXT N_("USM-skip sharpness threshold")
 #define USM_SHARP_THRESH_LONGTEXT N_( \
-    "Mean Laplacian-variance value above which the source is " \
+    "Mean squared Laplacian-response value above which the source is " \
     "considered heavily textured/grainy and the USM post-pass is " \
     "skipped for the rest of playback (USM on grainy content " \
     "amplifies noise without adding perceived sharpness). " \
@@ -199,19 +204,21 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 
 #define PROBE_TEXT N_("Content-aware quality probe")
 #define PROBE_LONGTEXT N_( \
-    "1 = on (default): observe the first ~60 frames of luma to " \
+    "1 = on (default): observe the first ~60 valid luma pictures to " \
     "estimate source quality. If the source is both very soft (low " \
-    "Laplacian variance: heavy blur or noise reduction) AND very " \
+    "mean squared Laplacian response: heavy blur or noise reduction) " \
+    "AND very " \
     "blocky (high edge intensity at 8-pixel boundaries: heavy " \
     "compression), log a one-time advisory recommending the user " \
     "disable AutoUpscale for this source. The probe is DIAGNOSTIC " \
     "only — VLC 3's filter API does not allow runtime format " \
     "renegotiation, so the filter cannot self-bypass mid-stream. " \
-    "Probe cost is ~50us/frame at 480p (only during the first 60 " \
-    "frames). 0 = off: no advisory is logged (metric collection still " \
+    "The fixed sampling step spans the visible plane, so cost scales " \
+    "with its dimensions and stops after the probe window. 0 = off: " \
+    "no advisory is logged (metric collection still " \
     "runs when --autoupscale-usm-sharp-threshold needs it, since that " \
     "gate changes pixel output and is not diagnostic). The probe is " \
-    "skipped automatically for non-planar chromas (no Y plane).")
+    "skipped automatically for chromas without a readable Y plane.")
 
 /*****************************************************************************
  * Forward declarations
@@ -281,10 +288,8 @@ struct filter_sys_t
 {
     scaler_ctx_t  scaler;
 
-    /* Post-pass unsharp mask. Disabled when usm_amount_q8 == 0 OR
-     * usm_pool == NULL. The pool encapsulates the workspace and the
-     * worker threads (lazy-spawned on first apply); when amount is 0,
-     * apply() takes a fast identity path with no thread activity. */
+    /* Post-pass unsharp mask. A zero amount or NULL pool makes the plugin skip
+     * USM. A nonzero pool lazily owns its workers and private row scratch. */
     int           usm_amount_q8;
     usm_pool_t   *usm_pool;
 
@@ -294,8 +299,8 @@ struct filter_sys_t
     int           algo;           /* kept around for warn message */
     int           usm_pct;        /* kept around for warn message */
 
-    /* Content-aware bypass. The probe runs over the first
-     * UP_PROBE_WINDOW_FRAMES frames, accumulating Laplacian variance
+    /* Content-aware advisory. The probe runs over the first
+     * UP_PROBE_WINDOW_FRAMES valid views, accumulating squared Laplacian energy
      * and block-edge intensity on the luma plane. Once the window
      * closes, up_should_bypass_for_content() decides whether the source
      * is so soft+blocky that upscaling actively hurts.
@@ -410,7 +415,7 @@ static void ResolveInputDims( const filter_t *p_filter,
 /* REL-4: even-align src dims on subsampled axes. zimg rejects image
  * dims not divisible by the subsample factor, so an odd visible crop
  * (VP9/AV1 allow them with 4:2:0) would pass Open and then fail EVERY
- * per-stripe graph build at first frame — sticky lazy-init failure,
+ * per-cell graph build on the first valid frame — sticky lazy-init failure,
  * every frame dropped. Cropping one source row/column is visually
  * free; up__clamp_even already does the same for dst. CCN 4. */
 static void EvenAlignSrcDims( vlc_fourcc_t chroma, int *src_w, int *src_h )
@@ -431,7 +436,7 @@ static const scaler_backend_t *PickBackendOrReject(
     filter_t *p_filter, vlc_fourcc_t chroma, int algo, int backend_pref )
 {
     /* Reject hardware/opaque formats up front. We cannot read pixel data
-     * from a VAAPI/VDPAU/D3D/MMAL/CVPX surface; VLC must insert a hw->sw
+     * from a VAAPI/VDPAU surface; VLC must insert a hw->sw
      * download converter before us. Failing here cleanly (instead of
      * accepting and then producing garbage) prompts VLC to do exactly
      * that, and it avoids the wasted scratch+thread allocation that
@@ -464,7 +469,7 @@ static int OpenBackendAttempt( void *context, const void *backend_handle )
     return be->open( sc );
 }
 
-/* AUTO may recover from a preferred zimg open failure through the universal
+/* AUTO may recover from a preferred zimg open failure through the broad-coverage
  * swscale backend. Explicit backend selections remain strict. CCN 6. */
 static int OpenScalerOrFallback( filter_t *p_filter, filter_sys_t *p_sys )
 {
@@ -535,9 +540,9 @@ static void ConfigureScaler( scaler_ctx_t *sc,
                   "--autoupscale-zerocopy-dst=0 (using copy-out path)" );
 }
 
-/* Lazily create the USM pool when the user asked for sharpening AND the
- * chroma has a Y plane. On allocation failure we log and continue with
- * USM disabled — the upscale itself doesn't depend on it. CCN 4. */
+/* Create the small USM descriptor when sharpening is requested and the chroma
+ * has a Y plane. Workers and scratch initialize lazily on first apply. On
+ * allocation failure, continue with USM disabled. CCN 4. */
 static void InitUsmPool( filter_sys_t *p_sys, filter_t *p_filter,
                          vlc_fourcc_t chroma, up_dims_t target,
                          int cores, int usm_pct )
@@ -571,10 +576,9 @@ static void InitProbeAndPerfmon( filter_sys_t *p_sys, filter_t *p_filter,
     p_sys->algo       = algo;
     p_sys->usm_pct    = usm_pct;
 
-    /* Content-aware bypass probe. Runs only when the source has a
-     * planar Y component (probe metrics are computed on luma only).
-     * For opaque/packed/RGB chromas the probe stays disabled — those
-     * are either GPU-managed (can't read) or have no luma plane.
+    /* Content-aware metric probe. Runs only when the source exposes a
+     * readable luma plane. For opaque and packed RGB chromas the probe stays
+     * disabled because they are GPU-managed or have no discrete luma plane.
      * The accumulator is already zeroed by calloc(). */
     p_sys->usm_sharp_threshold = var_InheritInteger( p_filter,
         CFG_PREFIX "usm-sharp-threshold" );
@@ -619,8 +623,8 @@ static int Open( vlc_object_t *p_this )
     filter_t *p_filter = (filter_t *)p_this;
 
 #if defined(__x86_64__)
-    /* BUILD-5: Check CPU features if the compiler was allowed to emit modern ISA.
-     * Fails gracefully before hitting a SIGILL on older hardware. */
+    /* BUILD-5: Reject CPUs missing the build's headline SIMD feature. Full
+     * x86-64-v3/v4 level validation remains tracked as PORT-6. */
 #if defined(__AVX512F__)
     if (!__builtin_cpu_supports("avx512f")) {
         msg_Err(p_this, "AutoUpscale: CPU lacks AVX-512F required by this build");
@@ -769,9 +773,9 @@ static void EmitPerfAdvisory( filter_t *p_filter, filter_sys_t *p_sys )
  * Run one iteration of the content probe on the source frame, and
  * close the probe (logging an advisory) once the window is full.
  * Observe-only — does not modify p_in or any output. Called from
- * Filter() while p_sys->probe_active is true and p_in has at least
- * one plane (planar chromas only; the probe_enabled gate in Open()
- * already filtered out opaque/packed sources). The shared picture view
+ * Filter() while p_sys->probe_active is true and p_in has a readable luma
+ * plane (the probe_enabled gate in Open() already filtered out formats
+ * without one). The shared picture view
  * resolves VLC's visible-area crop and rejects malformed plane geometry.
  *
  * Extracted from Filter() to keep its cyclomatic complexity within
@@ -898,8 +902,8 @@ static void ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
             p_sys->usm_amount_q8 ) != 0 )
     {
         msg_Warn( p_filter,
-                  "AutoUpscale: USM pool failed (worker spawn or scratch "
-                  "alloc); sharpening disabled for this playback" );
+                  "AutoUpscale: USM pool initialization or dispatch failed; "
+                  "sharpening disabled for this playback" );
         p_sys->usm_amount_q8 = 0;
     }
 }
@@ -947,11 +951,11 @@ static void RecordPerf( filter_t *p_filter, filter_sys_t *p_sys,
 
 /* SYS-2: one-shot runtime fallback to swscale after the active backend
  * reports a fatal processing failure. zimg defers its heavy setup
- * (worker spawn, scratch alloc, per-stripe graph build) to the FIRST frame,
- * so a first-frame failure (OOM under pressure, graph-build edge case) is
+ * (worker spawn, scratch alloc, per-cell graph build) to the first valid frame,
+ * so a lazy-init failure (OOM under pressure, graph-build edge case) is
  * sticky: Open() already succeeded, VLC committed to this filter, and
- * without a swap every frame of the playback would be dropped — the
- * universal-fallback role swscale exists for would never engage. The
+ * without a swap every frame of the playback would be dropped and the
+ * broad-coverage swscale fallback would never engage. The
  * scaler_ctx_t geometry is backend-agnostic, so closing zimg and opening
  * swscale on the same ctx is a clean swap; one frame is dropped. A
  * forced --autoupscale-backend=1 (zimg) is respected. On a failed swap

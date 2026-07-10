@@ -12,12 +12,11 @@
  * another's memory (full rationale in usm_pool.c's header note).
  *
  * The pool follows the same lifecycle as the zimg backend: cheap
- * create() allocates only the small priv struct; the workspace and
- * worker threads are spawned lazily on the first apply() call.
+ * create() allocates only the small priv struct; private scratch is allocated
+ * and worker threads are spawned lazily on the first apply() call.
  *
- * For amount_q8 == 0 (USM disabled) apply() takes a fast identity path
- * with NO thread spawn or workspace allocation - the pool is essentially
- * free at runtime when USM is off.
+ * At the public API level, amount_q8 == 0 takes a fast identity path with no
+ * thread or scratch setup. The plugin omits the pool entirely when USM is off.
  *****************************************************************************/
 
 /*
@@ -68,8 +67,8 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
  * equal src exactly (same base pointer, same stride) — the pool
  * snapshots each stripe's two boundary halo rows before dispatch so
  * neighbouring workers never read a row another worker is writing
- * (SYS-4). Partial overlap (dst != src but ranges overlapping, or same
- * base with different strides) is rejected/undefined. Returns 0 on
+ * (SYS-4). Same-base/different-stride calls are rejected; other partial
+ * overlap (different base pointers whose ranges overlap) is unsupported. Returns 0 on
  * success, -1 if the pool is NULL, the strides are too small or
  * mismatched while aliased, lazy thread spawn fails, or the completion
  * barrier fails. A barrier failure drains and joins the workers before

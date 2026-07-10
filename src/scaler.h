@@ -3,9 +3,9 @@
  * scaler.h — pluggable scaler backend interface for AutoUpscale
  *****************************************************************************
  * Two backends: zimg (preferred, high-quality, supports Spline36) and
- * swscale (universal fallback). Either backend may decline a particular
+ * swscale (broad-coverage fallback). Either backend may decline a particular
  * (chroma, algo) combination via supports(); scaler_pick() handles
- * failover.
+ * support-based selection and the plugin owns open/runtime fallback.
  *
  * Backends are plain C structs of function pointers. The zimg backend is
  * compiled in iff HAVE_ZIMG is defined at build time (driven by pkg-config).
@@ -48,9 +48,8 @@ typedef struct scaler_ctx_s
      * geometry above stays free of backend coupling (ISP). A third
      * backend would add its own sibling member here. */
     struct {
-        int min_stripe_lines; /* 0 = use default 16; smaller = more workers
-                               * fit on low-res frames (lower latency,
-                               * worse load balance) */
+        int min_stripe_lines; /* 0 = use default 16; smaller lets more workers
+                               * fit at the cost of dispatch/boundary overhead */
         int zerocopy;         /* 1 = write directly to VLC dst picture
                                * (default); 0 = copy-out via scratch
                                * (safety fallback) */

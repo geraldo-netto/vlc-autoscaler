@@ -2,17 +2,17 @@
 /*****************************************************************************
  * fuzz_scaler_seam.c - fuzz the multithreaded zimg scaler's tiling invariant.
  *****************************************************************************
- * SCAL-3 prerequisite. The scaler partitions each frame into N horizontal
- * stripes, one zimg graph per stripe. Each stripe restarts zimg's resize
- * coordinate origin, so tiled output carries a sub-pixel PHASE rounding at the
- * boundary — bounded to a few code values on real (low-frequency) content.
+ * SCAL-3 prerequisite. The scaler partitions each frame into a row×column
+ * grid, one zimg graph per cell. Each independent graph can restart zimg's
+ * resize coordinate origin, so tiled output carries sub-pixel phase rounding
+ * at boundaries.
  *
  * This fuzzer drives random geometry (src/dst dims, chroma) and a random
  * thread count through the real backend and asserts two things on SMOOTH
  * (gradient) input:
  *
  *   1. crash-/UB-/leak-free open->process->close (ASan/UBSan), and
- *   2. the seam invariant: the N-stripe result stays within SEAM_MAX_DELTA of
+ *   2. the seam invariant: the grid result stays within SEAM_MAX_DELTA of
  *      the single-graph (threads=1) reference.
  *
  * It is the moving-geometry complement to the fixed-config seam oracle in
@@ -32,13 +32,10 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Looser ceiling than the fixed-config oracle's 6: the fuzzer explores
- * extreme geometries (tiny heights -> ~4-row stripes, absurd aspect ratios)
- * where the synthetic gradient is steep and per-stripe phase rounding is
- * amplified. Empirically the current (correct, no-halo) tiling stays <= 12
- * across 4000+ random configs; 16 leaves margin. The point is to catch GROSS
- * seams / crashes across wild geometry, and to hold column tiling (2D) to the
- * same envelope — not to pin the exact sub-pixel rounding. */
+/* Intended gross-seam ceiling for randomized geometry; looser than the fixed
+ * suite's 6 because tiny cells and steep synthetic gradients amplify phase
+ * rounding. The standard 400-case smoke gate passes. An extended-run delta of
+ * 18 is tracked as REL-9, so 16 is not claimed as a proven global envelope. */
 #define SEAM_MAX_DELTA 16
 
 static const uint32_t CHROMAS[] = {

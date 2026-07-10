@@ -6,8 +6,8 @@
  * different x86_64 microarchitecture baseline:
  *
  *   _sse2   : -march=x86-64    (lowest common denominator: SSE2, 16-byte SIMD)
- *   _avx2   : -march=x86-64-v3 (Haswell 2013 / Zen 1 2017: AVX2, 32-byte SIMD)
- *   _avx512 : -march=x86-64-v4 (Skylake-X 2017 / Zen 4 2022: AVX-512, 64-byte SIMD)
+ *   _avx2   : -march=x86-64-v3 (full v3 level, including 32-byte AVX2 SIMD)
+ *   _avx512 : -march=x86-64-v4 (full v4 level, including 64-byte AVX-512 SIMD)
  *
  * Each variant has its public symbols suffixed (e.g. up_usm_pool_apply_avx2),
  * so all three coexist in the .so. THIS file exposes the un-suffixed public
@@ -36,10 +36,8 @@
  *   whole TU at three -march levels into separate .o files lets each variant
  *   inline its kernels at its own SIMD width — strictly better codegen.
  *
- * Safety: the AVX-512 variant's code section contains AVX-512 instructions.
- * We never EXECUTE that code on a CPU that doesn't support AVX-512 (the
- * dispatcher's selection logic prevents it). Holding a function pointer to
- * code we never run is fine — the dynamic linker only does relocations.
+ * The selector's headline feature checks do not yet prove the full v3/v4
+ * levels used to compile the objects. The complete guard is tracked as PORT-6.
  *****************************************************************************/
 
 #include "usm_pool.h"
@@ -103,9 +101,8 @@ static usm_pool_ops_t g_ops;
  * Selection priority: AVX-512 > AVX2 > SSE2. The SSE2 baseline is always a
  * valid fallback (every x86_64 CPU has SSE2; it's part of the architecture).
  *
- * AVX-512 needs both the foundation (avx512f) AND the byte/word ops
- * (avx512bw) since our kernels operate on bytes. avx512f alone wouldn't
- * give us the SIMD instructions the vectorizer needs for uint8_t loops.
+ * These headline probes are narrower than the full x86-64-v3/v4 compile
+ * levels used for the objects; the complete guard is tracked as PORT-6.
  */
 static void __attribute__((constructor))
 up_usm_pool_dispatch_init(void)

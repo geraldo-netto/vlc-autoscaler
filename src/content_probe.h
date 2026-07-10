@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
- * content_probe.h - pure content-aware metrics for upscaling decision
+ * content_probe.h - pure content-aware metrics for advisory and USM gating
  *****************************************************************************
  * Two no-reference quality proxies used to decide whether an upscale will
- * help on this particular source, computed over a short probe window
- * (first ~60 frames) at the start of playback. If both metrics suggest
- * upscaling won't recover useful detail, the filter sets a bypass flag
- * for the rest of playback and passes frames through unchanged.
+ * help on this particular source, computed over the first ~60 valid luma
+ * views at playback start. If both metrics suggest
+ * upscaling won't recover useful detail, the filter logs a one-time advisory.
+ * VLC 3 cannot renegotiate the output format mid-stream, so scaling continues.
  *
  * The two metrics:
  *
- *   1. Laplacian variance over a sub-sampled luma plane.
+ *   1. Mean squared Laplacian response over a sub-sampled luma plane.
  *      Measures high-frequency energy. Higher value = sharper source =
  *      more detail available to interpolate from. Very low values (heavy
- *      blur, gaussian-noise-only content, blank frames) indicate the
- *      source has nothing for a non-AI scaler to "uncover".
+ *      blur or blank frames) indicate the source has nothing for a non-AI
+ *      scaler to "uncover". Noise raises this energy metric and is handled
+ *      independently by the high-value USM-skip gate.
  *
  *   2. Block-edge intensity along 8-pixel boundaries.
  *      Measures compression-artifact density. H.264/H.265 produce visible
@@ -25,10 +26,11 @@
  *
  * Both metrics are computed on the LUMA plane only (the visual signal
  * humans care about) and on a deliberately sub-sampled grid (every 4th
- * row × every 4th column) to keep cost under ~50 µs/frame at 480p.
+ * row × every 4th column). The grid spans the full visible luma plane, so
+ * work scales with frame dimensions.
  *
  * Header-only, no VLC dependencies, fuzzable. The decision logic that
- * combines the metrics into a bypass/no-bypass verdict lives in
+ * combines the metrics into a bypass advisory verdict lives in
  * up_should_bypass_for_content() at the bottom of this file.
  *****************************************************************************/
 
@@ -38,10 +40,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Sub-sample grid step. Smaller = more samples = more accurate but
- * costlier. 4 gives ~64x64 sample points on a 256x256 thumbnail of a
- * 1080p frame, which is plenty for variance and edge-density estimation
- * and runs in well under 100 µs even on a slow CPU. */
+/* Sub-sample grid step. Smaller = more samples = more accurate but costlier.
+ * A value of 4 samples the full visible plane at every fourth row/column. */
 #define UP_PROBE_GRID_STEP   4
 
 /* Block size for compression-artifact detection. H.264 and H.265 both
@@ -50,24 +50,19 @@
 #define UP_PROBE_BLOCK_SIZE  8
 
 /*
- * Compute Laplacian variance on a sub-sampled grid of the luma plane.
+ * Compute squared Laplacian energy on a sub-sampled grid of the luma plane.
  *
  *   plane        : pointer to luma plane (Y), row-major
  *   stride       : bytes per row (may be > w due to alignment padding)
  *   w, h         : visible plane dimensions in pixels
  *
- * Returns: variance estimate as a uint64_t (sum of squared 4-connected
- *          Laplacian responses on the sample grid). 0 if input is invalid
+ * Returns: sum of squared 4-connected Laplacian responses on the sample
+ *          grid. 0 if input is invalid
  *          or too small to sample.
  *
  * The Laplacian kernel is 4*center - (top + bottom + left + right).
- * High variance => lots of edges and texture (sharp source).
- * Low variance  => smooth or blurry source.
- *
- * We accumulate the variance directly (sum of squared responses), not
- * mean-and-variance — for our purposes we just need a relative-magnitude
- * signal, and the un-normalized form is faster and doesn't require a
- * second pass.
+ * High energy => lots of edges, texture, or noise.
+ * Low energy  => smooth or blurry source.
  *
  * Returns the SUM of squared Laplacians (not mean). Callers normalize by
  * sample count: every threshold in this file (SOFT, SHARP) is expressed
@@ -198,7 +193,7 @@ static inline uint64_t up_block_edge_strength(const uint8_t *plane,
  * call up_probe_observe() for each frame in the window.
  */
 typedef struct {
-    uint64_t lap_sum;       /* sum of laplacian variances over frames */
+    uint64_t lap_sum;       /* sum of squared Laplacian responses */
     uint64_t lap_samples;   /* total laplacian samples */
     uint64_t edge_sum;      /* sum of block-edge intensities */
     uint64_t edge_samples;  /* total block-edge samples */
@@ -207,8 +202,8 @@ typedef struct {
 
 /*
  * Add one frame's metrics to the accumulator. Call this after computing
- * the metrics for a frame's luma plane. Safe to call with zero metrics
- * (e.g. if the plane was too small) — it will just not advance.
+ * the metrics for a frame's luma plane. Zero metrics still advance the
+ * observed-frame count; invalid production picture views skip this call.
  */
 static inline void up_probe_observe(up_probe_accum_t *a,
                                     uint64_t lap, uint64_t lap_n,
@@ -223,35 +218,35 @@ static inline void up_probe_observe(up_probe_accum_t *a,
 }
 
 /*
- * Bypass-decision rule based on accumulated probe metrics.
+ * Advisory rule based on accumulated probe metrics.
  *
  * Returns:
- *   1 -> upscaling is unlikely to help; recommend bypass (pass-through)
- *   0 -> proceed with upscaling
+ *   1 -> upscaling is unlikely to help; recommend disabling it next playback
+ *   0 -> no advisory
  *
  * Decision logic:
  *
  *   - If we observed too few samples to be confident, return 0
- *     (don't bypass — give the scaler a chance).
+ *     (do not recommend a change).
  *
- *   - If the source is very soft (mean Laplacian variance < THRESH_SOFT)
+ *   - If the source is very soft (mean squared Laplacian response < THRESH_SOFT)
  *     AND it's also very blocky (mean block-edge intensity > THRESH_BLOCKY),
  *     we have a heavily-compressed soft source: upscaling will amplify
- *     the blocking without any detail to recover. Bypass.
+ *     the blocking without any detail to recover. Recommend bypassing.
  *
  *   - If the source is just very soft (no detail to recover) but NOT
  *     blocky, upscaling may still produce a passable smooth output —
- *     don't bypass on softness alone.
+ *     do not warn on softness alone.
  *
  *   - If the source is just blocky but has detail elsewhere, the user
- *     probably still wants upscaling — don't bypass on blockiness alone.
+ *     probably still wants upscaling — do not warn on blockiness alone.
  *
  * Both conditions in conjunction are the "actively bad to upscale" case.
  *
  * Thresholds are chosen conservatively. A short clip of clean Spline36
  * upscaling on grainy/textured 480p content yields ~lap-mean 800-2000
  * and edge-mean 1-4. Heavily-blocky low-bitrate content yields lap-mean
- * 200-400 and edge-mean 8-15. We bypass only in the second region.
+ * 200-400 and edge-mean 8-15. We advise only in the second region.
  *
  * All lap thresholds are in mean-of-squared-Laplacians units — the same
  * `lap_sum / lap_samples` value RunProbe logs — matching the measured
@@ -262,7 +257,7 @@ static inline void up_probe_observe(up_probe_accum_t *a,
 #define UP_PROBE_MIN_FRAMES               10   /* need this many frames */
 #define UP_PROBE_MIN_SAMPLES_PER_KIND  20000   /* need this many samples */
 
-/* How many frames the caller observes before deciding. At 30fps this is
+/* How many valid picture views the caller observes before deciding. At 30fps this is
  * 2 seconds — enough for a few I-frames and a couple of GOPs to
  * characterize the encoder's quality across motion changes. Must stay
  * >= UP_PROBE_MIN_FRAMES or the bypass advisory could never fire. */
@@ -284,7 +279,8 @@ _Static_assert(UP_PROBE_WINDOW_FRAMES >= UP_PROBE_MIN_FRAMES,
  * Decide whether USM should be skipped given accumulated probe state
  * and a runtime threshold. threshold <= 0 means the feature is off
  * (always returns 0). Otherwise: returns 1 iff the probe has gathered
- * enough samples AND mean lap variance strictly exceeds threshold.
+ * at least one sample AND mean squared Laplacian response strictly exceeds
+ * threshold. Production invokes this after the probe window closes.
  *
  * Used both in production (autoupscale.c, after probe window closes)
  * and in unit tests for VLC-option boundary coverage.

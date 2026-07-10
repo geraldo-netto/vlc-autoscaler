@@ -10,7 +10,7 @@
  * Two build modes (same pattern as fuzz_usm.c):
  *
  *   - libFuzzer target (default with clang -fsanitize=fuzzer)
- *   - Smoke runner (-DFUZZ_MAIN), 100k iterations by default.
+ *   - Smoke runner (-DFUZZ_MAIN), 5k iterations by default.
  *
  * On non-AVX-512 / non-AVX2 CPUs, the corresponding variants are skipped.
  *****************************************************************************/

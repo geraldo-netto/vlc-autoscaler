@@ -6,16 +6,16 @@ decide whether the trade-offs match what you want.
 ## Filter lifecycle in VLC
 
 VLC video filters are loaded by the playback engine when the user enables
-them (per-launch with `--video-filter=`, in the GUI, or in `vlcrc`). For
-each video stream, VLC calls the filter's `Open()` exactly once. If `Open()`
-returns success, VLC pushes every decoded frame through `Filter()` until the
-stream ends, at which point `Close()` is called.
+them (per-launch with `--video-filter=`, in the GUI, or in `vlcrc`). Chain
+negotiation may create and close several candidate instances. Once one
+instance accepts the stream, VLC serially pushes its decoded frames through
+`Filter()` until that instance is closed.
 
 Crucially, **`Open()` can return `VLC_EGENERIC` to opt out**. VLC then
 behaves as if the filter wasn't loaded for that stream, with zero per-frame
-overhead. AutoUpscale uses this aggressively: any source already at or above
-the configured `skip-above` height (default 720) opts out. The user can
-leave the filter enabled globally without paying any cost on HD content.
+overhead. In AUTO, any source already at or above the configured `skip-above`
+height (default 720) opts out. Explicit presets bypass that gate but still
+obey the no-downscale and 4×-ratio rules.
 
 ```
               ┌───────────────────────┐
@@ -30,10 +30,10 @@ leave the filter enabled globally without paying any cost on HD content.
               └────┬─────────────┬────┘
                    │ no          │ yes
                    ▼             ▼
-            (frame passes  ┌──────────────┐
-             through       │  Filter():   │
-             unchanged)    │  sws_scale() │
-                           └──────┬───────┘
+            (frame passes  ┌──────────────────────┐
+             through       │ Filter(): probe,     │
+             unchanged)    │ backend, optional USM│
+                           └──────────┬───────────┘
                                   ▼
                          ┌────────────────┐
                          │  upscaled      │
@@ -45,35 +45,33 @@ leave the filter enabled globally without paying any cost on HD content.
 
 `Open()` does the following, in order:
 
-1. Reads `i_visible_width` / `i_visible_height` from the input format
-   (falls back to `i_width` / `i_height` if visible isn't set).
-2. Reads the module options (`target`, `algo`, `skip-above`, `usm`,
-   `backend`, `target-fps`, `threads`, `zerocopy-dst`, `content-probe`,
-   `usm-stripe-min-rows`, `zimg-stripe-lines`,
-   `usm-sharp-threshold`).
-3. Calls `DetectHardware()` to get core count and total RAM.
-4. Calls `up_plan_upscale()` from `upscale_logic.h` to decide whether to
-   engage and, if so, what target dimensions to use. This is where all the
-   heuristics live, isolated for testing.
-5. If `up_plan_upscale()` returns 0, `Open()` returns `VLC_EGENERIC` and
-   the filter is bypassed for this stream.
-6. **Calls `up_chroma_is_opaque()` (in `chroma_classify.h`) to detect
-   hardware/GPU surface formats and rejects them with `VLC_EGENERIC`** —
-   see "Hardware-accelerated decode" below.
-7. Calls `scaler_pick()` to choose a backend (zimg if available and
-   supports the chroma; swscale as fallback). Anything the picker
-   doesn't recognize bypasses — better to do nothing than emit garbage.
-8. Allocates `filter_sys_t`, opens the chosen backend (which spawns the
-   worker pool and allocates scratch buffers), and writes the new
-   dimensions into `fmt_out`.
+1. Reads the negotiated visible dimensions and authoritative coded-size/crop
+   metadata. zimg-supported subsampled sources are even-aligned as required.
+2. Reads the options needed for planning and backend choice. Unknown
+   target/backend enum values normalize to AUTO; numeric quantities retain
+   endpoint clamping.
+3. Detects the CPUs allowed by the process affinity mask and total RAM, then
+   calls the fuzzed `up_plan_upscale()` heuristic. A bypass result returns
+   `VLC_EGENERIC` with no per-frame cost.
+4. Rejects opaque GPU chromas, then asks `scaler_pick()` for zimg or swscale.
+5. Reads the threading, stripe, pinning, and zero-copy options, then opens the
+   selected backend. In AUTO only, a zimg open failure immediately tries
+   swscale once; forced selections remain strict. zimg open is cheap:
+   it validates the runtime API/chroma, captures topology, computes the initial
+   grid, and allocates only its private descriptor. swscale creates its
+   `SwsContext` eagerly.
+6. Creates an optional small USM-pool descriptor (only for nonzero USM on a
+   readable Y plane; allocation failure disables sharpening), initializes
+   probe/performance state, and publishes an uncropped, zero-offset target in
+   `fmt_out`.
 
 The chroma never changes. We only resize.
 
 ## Hardware-accelerated decode
 
-When VLC uses hardware video decode (VA-API, VDPAU, D3D9/11, MMAL,
-CoreVideo on macOS) the decoder produces **opaque GPU surfaces**: a
-fourcc placeholder like `VAOP` or `DX11` that points to a hardware
+When VLC uses hardware video decode (VA-API or VDPAU on the supported
+Linux x86-64 target), the decoder produces **opaque GPU surfaces**: a
+fourcc placeholder like `VAOP` or `VDV0` that points to a hardware
 buffer, not a CPU pixel layout. Filters that need to read pixels (us,
 postproc, deinterlace, etc.) cannot consume these directly.
 
@@ -98,9 +96,9 @@ on a 64-core box).
 To avoid this, `zimg_open()` does only the cheap work — chroma
 validation, geometry computation, thread-count decision, priv struct
 allocation — and returns. The actual worker pool, scratch buffers, and
-per-stripe filter graphs are constructed lazily on the first `Filter()`
-call (`zimg_lazy_init()`). Probes that don't produce a frame cost
-essentially nothing. The first frame after a successful chain
+per-cell filter graphs are constructed lazily on the first valid `Filter()`
+picture (`zimg_lazy_init()`). Probes that don't produce a frame cost
+essentially nothing. The first valid frame after a successful chain
 construction pays a one-time setup cost (a few ms per worker, dominated
 by `pthread_create`); subsequent frames are unaffected.
 
@@ -173,10 +171,8 @@ When AUTO is active, three signals decide between 720p and 1080p:
 | Total RAM (Linux)   | ≥ 2 GB, or unknown        |
 | Upscale ratio       | ≤ 4× (i.e. `src_h * 4 ≥ 1080`) |
 
-If any threshold is missed, AUTO falls back to 720p. RAM detection
-uses Linux's `sysinfo()`. On other platforms `mem_mb` stays at 0,
-which the heuristic interprets as "unknown — assume sufficient", so
-non-Linux systems behave like Linux systems with plenty of RAM.
+If any threshold is missed, AUTO falls back to 720p. RAM detection uses
+Linux's `sysinfo()`. Linux x86-64 is the supported deployment target.
 
 **Forward-compatibility:** unknown preset values (e.g. a future option
 introduced by a different build, or a typo'd integer outside the 0–6
@@ -188,28 +184,31 @@ nonsense output even if some downstream tool sets `target=999`.
 
 `Filter()` is called for every decoded frame. It:
 
-1. Allocates an output `picture_t` at the new dimensions.
-2. Builds `uint8_t*[4]` plane pointers and `int[4]` strides for both
-   source and destination by reading `i_planes`, `p_pixels`, and `i_pitch`
-   off the `picture_t`.
-3. Calls `sws_scale()` once per frame. libswscale has internal SIMD
-   (SSE2/AVX2) for the common YUV planar paths.
-4. If USM is enabled and the chroma is a YUV variant, applies an
-   in-place unsharp mask to plane 0 (the Y plane). See "USM post-pass"
-   below.
-5. Copies frame metadata (timestamp, flags) via `picture_CopyProperties()`.
-6. Releases the input picture.
+1. While the content window is active, builds a validated crop-aware input
+   view and observes luma metrics.
+2. Allocates an output `picture_t` at the negotiated target dimensions.
+3. Calls the active backend. Both backends build shared picture views that
+   validate chroma, plane count, coded/visible crop bounds, pointer/pitch/row
+   extents, and pixel pitch. The source origin comes from negotiated
+   `fmt_in`, because VLC 3 clears crop offsets on allocated `picture_t`s.
+   YV12 stays physical Y/V/U in VLC and is mapped to semantic Y/U/V at each
+   library boundary.
+4. A transient geometry/library failure drops only the current frame. A fatal
+   zimg failure in AUTO closes zimg and opens swscale once for later frames;
+   the triggering frame remains dropped. Forced zimg never falls back.
+5. On success, optionally applies the lazy threaded USM pool in place to the
+   validated output luma view, copies metadata, and releases the input.
 
-There's no per-frame allocation beyond the output picture (which VLC
-pools) and no per-frame branching on the algorithm — the scaler choice
-is baked into the `SwsContext` at `Open()`, and the USM workspace is
-allocated once at `Open()` and freed at `Close()`.
+After lazy initialization, `filter_NewPicture()` is the only routine
+per-frame output-buffer acquisition; its owner may allocate or recycle that
+buffer. The first valid zimg frame can allocate graphs, workers, and needed
+scratch; the first USM apply can allocate its workers and private rolling
+buffers. Algorithm selection is baked into the active backend.
 
 The swscale flags include `SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT |
 SWS_FULL_CHR_H_INP` on top of the chosen algorithm. These enable proper
 rounding instead of fast truncation, and full-resolution chroma
-interpolation. The cost is a few percent of one core; the quality bump
-is visible on saturated colour and high-contrast edges.
+interpolation. They favor output quality over the fastest swscale path.
 
 ## USM post-pass
 
@@ -222,20 +221,10 @@ out = src + amount * (src - blur(src))
 ```
 
 We use a 3×3 separable Gaussian `[1 2 1]/4 ⊗ [1 2 1]/4` for the blur,
-applied only to the luma plane. The implementation lives in
-`src/usm.h` as a header-only `static inline` function, just like the
-upscale-decision logic, so it's exercised by both the plugin and the
-test/fuzz harnesses.
-
-Two passes over the plane:
-
-1. *Horizontal blur* writes a `[1 2 1]/4`-filtered copy of every row
-   into a contiguous workspace buffer (allocated once at `Open()`,
-   sized `output_w × output_h` bytes).
-2. *Vertical blur and combine* reads three rows of the workspace
-   (`y-1, y, y+1` with edge replication), forms `blur(x,y)`, then
-   computes `clamp(src + amount × (src − blur))` directly into the
-   output picture.
+applied only to luma. `src/usm.h` retains a simple two-pass, header-only
+implementation as the test oracle. Production calls `up_usm_pool_apply()`:
+each worker fuses horizontal blur and vertical combine into one rolling-buffer
+sweep, so there is no full-frame USM workspace or mid-frame phase barrier.
 
 `amount` is in Q8 fixed point so the inner loop has no floating-point
 ops. The user-facing option `--autoupscale-usm` is a percentage; 20%
@@ -248,15 +237,15 @@ channels independently has the same problem, so RGB chromas bypass USM
 entirely. The chroma classification happens at `Open()` via a small
 `ChromaHasYPlane()` helper.
 
-**In-place safety.** `Filter()` calls `up_usm_apply_plane(dst=Y, src=Y, …)`
-— same buffer for input and output. The implementation reads each row's
-source pixel before writing the corresponding destination pixel within
-an iteration and never re-reads it across iterations, so aliasing is
-safe. There's a unit test (`apply_plane: in-place and out-of-place
-produce identical output`) that checks this against a fresh-buffer
-reference for a 17×13 plane with random fill.
+**In-place safety.** `Filter()` passes the same luma base and stride as source
+and destination. Before broadcasting, the main thread snapshots each stripe's
+two cross-stripe halo rows; workers then write only their owned rows. This
+prevents one worker from overwriting a neighbor's future input. Exact in-place
+aliasing is supported; same-base/different-stride calls are rejected, while
+other partial overlap is outside the API contract. Pool output is checked
+byte-for-byte against the reference path.
 
-**Performance.** Two memory-bound passes over the Y plane. On a modern
+**Performance.** One fused memory-bound worker sweep over the Y plane. On a modern
 x86 core with the AVX-512 multi-versioned variant, the kernel runs
 about 0.6 ns/pixel scalar-equivalent; a 1080p Y plane (≈ 2.07 MP)
 costs ~1.17 ms per frame single-threaded through `up_usm_pool_apply`
@@ -268,10 +257,10 @@ Numbers are for amount=51 (the default 20 % USM); identity
 **Per-deployment tunables.** `up_usm_pool_create()` takes a
 `stripe_min_rows` argument (`0` = compile-time default `8`) wired to
 `--autoupscale-usm-stripe-min-rows`. The zimg backend reads
-`scaler_ctx_t.zimg_stripe_min_lines` (`0` = default `16`) wired to
+`scaler_ctx_t.zimg.min_stripe_lines` (`0` = default `16`) wired to
 `--autoupscale-zimg-stripe-lines`. Lower values let more workers fit
 on low-resolution frames at the cost of dispatch overhead; higher
-values give better load balance on tall frames. Defaults match the
+values reduce worker count and dispatch overhead. Defaults match the
 historical hardcoded constants and are right for almost everyone.
 
 ### Threaded USM (`src/usm_pool.h`, `src/usm_pool.c`)
@@ -285,36 +274,36 @@ sweep (PERF-2, commit cc71221) — no shared workspace, no mid-frame barrier.
 
 **Partition.** N workers, height H. Worker i owns rows
 `[i·H/N, (i+1)·H/N)` (last worker absorbs rounding remainder). N is
-clamped to `H/8` so each stripe is at least 8 rows tall — below that,
-the kernel boundary handling dominates and threading hurts rather than
-helps.
+clamped to `H / stripe_min_rows`; the default minimum is 8. Smaller configured
+stripes admit more workers but increase dispatch and boundary overhead.
 
-**Fused sweep.** Each worker keeps a private 3-row rolling buffer
-(`up`/`mid`/`dn`) of horizontally-blurred rows. It primes the buffer with
+**Fused sweep.** Each worker keeps three rolling blur rows plus two saved
+cross-stripe halo rows (five row-width buffers total). It primes the sweep with
 the two rows above and at `y_start`, then for each `y` in its stripe: hblur
 the next row into `dn`, combine `up`/`mid`/`dn` with `src[y]` into `dst[y]`,
 and rotate the three pointers. Vertical edges clamp to `[0, H-1]`. The
-worker reads source rows just outside its stripe (read-only, shared `src`)
-and writes only its own `dst` rows, so the sweep is race-free with no
-barrier between workers.
+worker writes only its own `dst` rows; halo snapshots preserve the original
+source for an in-place call.
 
-**Dispatch.** One `sem_post` per worker (`go`); the main thread then
-`sem_wait`s the shared `done` semaphore N times. A single round-trip per
-frame — there is no longer a second pass to synchronize.
+**Dispatch.** The main thread publishes per-frame state, snapshots halos,
+arms an atomic `pending` count, increments a generation under a mutex, and
+wakes the pool with one `pthread_cond_broadcast`. The last worker to decrement
+`pending` posts `all_done`; the main thread waits once. A non-EINTR wait failure
+drains and joins the dispatched pool before returning a sticky failure.
 
 **Lazy init.** Like the zimg backend, the USM pool's worker spawn and
-workspace allocation happen on the first `apply()` call rather than
-in `up_usm_pool_create()`. This means probing-only Open/Close cycles
-during VLC's chain solving cost nothing for USM.
+private scratch allocation happen on the first `apply()` call rather than
+in `up_usm_pool_create()`. A probing-only Open/Close cycle allocates and frees
+only the small descriptor, so it costs almost nothing for USM.
 
 **Identity fast path.** `up_usm_pool_apply()` with `amount_q8 == 0`
 short-circuits to a memcpy (or no-op when src and dst alias) with no
-thread activity and no workspace allocation. So `--autoupscale-usm=0`
-truly disables USM at zero cost, even if the pool was created.
+thread activity and no scratch allocation. The plugin does not create or call
+the pool at all when configured with `--autoupscale-usm=0`.
 
 **Auto-skip on grainy sources.** Independent of `amount`, the plugin
-also bypasses USM after the content probe completes (frame ~60) when
-the source's mean Laplacian variance exceeds
+also bypasses USM after the content probe completes (60 valid luma views) when
+the source's mean squared Laplacian response exceeds
 `p_sys->usm_sharp_threshold` (set from
 `--autoupscale-usm-sharp-threshold`, default `3500`). On heavily
 textured / grainy content USM amplifies the noise without adding
@@ -380,18 +369,23 @@ of function pointers), and treats it opaquely from then on:
 ```c
 struct scaler_backend_s {
     const char *name;
+    int id;
     int  (*supports)(vlc_fourcc_t chroma, int algo);
     int  (*open)   (scaler_ctx_t *);
-    int  (*process)(scaler_ctx_t *, const picture_t *src, picture_t *dst);
+    scaler_process_status_t
+         (*process)(scaler_ctx_t *, const picture_t *src, picture_t *dst);
     void (*close)  (scaler_ctx_t *);
 };
 ```
 
 Two implementations exist: `scaler_swscale.c` and `scaler_zimg.c`.
 Either backend is free to decline a chroma it can't handle (zimg
-declines NV12/NV21 and packed RGB; swscale accepts everything).
-`scaler_pick()` handles failover: in `auto` mode it asks zimg first,
-falls back to swscale on a `supports()` miss.
+declines NV12/NV21 and packed RGB; swscale covers all nine supported
+CPU-readable chromas). AUTO has three fallback seams: `scaler_pick()`
+uses swscale on a zimg `supports()` miss, `Open()` retries swscale after
+a zimg open failure, and `Filter()` switches once after a fatal zimg
+processing failure. A transient processing failure drops only that frame.
+Forced backends are strict and never fall back.
 
 ### The runtime trade-off
 
@@ -402,7 +396,7 @@ falls back to swscale on a `supports()` miss.
 | Rounding          | accurate via `SWS_ACCURATE_RND` flag | accurate by default                           |
 | NV12 / NV21       | yes                                  | no — needs depack/repack stage we don't add   |
 | Packed RGB        | yes                                  | no                                            |
-| Threading         | single-threaded per frame            | slice-threaded across N stripes via a persistent worker pool |
+| Threading         | single-threaded per frame            | row×column worker grid via a persistent worker pool |
 | Build dependency  | always present (VLC links it)        | optional — `pkg-config zimg`                  |
 
 zimg's two wins versus swscale:
@@ -410,14 +404,11 @@ zimg's two wins versus swscale:
 1. **Spline36** — noticeably sharper edges than Lanczos with less
    ringing on text and high-contrast detail. The recommended filter
    for upscaling and the plugin's default.
-2. **Slice threading.** zimg's image-buffer model with row masks is
-   built for parallel slice processing: the caller splits the
-   destination into N horizontal stripes and runs
-   `zimg_filter_graph_process` on each in parallel with its own
-   scratch buffer. The plugin's zimg backend implements exactly this
-   with a persistent worker pool — see the "Threading" section
-   below for the architecture, partition rule, and the per-stripe
-   independence caveat.
+2. **Grid threading.** zimg's image-buffer model supports independent
+   sub-images. The normal path splits the destination into horizontal
+   stripes; very wide/short frames add column tiles so every useful worker
+   gets a cell. Each cell has its own graph and temporary buffer. See the
+   "Threading" section for the partition and seam rules.
 
 ### Why not just always use zimg
 
@@ -451,7 +442,7 @@ The two non-options for shipping in this plugin:
   and your filter would be a different project. mpv with the Anime4K
   user-shaders is a better fit if that's your goal.
 
-So zimg with Spline36 (slice-threaded across N stripes) is the
+So zimg with Spline36 (threaded across a row×column worker grid) is the
 realistic ceiling for this plugin's architecture.
 
 ## Content-aware quality probe
@@ -475,11 +466,12 @@ time bilinear." There's no ground truth to be closer to.
 What IS measurable cheaply, on the source itself, are two
 no-reference proxies:
 
-1. **Laplacian variance** on the luma plane — a high-frequency-energy
-   estimate. High value means the source is sharp (lots of detail
-   for the scaler to interpolate from). Low value means the source
-   is soft — heavily blurred, noise-reduced, or just blank — and
-   there's nothing for a non-AI scaler to "uncover."
+1. **Mean squared Laplacian response** on the luma plane — a
+   high-frequency-energy estimate. High value means the source has edges,
+   texture, or noise. Low value means the source is soft — heavily blurred,
+   noise-reduced, or just blank — and there is little for a non-AI scaler
+   to interpolate. Despite the historical helper name
+   `up_laplacian_variance`, this is energy, not statistical variance.
 
 2. **Block-edge intensity** at 8-pixel grid boundaries. H.264 and
    H.265 both use 8×8 transform blocks; when bitrate is too low, the
@@ -510,26 +502,31 @@ contract it made when the chain was built.
 
 ### Implementation
 
-`src/content_probe.h` is a header-only module with three functions:
+`src/content_probe.h` is a header-only module. Its production operations are:
 
-- `up_laplacian_variance(plane, stride, w, h, *n_out)` — sub-samples
-  the luma plane on a 4×4 grid and accumulates squared Laplacian
-  responses. ~50 µs at 480p, less at higher resolutions because the
-  grid is fixed-size.
+- `up_laplacian_variance(plane, stride, w, h, *n_out)` — samples every
+  fourth row and column across the full visible luma plane and accumulates
+  squared Laplacian responses.
 
 - `up_block_edge_strength(plane, stride, w, h, *n_out)` — measures
   absolute pixel differences across 8-pixel grid boundaries. Same
   4-pixel sub-sample step.
 
-- `up_should_bypass_for_content(*accum)` — applies the decision
-  rule to accumulated metrics. Returns 1 when both `lap_mean < 400²`
-  and `edge_mean > 6`, and the probe has gathered enough samples.
+- `up_probe_observe(*accum, ...)` — accumulates a valid picture view's
+  metrics. A zero metric still advances the observation count.
 
-The probe runs for 60 frames (~2 seconds at 30fps — long enough for
-a few I-frames so quality varies across GOPs). After that, the
-advisory either fires or doesn't, and the probe deactivates. Total
-probe cost: ~3 ms for the entire window, distributed across 60
-frames so no single frame is delayed perceptibly.
+- `up_should_bypass_for_content(*accum)` — computes the advisory verdict.
+  It returns 1 when both `lap_mean < 400` and `edge_mean > 6`, after the
+  minimum frame and sample counts are satisfied.
+
+- `up_should_skip_usm_for_sharpness(*accum, threshold)` — independently
+  gates the USM post-pass when the mean squared response is above the
+  configured threshold.
+
+The probe closes after 60 successfully validated luma-picture observations.
+Invalid views are skipped rather than consuming the window. The fixed
+four-pixel sample step spans the full visible plane, so cost scales with
+source dimensions and is paid only during that startup window.
 
 ### Honest scope
 
@@ -559,14 +556,14 @@ feature with that cutoff; `0` disables it.
 
 ### Verification
 
-The probe is observe-only — it reads source pixels, never writes
-anything to the output. This is verified by decoded-MD5 comparison:
-running the same source with `--autoupscale-content-probe=1` and
-`--autoupscale-content-probe=0` produces byte-identical decoded
-output. The 13 unit tests in `test_content_probe.c` exercise the
-metric calculations on synthetic planes (flat, checkerboard,
-gradient, blocky-grid) and verify the decision rule across all 5
-cases (insufficient data, clean, soft-only, blocky-only, soft+blocky).
+The diagnostic verdict is observe-only: metric helpers accept `const` input
+and the advisory never changes scaling. The 19 unit tests in
+`test_content_probe.c` exercise flat, checkerboard, gradient, and block-grid
+planes; invalid geometry; accumulation; advisory boundaries; and the
+independent USM threshold. `fuzz_content_probe.c` drives the pointer arithmetic
+under ASan/UBSan and checks that the input remains unchanged. Disabling
+`content-probe` suppresses only the advisory; collection can continue when the
+USM sharpness gate needs the same metric.
 
 ## Performance auto-tuning
 
@@ -592,8 +589,8 @@ attribute on gcc disables `always_inline` for the attributed function,
 which would defeat `static inline` and force a real call per row.
 The pragma form leaves inlining decisions intact.
 
-**Lever 2: SIMD width via `-march`.** With pragmas applied but the
-default `-march=x86-64` baseline, both gcc and clang emit 16-byte
+**Lever 2: SIMD width via `-march`.** With pragmas applied at the
+`-march=x86-64` baseline, both gcc and clang emit 16-byte
 (SSE2) SIMD — the lowest-common-denominator x86_64 instruction set,
 which dates to 2003. Modern CPUs support 32-byte (AVX2, 2013) and
 many support 64-byte (AVX-512, 2017). Going wider doubles or
@@ -623,8 +620,8 @@ single-baseline build:
 AutoUpscale engaged: 854x480 -> 1920x1080 (... simd=default)
 ```
 
-**Portable build: `make MULTIVERSION=1`.** When you need a single
-binary that runs across CPU classes (e.g. distro packaging),
+**Multi-ISA build: `make MULTIVERSION=1`.** When you need one Linux x86-64
+binary across several CPU classes (for example distro packaging),
 `MULTIVERSION=1` compiles `usm_pool.c` three times at three baselines
 (SSE2 / AVX2 / AVX-512) into three separate `.o` files with renamed
 public symbols. A thin dispatcher in `src/usm_pool_dispatch.c` runs at
@@ -641,10 +638,10 @@ else
     /* point at *_sse2 entry points */
 ```
 
-Combine `MULTIVERSION=1` with a portable `MARCH` level (e.g.
-`x86-64-v3` for AVX2 baseline or `x86-64` for universal) so the rest
-of the plugin (autoupscale.c, scaler*.c) also runs on the older CPUs
-the dispatcher targets. The dispatch happens **once** at `dlopen`
+Combine `MULTIVERSION=1` with an appropriate Linux x86-64 ISA baseline
+(for example `x86-64-v3` for AVX2 or `x86-64` for SSE2) so the rest of
+the plugin (autoupscale.c, scaler*.c) uses a deployment-compatible baseline.
+The dispatch happens **once** at `dlopen`
 (before VLC's plugin scanner or `vlc-cache-gen` calls into the .so),
 so per-frame overhead is just one indirect call — about 1 ns on modern
 x86, negligible against the millisecond-scale work it dispatches. The
@@ -660,11 +657,12 @@ better codegen than per-function multi-versioning. The cost is binary
 size (~30 KB more for the extra two variants) and one extra .c file
 in the build.
 
-**Safety:** the AVX-512 variant's code section contains AVX-512
-instructions. The dispatcher's selection logic prevents that code
-from being executed on a CPU that doesn't support AVX-512, so
-holding a function pointer to it on an older CPU is safe — the
-dynamic linker only does relocations, no SIMD execution.
+**ISA guard limitation:** the AVX2 and AVX-512 objects are compiled at the full
+x86-64-v3 and x86-64-v4 levels, while the current selector checks only AVX2 or
+AVX-512F+BW. Those checks do not prove every feature the compiler may emit
+(notably the rest of the v3/v4 level). Until `PORT-6` is resolved, deploy a
+multi-versioned build only where the chosen variant's full ISA level is known
+to be available.
 
 Decoded MD5 is **byte-identical** across SSE2, AVX2, AVX-512 builds
 AND across MULTIVERSION=0/1 — the kernels do bytewise saturating
@@ -674,7 +672,7 @@ scalar reference build is preserved across all SIMD widths and
 both build modes.
 
 The plugin ships with the highest-quality defaults available (zimg +
-Spline36 + USM 30%) and watches its own per-frame processing time so it
+Spline36 + USM 20%) and watches its own per-frame processing time so it
 can tell the user when those defaults are too expensive for their
 hardware.
 
@@ -762,9 +760,10 @@ Plus the escape hatch: `--autoupscale-target-fps=0` to silence the hint.
 
 ## Threading
 
-The zimg backend slice-threads each frame: the destination is split into
-N horizontal stripes processed in parallel by a persistent worker pool.
-Default N = `cores/2 − 2`, clamped to `[1, 64]`. `cores` comes from the
+The zimg backend grid-threads each frame. Normal frames use horizontal
+stripes; very wide/short frames also split columns so the useful worker
+budget is not capped by output height. Default worker preference =
+`cores/2 − 2`, clamped to `[1, 64]`. `cores` comes from the
 calling thread's Linux affinity mask, so taskset and cgroup/cpuset limits
 are honored. The "/ 2" reserves half the available CPUs for VLC's main
 thread, decoder, encoder, audio, vout, and other libraries VLC pulls in;
@@ -777,22 +776,26 @@ topology snapshot supplies exact sparse CPU IDs when worker pinning is on.
 
 ### Architecture
 
-`Open()` is deliberately cheap — it validates the chroma, computes the
-worker grid, and saves parameters, so VLC's chain-solver probing doesn't pay
-for thread spawns or megabytes of scratch. On the **first `Filter()`** the
-backend lazily:
+`Open()` is deliberately cheap — it validates the chroma, computes an initial
+worker grid, and saves parameters, so VLC's chain-solver probing does not pay
+for thread spawns or megabytes of scratch. The first valid picture is checked
+against zimg's 32-byte direct-address and stride requirements. An unaligned
+side switches to aligned scratch before graphs exist; if source copy-in is
+needed, a column grid is recomputed as rows-only because column graphs require
+full-width direct source reads. The backend then lazily:
 
-1. Decides the worker grid from the user pref + detected core count:
-   `N_ROWS` horizontal stripes, and — only when a frame is too short for
-   stripes alone to use every thread (very wide/short) — `N_COLS` column
-   tiles as well (`up_decide_tile_grid`). For normal frames `N_COLS == 1`.
-2. Allocates page-aligned scratch only for a side that COPIES. With the
-   default both-sides zero-copy nothing is allocated; a column tile instead
-   gets its own small tile-sized dst scratch.
+1. Keeps the initial grid computed in `Open()` unless an unaligned source
+   requires copy-in, in which case it recomputes a rows-only grid. For normal
+   frames `N_COLS == 1`.
+2. Allocates aligned plane-I/O scratch only for a side that copies. With the
+   default both-sides zero-copy there is no shared plane scratch; each graph
+   still owns its required zimg temporary buffer, and column cells own a small
+   destination-tile scratch.
 3. Builds one `zimg_filter_graph` per grid cell, configured for that cell's
    sub-image — stripe height, and for a column tile a full-width source with
    an `active_region` cropping its column window (so zimg reads cross-
-   boundary halo and the column seams are exact). Dimensions align to 2 for
+   boundary source context). Independent column graphs can still restart
+   resize phase and produce bounded seam deltas. Dimensions align to 2 for
    chroma subsampling.
 4. Spawns the worker threads, which block on a shared condition variable.
 
@@ -800,23 +803,27 @@ If a completion-barrier wait fails, the pool is marked fatal, any dispatched
 generation is drained, and every worker is joined before the frame returns to
 its owner. Later calls fail without touching the picture.
 
-At each `Filter()` call the backend:
+At each `Filter()` call the backend first builds shared, crop-aware
+`picture_view` objects. They validate chroma, plane layout, pointers, pixel
+pitch, row extents, and negotiated source crop before any worker sees a
+pointer. Invalid geometry is transient and drops that frame. Later storage
+drift that violates an already-built direct graph's 32-byte contract is also
+transient. For a safe view the backend:
 
-1. **Copy-in** (only when `--autoupscale-zerocopy-src=0`): each worker
-   `memcpy`s its source stripe into scratch. With the default source
-   zero-copy, graphs read VLC's source picture directly.
+1. **Copy-in** (when selected explicitly with
+   `--autoupscale-zerocopy-src=0` or forced by first-frame alignment): each
+   worker `memcpy`s its source stripe into scratch. Otherwise graphs read
+   VLC's source picture directly.
 2. Points each worker at the current frame's planes, bumps a shared
    "generation" counter under a mutex, and wakes all workers with ONE
    `pthread_cond_broadcast` (SCAL-2 — was one `sem_post` per worker).
 3. Waits on a single "all done" semaphore: each worker decrements an atomic
    `pending` counter after its cell and the one that drives it to zero posts
    the semaphore — a counting barrier (was N `sem_wait`s).
-4. **Copy-out** (when `--autoupscale-zerocopy-dst=0`, and always for column
-   tiles): each worker `memcpy`s its result into VLC's output picture. With
-   the default dst zero-copy, a non-tiled graph writes VLC's picture directly.
-
-A per-frame pre-flight check (`zimg_pic_ok`) drops a malformed picture (null
-plane or pitch < width) before any worker reads or writes it.
+4. **Copy-out** (when selected explicitly with
+   `--autoupscale-zerocopy-dst=0`, forced by first-frame alignment, or required
+   for column tiles): each worker `memcpy`s its result into VLC's output
+   picture. Otherwise a non-tiled graph writes VLC's picture directly.
 
 At `Close()` the backend wakes every worker to exit (one broadcast), joins
 them, and frees.
@@ -845,17 +852,17 @@ We didn't fully isolate the root cause inside VLC's picture allocator
 couldn't reach it inside VLC's process before timing out on its own
 overhead). So the original design copied **both** sides through scratch
 and paid a few hundred MB/s of memory bandwidth for guaranteed correctness.
-That caution has since been relaxed on both sides — see below — behind a
-per-frame pre-flight guard, but either side can still be forced back to the
-copy path with its `--autoupscale-zerocopy-*=0` option.
+That caution has since been relaxed on both sides — see below — behind shared
+picture-view validation and direct-I/O alignment checks, but either side can
+still be forced back to the copy path with its
+`--autoupscale-zerocopy-*=0` option.
 
 ### Zero-copy on both sides
 
-The crash investigation specifically implicated VLC's source-pool
-buffers — the recycling pool managed by the upstream filter. The
-destination picture is different: it comes from `filter_NewPicture()` (a
-fresh per-output allocation, not pool-recycled), so the **destination** side
-was made zero-copy first:
+The crash investigation specifically implicated source buffers from the
+upstream picture pool. Destination zero-copy was enabled first after direct
+tests; correctness does not assume that `filter_NewPicture()` returns a fresh,
+non-recycled allocation:
 
 - Workers receive VLC's destination picture pointers (with VLC's pitch)
   per-frame instead of priv scratch pointers.
@@ -868,36 +875,34 @@ Byte-identical decoded MD5 between `zerocopy-dst=0` and `=1` (single- and
 multi-threaded) confirmed it pixel-correct, so it **defaults to 1 (on)**.
 The **source** side is the symmetric twin — graphs read VLC's source
 picture directly, `alloc_scratch_buffers()` skips the src allocation — and
-**defaults to 1 (on)** as well, guarded by a per-frame pre-flight check
-(`zimg_pic_ok`) that drops a malformed picture (null plane or pitch < width)
-before any out-of-bounds access. The one exception is a column tile, which
+**defaults to 1 (on)** as well, guarded by the shared crop-aware picture-view
+validation and zimg alignment check described above. The one exception is a
+column tile, which
 always copies its result out of a private tile scratch into the destination
 sub-rectangle.
 
-The four src×dst copy/zero-copy combinations are held **byte-identical** by
-`tests/test_scaler_zimg.c`, so correctness is independent of which path
-runs — including at N=1, where the default zero-copy means no extra memcpy
-versus single-graph zimg. Skipping the copy-out saves ~125 µs per 1080p
-frame (~0.8% of a 60 fps budget) and the copy-in a comparable amount. The
-failure mode if zero-copy misbehaves on some VLC build is garbled output or
-a crash rather than a soft fallback, so set the offending side back to the
-copy path with `--autoupscale-zerocopy-src=0` / `--autoupscale-zerocopy-dst=0`
+`tests/test_scaler_zimg.c` holds the four src×dst modes byte-identical when
+they retain the same row-only topology, including at N=1. On a wide/short
+frame, source copy-in disables column tiling and therefore changes the graph
+partition; any difference is governed by the seam bound below rather than by
+the copy itself. Skipping copy-out saves ~125 µs per 1080p frame in the
+recorded benchmark, and copy-in is a comparable frame-sized transfer. The
+validator prevents malformed geometry and unaligned direct I/O; it cannot
+prove every VLC pool-lifetime property. If a VLC build still misbehaves, set
+the offending side back to the copy path with
+`--autoupscale-zerocopy-src=0` / `--autoupscale-zerocopy-dst=0`
 (troubleshooting recipes in [USAGE.md](USAGE.md)).
 
 ### Stripe-boundary caveat
 
-Each horizontal stripe's graph resamples its own source rows with zimg's
-default *vertical* boundary handling, so a stripe boundary carries a
-sub-pixel phase rounding. Measured against the single-graph (`threads=1`)
-result it is ≤ a few code values out of 255 on real content — invisible;
-only synthetic high-frequency patterns make it measurable (the seam oracle
-in `tests/test_scaler_zimg.c` holds it ≤ 6, and `tests/fuzz_scaler_seam.c`
-checks it across random geometry). On stylized content with pixel-sharp
-horizontal lines a user who cares can drop to `--autoupscale-threads=1`.
-
-Column tiling does **not** add a horizontal counterpart: a column tile
-reads its source column window *with* cross-boundary halo via zimg's
-`active_region`, so vertical seams between column tiles are exact.
+Each independent row or column graph can restart resize phase and introduce a
+sub-pixel seam delta. Column `active_region` supplies cross-boundary source
+context but does not make separate graphs phase-identical. Measured against a
+single graph (`threads=1`), the standard zimg integration suite enforces a ≤6
+bound on its fixed cases. Synthetic high-frequency inputs make the effect more
+visible; the wider randomized seam harness has a known outlier tracked as
+`REL-9` in `TODO.md`. A user sensitive to these seams can set
+`--autoupscale-threads=1`.
 
 ## Why decision logic is in a header
 
@@ -910,35 +915,38 @@ includes it. The same code runs in all three places, which means:
 - Distro packagers can run `make test` in their build sandbox without
   pulling in `vlc-devel` for tests.
 
-The trade-off is that all helper functions are `static inline`. That's fine
-for this size of code — `upscale_logic.h` is under 200 lines.
+The trade-off is that all helper functions are `static inline`. That remains
+manageable for this small, dependency-free decision module.
 
 ## Testing strategy
 
-The project has three layers of correctness checking, each catching a
+The project has complementary layers of correctness checking, each catching a
 different class of bug:
 
 ### Unit tests — exact-value assertions
 
-188 tests across 11 suites in `tests/test_*.c`. Each test states a
-specific, predictable expected value. They run under AddressSanitizer
-+ UndefinedBehaviorSanitizer (`make test`), so memory errors and
-signed-overflow bugs are caught even when the asserted output happens
-to be correct.
+`make test` runs 14 executables under AddressSanitizer +
+UndefinedBehaviorSanitizer. Twelve reporting harnesses contain 221 named
+cases; the geometry-edge and picture-view executables add invariant sweeps
+that do not print case totals. Memory errors and signed-overflow bugs are
+caught even when the asserted output happens to be correct.
 
 | Suite                  | Count | Covers                                      |
 |------------------------|-------|---------------------------------------------|
-| `upscale_logic`        | 36    | preset dispatch (incl. all of 720p..8K), aspect math, ratio cap, AUTO ceiling, skip-above gating + boundary cases |
+| `upscale_logic`        | 39    | preset dispatch (incl. all of 720p..8K), aspect math, ratio cap, AUTO ceiling, skip-above gating + boundary cases |
 | `usm`                  | 17    | unsharp-mask single-thread reference        |
-| `perfmon`              | 11    | EWMA performance monitor + target_fps OOB   |
-| `threading`            | 11    | thread-count decision                       |
-| `zimg_helpers`         | 24    | stripe bounds, copy-plane, stripe-min sentinel |
+| `perfmon`              | 13    | EWMA performance monitor + saturating sample count + target_fps OOB |
+| `threading`            | 15    | allowed-CPU topology + thread-count decision |
+| `zimg_helpers`         | 28    | stripe/tile bounds, copy-plane, stripe-min sentinel |
 | `chroma_classify`      | 14    | opaque chroma list + cross-predicate invariant |
-| `usm_pool`             | 17    | threaded USM byte-identity vs single-thread + stripe_min_rows + lazy-init OOM |
-| `content_probe`        | 17    | source-content metrics + sharp-threshold gate boundaries |
-| `scaler_pick`          | 16    | backend selection logic + pref OOB          |
+| `usm_pool`             | 21    | threaded USM byte-identity, alias rules, stripe minimum, fatal drain, lazy-init OOM |
+| `content_probe`        | 19    | source-content metrics + advisory and sharp-threshold boundaries |
+| `scaler_pick`          | 24    | backend selection, enum normalization, open fallback + pref OOB |
+| `scaler_swscale`       | 6     | status mapping, crop-aware physical-plane descriptors |
 | `lifetime`             | 10    | resource lifetime / use-after-free          |
 | `usm_pool_variants`    | 15    | cross-SIMD-variant byte-equivalence (SSE2/AVX2/AVX-512) |
+| `geometry_edge`        | invariant | extreme-dimension overflow guards       |
+| `picture_view`         | invariant | crop/layout/extent validation across supported chromas |
 
 The `upscale_logic` suite includes targeted regression tests for design
 rules that aren't otherwise verifiable from output alone:
@@ -961,8 +969,10 @@ rules that aren't otherwise verifiable from output alone:
 
 ### Smoke fuzzers — deterministic mass testing
 
-`make fuzz-smoke` runs 10 standalone harnesses (`tests/fuzz_*.c` with
-`-DFUZZ_MAIN`) totalling 805k iterations under ASan + UBSan. Each
+`make fuzz-smoke` runs 13 standalone harnesses (`tests/fuzz_*.c` with
+`-DFUZZ_MAIN`) under ASan + UBSan. They execute 1,155,000 randomized
+iterations plus 1,889,568 exhaustive tile-grid boundary combinations — more
+than 3.044 million cases per run. Each
 fuzzer drives a single function (or a small combination of helpers)
 with deterministic xorshift32 random input and verifies a set of
 post-conditions (the "invariant checker").
@@ -975,9 +985,12 @@ post-conditions (the "invariant checker").
 | `threading`       | 100k      | thread-count decision                       |
 | `copy_plane`      |  50k      | stride-aware plane copy (memory-safety)     |
 | `stripe_bounds`   | 100k      | stripe partition math                       |
+| `decide_tile_grid`| 200k + 18⁵ exhaustive | row×column grid coverage and worker caps |
 | `frame_shape`     | 100k      | chroma classification + plane geometry + stripe partition together |
 | `scaler_chroma`   | 100k      | chroma fourcc → zimg backend mapping (the VLC-touching boundary) |
+| `scaler_open`     | 100k      | AUTO enum normalization + open fallback    |
 | `content_probe`   | 100k      | source-content metric reads (pointer arithmetic on bytes) — ASan |
+| `picture_view`    |  50k      | crop-aware plane offsets and storage bounds |
 | `usm_variants`    |   5k      | cross-SIMD-variant byte-equivalence (3 pools per iter under ASan) |
 
 `fuzz_upscale_logic` and `fuzz_frame_shape` use **biased input
@@ -990,16 +1003,19 @@ fill the remaining iterations to keep the chaos.
 
 ### libFuzzer — coverage-guided exploration
 
-`make fuzz` builds clang-libfuzzer targets that explore the input
+`make fuzz` builds 13 clang-libFuzzer targets that explore the input
 space using coverage-guided mutation. CI runs five targets for 60
-seconds each on every push (5 minutes total libFuzzer time):
+seconds each on pushes and pull requests targeting `main`/`develop`
+(5 minutes total libFuzzer time):
 `fuzz_upscale_logic`, `fuzz_usm`, `fuzz_frame_shape`,
 `fuzz_scaler_chroma`, and `fuzz_content_probe`. The harnesses share
 their invariant checker with the smoke fuzzers, so any bug found by
 libFuzzer is also a violation of an explicit, named property — not
 just a crash.
 
-**Corpora.** Four structured corpora ship with the repo:
+**Corpora.** Four structured corpora ship with the repo. Three feed CI
+directly (`upscale_logic`, `frame_shape`, and `scaler_chroma`); the USM
+variant corpus is for manual libFuzzer runs:
 
 - `tests/corpus/` — 16 seeds for `fuzz_upscale_logic`, 32 bytes each
   in the format `<iiiiII>` (src_w, src_h, skip_above, preset, cores,
@@ -1043,21 +1059,22 @@ passes unit tests, and *occasionally* produces wrong output — exactly
 the kind of bug TSan catches even when the pixels happen to match on
 this run.
 
-Tests/stress_usm_pool.c drives 19 configurations spanning the
+`tests/stress_usm_pool.c` drives 27 configurations spanning the
 interesting axes:
 
 - **Thread count saturation**: 64 workers on 32-line frames (which
   the pool clamps internally to height/8). Triggers the clamp logic.
 - **Common video paths**: 854×480 at 1, 2, 4, 8, 16, 32, 64 threads,
   plus 1920×1080 at 16 threads (the realistic end-user config).
-- **All USM amounts**: 0 (identity fast path, no thread spawn), 30
-  (default), 100, and 200 (max).
+- **USM amounts**: 0 (identity fast path, no thread spawn), 30
+  (representative nonzero), 100, and 200 (max). The production default is 20;
+  unit/fuzz tests cover it separately.
 - **Pathological aspects**: 8×1080 (tall narrow), 4096×8 (short wide
   — also triggers the height/8 clamp), odd dimensions like 853×479
   to flush odd-row handling.
-- **Single-threaded large frame**: 1 worker on 4096×2160 — exercises
-  the workspace allocator at scale and confirms the no-thread-spawn
-  path still produces identical output.
+- **Single-worker large frame**: 1 worker on 4096×2160 — exercises the
+  five-row scratch allocation at scale and confirms the single-worker
+  dispatch still produces identical output.
 
 Every frame's output is byte-compared against the single-threaded
 reference `up_usm_apply_plane`. **Bit-perfect match is required** —
@@ -1067,16 +1084,13 @@ pointers each call; a bug where workers cached stale source pointers
 would surface as "first frame matches, subsequent frames diverge."
 
 ThreadSanitizer instrumentation tracks every memory access and
-synchronization event. If there were a race on the workspace buffer
-(phase-1 writes vs phase-2 reads), or on the per-frame pointers, or
-on the worker's `result` field, TSan would flag it even when the
-output happens to be correct on this run. **Total: ~935 frames
-across 19 configs (`frame_mult=1`), zero TSan reports, zero divergence.**
+synchronization event. A race in halo publication, per-frame pointers,
+completion state, or worker results is reported even when the output happens
+to match. **Total: 1,325 frames across 27 configurations
+(`frame_mult=1`) per sanitizer run, zero TSan reports, zero divergence.**
 
-The CI job runs both builds end-to-end on every push. ASan+UBSan
-takes ~12 seconds, TSan ~52 seconds, so the full stress step adds
-about 70 seconds to CI — worth it for the confidence in the
-concurrency model.
+The CI job runs both ASan+UBSan and TSan builds on pushes and pull requests
+targeting `main`/`develop`.
 
 ### Fuzzer invariants
 
@@ -1171,18 +1185,18 @@ the pool against itself across configurations during development.
 
 ### Coverage
 
-`make coverage` builds a separate `cov/` test binary set with
+`make coverage` builds a separate `build/cov/` test binary set with
 `--coverage -fprofile-arcs -ftest-coverage`, runs them, then prints
-per-file gcov summaries via `scripts/coverage_report.sh`. The script
-fails the build if any tracked file falls below 80 % line coverage.
-Total tracked coverage at the time of writing is 94.6 %, with the
-lowest tracked file (`usm_pool.c`) at 90.6 %. `usm_pool.h` shows
-`-%` because it's a pure-API header (zero executable lines), not a
-coverage gap — see the project README for the explanation.
+per-file summaries via `scripts/coverage_report.sh` and per-function summaries
+via `scripts/coverage_per_function.sh`.
+The script fails the build if any tracked file or function falls below 80%
+line coverage, or if gcov data is missing or malformed. The current gate
+covers 840 of 842 tracked lines (99.8%) across 13 files; all 98 tracked
+functions meet the 80% minimum.
 
 The `make coverage` step is wired into the GitHub Actions CI job
-(`.github/workflows/ci.yml`) so any push that drops a tracked file
-below the 80 % threshold fails before merge.
+(`.github/workflows/ci.yml`) so a tracked file or function below the 80%
+threshold fails on pushes and pull requests targeting `main`/`develop`.
 
 ### Cyclomatic complexity
 

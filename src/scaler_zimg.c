@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
- * scaler_zimg.c - zimg backend with slice-threaded resampling
+ * scaler_zimg.c - zimg backend with grid-threaded resampling
  *****************************************************************************
- * Higher-quality alternative to swscale (Spline36 + tighter rounding) plus
- * slice threading: the output frame is split into N horizontal stripes and
- * processed in parallel by a persistent worker pool.
+ * Higher-quality alternative to swscale (Spline36 + tighter rounding) plus a
+ * persistent row×column worker grid. Normal frames use horizontal stripes;
+ * wide/short frames may add column cells.
  *
  * COPY-IN / COPY-OUT (zero-copy on each side, independently)
  *
- * Each side of the resample can either go through a persistent, page-aligned
- * scratch buffer or touch VLC's picture directly:
+ * Each side can go through persistent, 64-byte-aligned scratch or touch VLC's
+ * picture directly:
  *
  *   - SOURCE. Default `zerocopy-src=1`: each worker's graph reads VLC's
  *     source picture directly (no copy, no scratch src). `zerocopy-src=0`:
@@ -20,25 +20,29 @@
  *     the graph writes scratch and each worker copies its own dst stripe out
  *     to VLC's picture (PERF-5, parallel).
  *
- * So in the default config there is NO per-frame copy and no per-frame scratch
- * — worker graphs read and write VLC's pictures directly. Pointing graphs at
+ * In the default aligned row-only config there is no plane-I/O copy or scratch:
+ * worker graphs read and write VLC pictures directly. Column grids are the
+ * exception: each cell copies private destination-tile scratch out. Pointing graphs at
  * VLC's pool-managed buffers from worker threads was historically unreliable;
  * the dest zero-copy default proved the pattern works, source zero-copy is the
  * symmetric twin, and a shared per-frame picture view rejects malformed
- * geometry before dispatch. A crop that breaks zimg's 32-byte direct-buffer
- * alignment automatically uses aligned scratch I/O. Either side can also be
+ * geometry before dispatch. First-frame direct-I/O misalignment selects
+ * aligned scratch; later alignment drift drops that frame. Either side can be
  * set back to copy via its option if a particular VLC build misbehaves. The
- * four src×dst copy/zero-copy combinations are held byte-identical by the test
- * harness (tests/test_scaler_zimg.c).
+ * copy/zero-copy combinations are byte-identical when the worker grid stays
+ * the same. Source copy-in disables column tiling, so topology changes may
+ * retain bounded graph-seam deltas (tests/test_scaler_zimg.c).
  *
  * THREADING
  *
- * N persistent worker threads spawned at Open(), one per grid cell. The frame
+ * Up to N preferred persistent workers spawn lazily on the first valid frame,
+ * one per grid cell; geometry may yield fewer cells. The frame
  * is split into N_ROWS horizontal stripes; for frames too short for stripes
- * alone to use every thread (very wide / short), the grid also tiles N_COLS
+ * alone to use the worker preference (very wide / short), the grid also tiles N_COLS
  * columns (SCAL-3). A column tile reads the FULL-width source with zimg's
- * active_region cropping its column window (so zimg reads cross-boundary halo
- * — seam-free columns) and writes a per-worker tile-sized dst scratch that is
+ * active_region cropping its column window (so zimg reads cross-boundary
+ * source context, though independent graphs can retain bounded phase deltas)
+ * and writes a per-worker tile-sized dst scratch that is
  * copied into the destination sub-rectangle. With N_COLS == 1 this is the
  * plain row-stripe path, byte-for-byte. Each worker owns its zimg_filter_graph
  * and tmp buffer. Per-frame dispatch is O(1) syscalls on the
@@ -47,12 +51,11 @@
  * is a counting barrier — workers decrement an atomic "pending", the last
  * posting a single "all_done" sem the main thread waits on once. (Was N
  * sem_post + N sem_wait per frame.)
- * N is determined by up_threads_decide() in threading.h.
+ * up_threads_decide() sets the affinity-capped budget; up_decide_tile_grid()
+ * sets the effective grid size.
  *
- * Stripe-boundary caveat: each stripe's graph resamples independently
- * with zimg's default boundary handling. For natural video content the
- * effect is invisible; on stylized content with pixel-sharp horizontal
- * lines a user can fall back to --autoupscale-threads=1.
+ * Seam caveat: independent row/column graphs can retain bounded phase deltas.
+ * A user sensitive to them can set --autoupscale-threads=1.
  *
  * Supported chromas: I420, YV12, I422, I444. NV12/NV21/RGB go to swscale.
  *
@@ -187,8 +190,9 @@ typedef struct
     void              *tmp;
     size_t             tmp_size;
 
-    /* Cell geometry (constant after Open). A worker owns a row-stripe; with
-     * column tiling (SCAL-3) it also owns a column tile [src/dst_x_start ..
+    /* Cell geometry (constant after lazy initialization). A worker owns a
+     * row-stripe; with column tiling (SCAL-3) it also owns a column tile
+     * [src/dst_x_start ..
      * + src/dst_w). With n_cols==1 the column spans the full width. */
     int                src_y_start;   /* in luma rows */
     int                src_y_end;     /* in luma rows (copy-in stripe) */
@@ -207,7 +211,7 @@ typedef struct
      * which worker_copy_out_tile() places into the VLC dst sub-rectangle. */
     bool               col_tiled;
 
-    /* Per-worker I/O mode (constant after Open):
+    /* Per-worker I/O mode (constant after lazy initialization):
      *   copy_in  = !src_zerocopy: worker memcpys VLC src -> scratch src.
      *   copy_out = !dst_zerocopy: worker memcpys scratch dst -> VLC dst.
      * With zero-copy on the matching side, the zimg graph reads/writes the
@@ -216,8 +220,8 @@ typedef struct
     bool               copy_out;
 
     /* The buffers the zimg graph reads from / writes to. In a copy mode these
-     * point at the pool scratch (set at Open); in a zero-copy mode they are
-     * overwritten per frame with the VLC picture planes. */
+     * point at pool scratch (set during lazy init); in zero-copy mode they
+     * are overwritten per frame with the VLC picture planes. */
     plane_view_t       src;
     plane_view_t       dst;
     plane_buffer_t     tile_dst;
@@ -251,8 +255,8 @@ typedef struct
     unsigned          sub_w, sub_h;
 
     /* SCAL-3: worker grid. n_threads == n_rows * n_cols. n_cols > 1 (column
-     * tiling) engages only for frames too short for row-stripes alone to use
-     * every thread; then col_tiled forces source-direct read + per-tile dst
+     * tiling) engages only when row stripes cannot use the worker preference;
+     * then col_tiled forces source-direct read + per-tile dst
      * scratch. Otherwise n_cols == 1 and this is the row-stripe path. */
     int               n_rows, n_cols;
     bool              col_tiled;
@@ -261,16 +265,16 @@ typedef struct
     bool              pin_cpus;
     up_cpu_topology_t cpu_topology;
 
-    /* Scratch buffers + geometry. Sized + allocated on first Filter() call
-     * (lazy init), pinned for the plugin lifetime after that. Open() is
-     * kept cheap so VLC's chain solver can probe us without paying for 30
+    /* Scratch buffers + geometry. Layouts are sized in Open(); buffers are
+     * allocated on the first valid frame and retained for the plugin lifetime.
+     * Open() stays cheap so VLC's chain solver can probe us without paying for 30
      * worker thread spawns and 6 MB of scratch per probe. */
     plane_buffer_t    src;
     plane_buffer_t    dst;
     int               src_w, src_h, dst_w, dst_h;
 
     /* Lazy-init state. lazy_init_done is set by zimg_lazy_init() after
-     * the worker pool, scratch, and per-stripe graphs are constructed
+     * the worker pool, scratch, and per-cell graphs are constructed
      * successfully. lazy_init_failed sticks once the first attempt has
      * failed so we don't retry-allocate every frame. The algo and
      * log_obj are saved at Open() time so lazy_init can build graphs
@@ -530,7 +534,7 @@ static void *worker_main(void *arg)
     return NULL;
 }
 
-/* ---------- per-stripe graph builder ---------- */
+/* ---------- per-cell graph builder ---------- */
 
 /*
  * Build one cell's graph. `src_full_w` is the FULL source width of the buffer
@@ -599,12 +603,9 @@ static void zimg_close(scaler_ctx_t *ctx);
 /* Compute stripe bounds: see up_compute_stripe_bounds in zimg_helpers.h. */
 
 /*
- * Allocate the persistent scratch buffers (one per plane). The src side
- * (sy/su/sv) is always allocated - workers cannot read directly from
- * VLC's pool-managed source buffers (segfaults observed). The dst side
- * (dy/du/dv) is allocated only when dst_zerocopy is OFF; with zero-copy
- * enabled, workers write straight into VLC's destination picture and
- * the dst scratch is unused.
+ * Allocate persistent scratch buffers (one per plane) only for a side using
+ * copy I/O. Column cells own private destination-tile scratch instead of the
+ * shared destination buffer.
  *
  * Returns 0 on success, -1 on any allocation failure. Partial state is
  * freed by zimg_close via priv->src.* / priv->dst.*. CCN 4.
@@ -712,8 +713,8 @@ static void init_priv_geometry(zimg_priv_t *p, const scaler_ctx_t *ctx,
 }
 
 /*
- * Set up one stripe worker: stash geometry, build the per-stripe filter
- * graph, allocate its tmp buffer, init its semaphore, and spawn the
+ * Set up one grid worker: stash geometry, build its filter graph, allocate its
+ * temporary buffer, connect it to the shared dispatch gate, and spawn the
  * thread. Returns 0 on success, -1 on any failure (caller handles
  * cleanup of partial state via the worker's graph/tmp fields). CCN 5.
  */
@@ -817,8 +818,8 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
 }
 
 /*
- * Per-worker teardown primitive: release the graph, tmp buffer, semaphore,
- * and joined thread held by ONE worker slot. Idempotent — safe on a
+ * Per-worker teardown primitive: release the graph, temporary buffer, tile
+ * scratch, and joined thread held by one worker slot. Idempotent — safe on a
  * fully-constructed worker, a partially-constructed one, or a zeroed slot.
  *
  * `had_thread` lets the caller indicate whether the thread field is a
@@ -928,8 +929,8 @@ static int try_spawn_one_worker(zimg_priv_t *p, int i,
 /*
  * Construct all n_rows*n_cols grid cells. The grid (up_decide_tile_grid) makes
  * every cell >= stripe_min rows and >= col_min cols, so geometry never
- * degenerates; the only failure mode is an allocation / graph-build error,
- * which retrying with fewer workers wouldn't fix. Build-all-or-nothing: on any
+ * degenerates. Allocation, graph build, or thread creation can fail. This pool
+ * deliberately builds all-or-nothing rather than retrying a smaller grid: on any
  * cell failure, tear down the cells already built and report 0. The last row/
  * col always ends at dst_h/dst_w, so a full build covers the frame exactly.
  */
@@ -948,7 +949,7 @@ static void construct_workers(zimg_priv_t *p,
     *out_constructed = p->n_threads;
 }
 
-/* Diagnostic log emitted once at Open(). CCN 2. */
+/* Diagnostic log emitted once after successful lazy initialization. CCN 2. */
 static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
 {
     if (!log_obj) return;
@@ -969,12 +970,7 @@ static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
 }
 
 /*
- * Internal: bail out of zimg_open after the priv struct exists. Stashes
- * the partial priv on the context so zimg_close() can free what was
- * already allocated (scratch buffers, workers array, semaphore). CCN 1.
- */
-/*
- * Lazy initialization of the worker pool, scratch buffers, and per-stripe
+ * Lazy initialization of the worker pool, scratch buffers, and per-cell
  * filter graphs. Called on the first zimg_process() invocation rather
  * than from zimg_open().
  *
@@ -985,7 +981,7 @@ static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
  * settling on a working configuration. Each of those Open()/Close()
  * round trips spawning 30 worker threads + allocating 6 MB of scratch
  * is wasteful. Doing it lazily means VLC pays nothing for probes that
- * never produce a frame; only the first real Filter() call triggers
+ * never produce a frame; only the first valid Filter() picture triggers
  * the expensive setup.
  *
  * Returns 0 on success, -1 on any allocation/thread-spawn failure.
@@ -1039,7 +1035,7 @@ static int zimg_lazy_init(zimg_priv_t *p)
  * zimg_open: cheap setup only. Validates that we can handle the input
  * chroma, computes geometry and thread count, allocates the priv struct,
  * and returns. Does NOT spawn workers, allocate scratch, or build
- * per-stripe graphs - that all happens lazily on the first Filter()
+ * per-cell graphs - that all happens lazily on the first valid Filter()
  * call. See zimg_lazy_init() for rationale.
  */
 /* SYS-5: column tiles NEED source-direct reads (full-width active_region
@@ -1208,8 +1204,8 @@ static scaler_process_status_t zimg_dispatch_and_wait(zimg_priv_t *p)
 #define WORKER_VLC_DST_OFF  offsetof(stripe_worker_t, vlc_dst)
 
 /*
- * Lazy init on first frame: spawn workers, allocate scratch, build per-stripe
- * graphs — done once so VLC's chain solver can probe us cheaply during chain
+ * Lazy init on the first valid frame: spawn workers, allocate scratch, and
+ * build per-cell graphs — done once so VLC can probe us cheaply during chain
  * setup. Returns 0 if ready (already or just initialized), -1 on sticky
  * failure. Extracted to keep zimg_process at CCN <= 10. CCN 5.
  */
@@ -1219,12 +1215,12 @@ static int zimg_ensure_lazy_init(zimg_priv_t *p)
     if (p->lazy_init_failed) return -1;
     if (zimg_lazy_init(p) != 0) {
         p->lazy_init_failed = true;
-        /* OBS-2: the expensive setup ran at first frame, after the cheap
+        /* OBS-2: the expensive setup ran at the first valid frame, after cheap
          * Open() succeeded; say so once, else every frame drops silently. */
         if (p->log_obj_saved)
             msg_Err((vlc_object_t *)p->log_obj_saved,
-                    "zimg: worker/scratch init failed (%dx%d -> %dx%d); "
-                    "AutoUpscale will drop frames",
+                    "zimg: lazy backend init failed (%dx%d -> %dx%d); "
+                    "dropping this frame (AUTO may fall back)",
                     p->src_w, p->src_h, p->dst_w, p->dst_h);
         return -1;
     }

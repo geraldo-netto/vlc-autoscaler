@@ -11,8 +11,8 @@
  *         to height/8, exposing the clamp logic.
  *       * 1 thread on a 4096x2160 frame: tests single-worker path and
  *         large workspace allocation.
- *       * Common dims (854x480, 1920x1080) at thread counts in {1, 2,
- *         4, 8, 16, 32, 64} to cover all reasonable real-world configs.
+ *       * 854x480 at thread counts in {1, 2, 4, 8, 16, 32, 64}, plus
+ *         representative 1920x1080 configurations.
  *
  *   - Verifies BYTE-IDENTICAL output to the single-threaded reference
  *     up_usm_apply_plane() on every single frame, every config. If a
@@ -23,7 +23,7 @@
  *     stale frame pointers would surface as "first frame matches,
  *     subsequent frames diverge."
  *
- *   - Runs under TSan when built with `make stress-tsan`. TSan catches
+ *   - Runs under TSan as part of `make stress`. TSan catches
  *     races on the workspace, semaphores, and per-frame pointers even
  *     when the output happens to be correct on this run (which would
  *     otherwise mask intermittent races).
@@ -31,10 +31,7 @@
  *   - Exits non-zero on ANY divergence, including a single byte. No
  *     fuzziness in the comparison — we want bit-perfect agreement.
  *
- * Build (release):     make stress-usm-pool
- * Build with TSan:     make stress-usm-pool-tsan
- *
- * Both run automatically as part of `make stress`.
+ * `make stress` builds and runs the ASan+UBSan and TSan executables.
  *****************************************************************************/
 
 #include "../src/usm_pool.h"
@@ -244,8 +241,8 @@ int main(int argc, char **argv)
 
     /* Configurations covering the interesting axes:
      *   - thread count: 1, 2, 4, 8, 16, 32, 64
-     *   - width: 320, 854, 1920, 4096
-     *   - height: 32, 240, 480, 1080, 2160
+     *   - width: 8, 64, 128, 256, 853, 854, 855, 1920, 4096
+     *   - height: 8, 32, 64, 128, 479, 480, 481, 1080, 2160
      *
      * The pool clamps n_threads to height/8 internally, so configs
      * like "64 threads on 32-line frame" exercise the clamp.

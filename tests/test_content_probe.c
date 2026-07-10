@@ -3,9 +3,9 @@
  * test_content_probe.c - unit tests for the content-probe metrics
  *****************************************************************************
  * Tests three things:
- *   1. Laplacian variance: zero on flat plane, high on textured plane
+ *   1. Squared Laplacian response: zero on flat, high on texture
  *   2. Block-edge strength: zero on smooth plane, high on synthetic blocky
- *   3. Bypass decision: returns 1 only on (very soft AND very blocky)
+ *   3. Advisory decision: returns 1 only on (very soft AND very blocky)
  *****************************************************************************/
 
 #include "../src/content_probe.h"
@@ -50,24 +50,24 @@ static int g_failed_in_test = 0;
     } \
 } while (0)
 
-/* ---------- Laplacian variance ---------- */
+/* ---------- Squared Laplacian response ---------- */
 
 static void test_laplacian_flat_plane_zero(void)
 {
-    BEGIN("laplacian_variance: flat plane has zero variance");
+    BEGIN("laplacian energy: flat plane has zero response");
     int w = 64, h = 64;
     uint8_t buf[64 * 64];
     memset(buf, 128, sizeof buf);
     uint64_t n = 0;
     uint64_t sum = up_laplacian_variance(buf, w, w, h, &n);
     CHECK_EQ(sum, 0);
-    CHECK(n > 0);  /* did sample, just got zero variance */
+    CHECK(n > 0);  /* did sample, just got zero response */
     END();
 }
 
 static void test_laplacian_checkerboard_high(void)
 {
-    BEGIN("laplacian_variance: 1-pixel checkerboard has high variance");
+    BEGIN("laplacian energy: 1-pixel checkerboard has high response");
     int w = 64, h = 64;
     uint8_t buf[64 * 64];
     for (int y = 0; y < h; y++)
@@ -91,7 +91,7 @@ static void test_laplacian_checkerboard_high(void)
 
 static void test_laplacian_invalid_input(void)
 {
-    BEGIN("laplacian_variance: invalid inputs return 0");
+    BEGIN("laplacian energy: invalid inputs return 0");
     uint64_t n = 999;
     CHECK_EQ(up_laplacian_variance(NULL, 64, 64, 64, &n), 0);
     CHECK_EQ(n, 0);
@@ -179,11 +179,11 @@ static void test_block_edge_invalid_input(void)
     END();
 }
 
-/* ---------- Bypass decision ---------- */
+/* ---------- Advisory decision ---------- */
 
 static void test_bypass_too_few_frames(void)
 {
-    BEGIN("bypass: too few frames -> don't bypass");
+    BEGIN("advisory: too few frames -> no recommendation");
     up_probe_accum_t a = {0};
     a.frames = UP_PROBE_MIN_FRAMES - 1;
     a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
@@ -197,7 +197,7 @@ static void test_bypass_too_few_frames(void)
 
 static void test_bypass_clean_source_no_bypass(void)
 {
-    BEGIN("bypass: clean source (sharp + smooth) -> don't bypass");
+    BEGIN("advisory: clean source -> no recommendation");
     up_probe_accum_t a = {0};
     a.frames = 60;
     a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
@@ -213,7 +213,7 @@ static void test_bypass_clean_source_no_bypass(void)
 
 static void test_bypass_soft_only_no_bypass(void)
 {
-    BEGIN("bypass: very soft but not blocky -> don't bypass");
+    BEGIN("advisory: soft-only source -> no recommendation");
     up_probe_accum_t a = {0};
     a.frames = 60;
     a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
@@ -228,14 +228,14 @@ static void test_bypass_soft_only_no_bypass(void)
 
 static void test_bypass_blocky_only_no_bypass(void)
 {
-    BEGIN("bypass: blocky but sharp -> don't bypass (user still wants upscale)");
+    BEGIN("advisory: blocky-only source -> no recommendation");
     up_probe_accum_t a = {0};
     a.frames = 60;
     a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
     a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
     /* Sharp: lap mean 1500 — realistic grainy-band magnitude. Under the
      * old squared threshold (400² = 160000) this counted as "very soft"
-     * and bypassed on blockiness alone; regression for that bug. */
+     * and advised on blockiness alone; regression for that bug. */
     a.lap_sum = a.lap_samples * 1500ULL;
     /* Blocky: edge mean = 12 */
     a.edge_sum = a.edge_samples * 12;
@@ -245,7 +245,7 @@ static void test_bypass_blocky_only_no_bypass(void)
 
 static void test_bypass_soft_and_blocky_yes_bypass(void)
 {
-    BEGIN("bypass: very soft AND very blocky -> bypass");
+    BEGIN("advisory: soft AND blocky -> recommend disabling upscale");
     up_probe_accum_t a = {0};
     a.frames = 60;
     a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
@@ -260,7 +260,7 @@ static void test_bypass_soft_and_blocky_yes_bypass(void)
 
 static void test_bypass_soft_threshold_boundary(void)
 {
-    BEGIN("bypass: soft threshold is linear and exclusive at 400");
+    BEGIN("advisory: soft threshold is linear and exclusive at 400");
     up_probe_accum_t a = {0};
     a.frames = 60;
     a.lap_samples  = UP_PROBE_MIN_SAMPLES_PER_KIND * 10;
@@ -277,7 +277,7 @@ static void test_bypass_soft_threshold_boundary(void)
 
 static void test_bypass_null_input(void)
 {
-    BEGIN("bypass: NULL accumulator -> don't bypass (safe default)");
+    BEGIN("advisory: NULL accumulator -> no recommendation");
     CHECK_EQ(up_should_bypass_for_content(NULL), 0);
     END();
 }

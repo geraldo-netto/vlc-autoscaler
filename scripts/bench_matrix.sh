@@ -5,7 +5,7 @@
 set -eu
 BIN="${1:?bench binary path required}"
 FRAMES="${2:-100}"
-AMOUNT="${3:-30}"
+AMOUNT="${3:-20}"
 FILL="${4:-rand}"
 VARIANT="$(basename "$BIN")"
 

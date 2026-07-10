@@ -12,12 +12,11 @@ jobs:
     name: Build, test, fuzz-smoke, analyze
     runs-on: ubuntu-latest
     # GitHub Actions ubuntu-latest runners have inconsistent AVX-512
-    # availability — some have it, some don't. We pin MARCH=x86-64-v3
-    # (AVX2 baseline) for CI so the binaries run on every runner SKU.
-    # Local builds still default to MARCH=x86-64-v4 (AVX-512); the
-    # multi-versioned USM pool dispatches at runtime regardless of
-    # build baseline, so AVX-512 codegen IS exercised in CI through
-    # the variant .o files (test_usm_pool_variants gates per-CPU).
+    # availability — some have it, some don't. We pin the full
+    # MARCH=x86-64-v3 level for CI; every runner SKU supports that level.
+    # Local builds default to MARCH=native. CI's cross-variant test compiles
+    # dedicated SSE2/AVX2/AVX-512 objects even though the plugin build keeps
+    # MULTIVERSION=0; test_usm_pool_variants gates execution per CPU.
     env:
       MARCH: x86-64-v3
     steps:
@@ -60,10 +59,10 @@ jobs:
       - name: zimg backend invariants (ASan + UBSan)
         run: make test-zimg
 
-      - name: Smoke fuzz (100k iterations under ASan + UBSan)
+      - name: Smoke fuzz (13 fuzzers, >3.0M cases under ASan + UBSan)
         run: make fuzz-smoke
 
-      - name: Concurrency stress (usm_pool, ASan + TSan, ~70s)
+      - name: Concurrency stress (usm_pool, ASan + TSan)
         run: make stress
 
       - name: zimg backend stress (ASan + UBSan + TSan)

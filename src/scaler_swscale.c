@@ -2,7 +2,7 @@
 /*****************************************************************************
  * scaler_swscale.c — libswscale backend for the scaler interface
  *****************************************************************************
- * Universal fallback. Handles every chroma the plugin supports. Fast and
+ * Broad-coverage fallback. Handles every chroma the plugin supports. Fast and
  * well-tested but single-threaded per frame and slightly lower quality
  * than zimg's Spline36 on edges.
  *****************************************************************************/

@@ -216,7 +216,7 @@ static void test_identity_pool_strided_slow_path(void)
 
 static void test_typical_30pct(void)
 {
-    BEGIN("amount=30 (typical default): all worker counts byte-identical");
+    BEGIN("amount=30 (representative): all worker counts byte-identical");
     int amount = up_usm_amount_pct_to_q8(30);
     CHECK(run_compare(1, 1920, 1080, amount, 0xa) == 0);
     CHECK(run_compare(2, 1920, 1080, amount, 0xb) == 0);
@@ -497,10 +497,10 @@ static void test_create_stripe_min_rows_boundaries(void)
  *      re-attempting the allocation (the "sticky" contract)
  *   3. destroy cleanly without leaking the partial state
  *
- * Scratch is now only 3*width per worker (the old design allocated a
- * full width*height workspace), so a single worker on an INT_MAX-wide
- * frame is "only" ~6 GB and might succeed. We request many workers on a
- * very tall frame so 3 * n_threads * INT_MAX deterministically exceeds
+ * Scratch is five rows per worker (the old design allocated a full
+ * width*height workspace), so a single worker on an INT_MAX-wide frame is
+ * roughly 10 GB and might succeed. We request many workers on a very tall
+ * frame so 5 * n_threads * INT_MAX deterministically exceeds
  * the cap; create() keeps all of them because height/stripe_min is huge.
  * The scratch alloc fails before any worker thread is spawned.
  */
@@ -590,7 +590,7 @@ static void test_barrier_failure_drains_and_sticks(void)
  */
 static void test_spawn_pthread_create_fail_clean(void)
 {
-    BEGIN("lazy_init survives pthread_create failure and frees the slot's sem");
+    BEGIN("lazy_init survives pthread_create failure and frees the worker slot");
     enum { W = 64, H = 512 };
     struct rlimit old;
     if (getrlimit(RLIMIT_NPROC, &old) != 0) { END(); return; }

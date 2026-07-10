@@ -17,7 +17,8 @@
  *   - SIMD-specific arithmetic differences (none should exist for our
  *     bytewise clamped ops, but we verify rather than assume)
  *
- * Each variant is conditionally exercised based on actual CPU capability:
+ * Each variant is conditionally exercised using the dispatcher's current
+ * headline feature probes (the full v3/v4 guard gap is tracked as PORT-6):
  *   - SSE2 always (every x86_64 has it)
  *   - AVX2 if __builtin_cpu_supports("avx2")
  *   - AVX-512 if avx512f && avx512bw
@@ -201,24 +202,24 @@ static void test_amount_zero(void)
 static void test_typical_resolutions(void)
 {
     /* Real-world output sizes. */
-    BEGIN("480p, amount=76 (default), 2 workers");
-    check_one(2, 854, 480, 76, 0x12345678);
+    BEGIN("480p, amount=51 (default 20%), 2 workers");
+    check_one(2, 854, 480, 51, 0x12345678);
     END();
 
-    BEGIN("720p, amount=76, 2 workers");
-    check_one(2, 1280, 720, 76, 0x23456789);
+    BEGIN("720p, amount=51, 2 workers");
+    check_one(2, 1280, 720, 51, 0x23456789);
     END();
 
-    BEGIN("1080p, amount=76, 2 workers");
-    check_one(2, 1920, 1080, 76, 0x34567890);
+    BEGIN("1080p, amount=51, 2 workers");
+    check_one(2, 1920, 1080, 51, 0x34567890);
     END();
 
-    BEGIN("1440p, amount=76, 2 workers");
-    check_one(2, 2560, 1440, 76, 0x45678901);
+    BEGIN("1440p, amount=51, 2 workers");
+    check_one(2, 2560, 1440, 51, 0x45678901);
     END();
 
-    BEGIN("4K, amount=76, 2 workers");
-    check_one(2, 3840, 2160, 76, 0x56789012);
+    BEGIN("4K, amount=51, 2 workers");
+    check_one(2, 3840, 2160, 51, 0x56789012);
     END();
 }
 
