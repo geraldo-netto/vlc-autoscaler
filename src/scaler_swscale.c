@@ -107,20 +107,8 @@ static scaler_process_status_t sws_process( scaler_ctx_t *ctx,
     sws_priv_t *p = ctx->priv;
     if( !p ) return SCALER_PROCESS_FATAL;
 
-    const up_picture_region_t src_region = {
-        .coded_width = ctx->src_coded_w,
-        .coded_height = ctx->src_coded_h,
-        .x_offset = ctx->src_x_offset,
-        .y_offset = ctx->src_y_offset,
-        .width = ctx->src_w,
-        .height = ctx->src_h,
-    };
-    const up_picture_region_t dst_region = {
-        .coded_width = ctx->dst_w,
-        .coded_height = ctx->dst_h,
-        .width = ctx->dst_w,
-        .height = ctx->dst_h,
-    };
+    const up_picture_region_t src_region = up_scaler_src_region(ctx);
+    const up_picture_region_t dst_region = up_scaler_dst_region(ctx);
     up_picture_view_t src_view, dst_view;
     if( !up_picture_view_init( &src_view, src, ctx->chroma, &src_region )
      || !up_picture_view_init( &dst_view, dst, ctx->chroma, &dst_region ) )

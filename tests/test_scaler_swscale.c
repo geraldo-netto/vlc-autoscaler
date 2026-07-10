@@ -74,6 +74,28 @@ static scaler_ctx_t make_ctx(vlc_fourcc_t chroma, int algo)
     return ctx;
 }
 
+static void test_picture_regions(void)
+{
+    BEGIN("scaler context owns source and destination picture regions");
+    scaler_ctx_t ctx = make_ctx(VLC_CODEC_I420, UP_ALGO_LANCZOS);
+    ctx.src_coded_w = 352;
+    ctx.src_coded_h = 208;
+    ctx.src_x_offset = 16;
+    ctx.src_y_offset = 8;
+
+    const up_picture_region_t src = up_scaler_src_region(&ctx);
+    CHECK(src.coded_width == 352 && src.coded_height == 208);
+    CHECK(src.x_offset == 16 && src.y_offset == 8);
+    CHECK(src.width == ctx.src_w && src.height == ctx.src_h);
+
+    const up_picture_region_t dst = up_scaler_dst_region(&ctx);
+    CHECK(dst.coded_width == (unsigned)ctx.dst_w);
+    CHECK(dst.coded_height == (unsigned)ctx.dst_h);
+    CHECK(dst.x_offset == 0 && dst.y_offset == 0);
+    CHECK(dst.width == ctx.dst_w && dst.height == ctx.dst_h);
+    END();
+}
+
 static void test_supports(void)
 {
     BEGIN("supported chromas map; unknown chroma is rejected");
@@ -300,6 +322,7 @@ static void test_close_without_context(void)
 int main(void)
 {
     printf("Running scaler_swscale contract tests...\n");
+    test_picture_regions();
     test_supports();
     test_open_close_algorithms();
     test_process_status_and_forwarding();

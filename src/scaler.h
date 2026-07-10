@@ -17,6 +17,7 @@
 #include <vlc_common.h>
 #include <vlc_picture.h>
 
+#include "picture_view.h"
 #include "scaler_status.h"
 
 /* User-visible backend preference (do NOT renumber). */
@@ -61,6 +62,30 @@ typedef struct scaler_ctx_s
     vlc_fourcc_t            chroma;     /* same on input and output */
     vlc_object_t           *log_obj;    /* for msg_Dbg/msg_Warn */
 } scaler_ctx_t;
+
+static inline up_picture_region_t
+up_scaler_src_region(const scaler_ctx_t *ctx)
+{
+    return (up_picture_region_t) {
+        .coded_width = ctx->src_coded_w,
+        .coded_height = ctx->src_coded_h,
+        .x_offset = ctx->src_x_offset,
+        .y_offset = ctx->src_y_offset,
+        .width = ctx->src_w,
+        .height = ctx->src_h,
+    };
+}
+
+static inline up_picture_region_t
+up_scaler_dst_region(const scaler_ctx_t *ctx)
+{
+    return (up_picture_region_t) {
+        .coded_width = ctx->dst_w,
+        .coded_height = ctx->dst_h,
+        .width = ctx->dst_w,
+        .height = ctx->dst_h,
+    };
+}
 
 struct scaler_backend_s
 {

@@ -1272,25 +1272,12 @@ static bool zimg_frame_io_safe(const zimg_priv_t *p,
 }
 
 static bool zimg_frame_views_init(const scaler_ctx_t *ctx,
-                                  const zimg_priv_t *p,
                                   const picture_t *src, picture_t *dst,
                                   up_picture_view_t *src_view,
                                   up_picture_view_t *dst_view)
 {
-    const up_picture_region_t src_region = {
-        .coded_width = ctx->src_coded_w,
-        .coded_height = ctx->src_coded_h,
-        .x_offset = ctx->src_x_offset,
-        .y_offset = ctx->src_y_offset,
-        .width = p->src_w,
-        .height = p->src_h,
-    };
-    const up_picture_region_t dst_region = {
-        .coded_width = p->dst_w,
-        .coded_height = p->dst_h,
-        .width = p->dst_w,
-        .height = p->dst_h,
-    };
+    const up_picture_region_t src_region = up_scaler_src_region(ctx);
+    const up_picture_region_t dst_region = up_scaler_dst_region(ctx);
     return up_picture_view_init(src_view, src, ctx->chroma, &src_region)
         && up_picture_view_init(dst_view, dst, ctx->chroma, &dst_region);
 }
@@ -1314,7 +1301,7 @@ static scaler_process_status_t zimg_process(scaler_ctx_t *ctx,
     if (p->pool_broken) return SCALER_PROCESS_FATAL;
 
     up_picture_view_t src_view, dst_view;
-    if (!zimg_frame_views_init(ctx, p, src, dst, &src_view, &dst_view)) {
+    if (!zimg_frame_views_init(ctx, src, dst, &src_view, &dst_view)) {
         zimg_warn_bad_geometry(p);
         return SCALER_PROCESS_TRANSIENT;
     }

@@ -802,14 +802,7 @@ static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
 {
     const scaler_ctx_t *sc = &p_sys->scaler;
     up_picture_view_t view;
-    const up_picture_region_t region = {
-        .coded_width = sc->src_coded_w,
-        .coded_height = sc->src_coded_h,
-        .x_offset = sc->src_x_offset,
-        .y_offset = sc->src_y_offset,
-        .width = sc->src_w,
-        .height = sc->src_h,
-    };
+    const up_picture_region_t region = up_scaler_src_region(sc);
     if( !up_picture_view_init( &view, p_in, sc->chroma, &region ) )
         return;
 
@@ -896,14 +889,7 @@ static void ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
 
     const scaler_ctx_t *sc = &p_sys->scaler;
     up_picture_view_t view;
-    const up_picture_region_t region = {
-        .coded_width = sc->dst_w,
-        .coded_height = sc->dst_h,
-        .x_offset = 0,
-        .y_offset = 0,
-        .width = sc->dst_w,
-        .height = sc->dst_h,
-    };
+    const up_picture_region_t region = up_scaler_dst_region(sc);
     if( !up_picture_view_init( &view, p_out, sc->chroma, &region ) )
         return;
 
