@@ -68,6 +68,7 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdalign.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -85,10 +86,10 @@
 
 /*
  * Cache-line-aligned to prevent false sharing between adjacent workers.
- * Each worker writes to its own `sem_t.go.value` on every dispatch and
- * to its private scratch rows; without padding, two workers whose structs
- * share a 64-byte cache line would invalidate each other's lines on every
- * frame. _Alignas(64) both aligns each instance AND rounds sizeof up to a
+ * Each worker writes its own `seen_gen` on every dispatch and its private
+ * scratch rows; without padding, two workers whose structs share a
+ * 64-byte cache line would invalidate each other's lines on every frame.
+ * _Alignas(64) both aligns each instance AND rounds sizeof up to a
  * 64-byte multiple so an aligned_alloc'd array keeps the per-element
  * alignment.
  */
@@ -99,26 +100,38 @@ typedef struct usm_worker_s {
      * off neighboring workers' cache lines. C11 disallows _Alignas on a
      * typedef name itself, hence placing it here. */
     alignas(64) pthread_t  thread;
-    sem_t      go;
-    sem_t     *done;          /* shared, owned by pool */
     bool       thread_started;
-    bool       go_inited;
-    bool       should_exit;
+    bool       should_exit;   /* set under *go_lock (exit wake) */
+
+    /* Dispatch gate, shared across workers and owned by the pool — the
+     * same design as the zimg pool (SCAL-2): the main thread bumps
+     * *generation under *go_lock and wakes everyone with ONE
+     * pthread_cond broadcast; each worker sleeps until *generation
+     * advances past its own seen_gen. Completion is a counting barrier:
+     * each worker decrements *pending after its stripe; the one that
+     * drives it to zero posts *all_done, which the main thread waits on
+     * exactly once. */
+    pthread_mutex_t *go_lock;
+    pthread_cond_t  *go_cv;
+    uint64_t        *generation;   /* shared, guarded by *go_lock */
+    uint64_t         seen_gen;
+    atomic_int      *pending;
+    sem_t           *all_done;
 
     /* Per-worker constants set at lazy_init. */
     int        y_start, y_end;
     int        width, height;
     uint8_t   *scratch;       /* 3*width private rolling rows, owned by pool */
 
-    /* Per-frame state set by main thread before sem_post(go).
+    /* Per-frame state set by main thread before the dispatch.
      *
-     * The barrier that makes these reads race-free is the sem_post(go) /
-     * sem_wait(done) pair: the main thread writes every field below, then
-     * sem_post(go) (release); the worker sem_wait(go) (acquire) before
-     * reading them, runs, then sem_post(done) (release); the main thread
-     * sem_wait(done) (acquire) before the next frame. POSIX semaphores are
-     * full memory barriers, so plain (non-atomic) fields are correct as
-     * long as that post/wait handshake is preserved on every dispatch. */
+     * The fence that makes these reads race-free is the go gate: the
+     * main thread writes every field below, then bumps *generation under
+     * *go_lock (the unlock releases); the worker re-acquires *go_lock to
+     * observe the new generation before reading them. On the done side
+     * the worker's acq_rel fetch_sub on *pending plus the
+     * sem_post/sem_wait on *all_done publish its dst writes back to the
+     * main thread before the next frame's set_per_frame. */
     const uint8_t  *src;
     uint8_t        *dst;
     int             src_stride;
@@ -189,8 +202,16 @@ struct usm_pool_s {
     int            width, height;
 
     usm_worker_t  *workers;
-    sem_t          done;
-    bool           done_inited;
+
+    /* SCAL-2-style wake gate + counting done-barrier (see usm_worker_s). */
+    pthread_mutex_t go_lock;
+    pthread_cond_t  go_cv;
+    uint64_t        generation;     /* bumped per dispatch + on exit, under go_lock */
+    bool            go_gate_inited; /* destroy guard: mutex+cond init'd */
+    atomic_int      pending;        /* live workers this dispatch */
+    sem_t           all_done;       /* posted once when pending hits 0 */
+    bool            all_done_inited;
+
     uint8_t       *scratch;         /* 3*width per worker, contiguous block */
 
     bool           lazy_init_done;
@@ -198,9 +219,10 @@ struct usm_pool_s {
 };
 
 /* ===========================================================================
- * Worker thread main loop. Receives work via sem_post(&w->go) and signals
- * completion via sem_post(w->done). Exits cleanly when the main thread sets
- * should_exit = true and posts go.
+ * Worker thread main loop. Receives work via the shared generation gate
+ * (one broadcast per dispatch) and signals completion through the pending
+ * counting barrier. Exits cleanly when the main thread sets should_exit
+ * under go_lock and broadcasts.
  * =========================================================================*/
 
 /*
@@ -245,14 +267,31 @@ static void usm_worker_run(usm_worker_t *w)
     usm_worker_sweep(w);
 }
 
+/* Block until the main thread bumps *generation (new dispatch) or sets
+ * should_exit. Returns true to run a frame, false to exit the loop. The
+ * predicate loop absorbs spurious wakeups; no EINTR issue (pthread_cond_wait
+ * never returns it). */
+static bool usm_worker_wait_for_go(usm_worker_t *w)
+{
+    pthread_mutex_lock(w->go_lock);
+    while (*w->generation == w->seen_gen && !w->should_exit)
+        pthread_cond_wait(w->go_cv, w->go_lock);
+    bool run = !w->should_exit;
+    w->seen_gen = *w->generation;
+    pthread_mutex_unlock(w->go_lock);
+    return run;
+}
+
 static void *usm_worker_main(void *arg)
 {
     usm_worker_t *w = (usm_worker_t *)arg;
     for (;;) {
-        sem_wait(&w->go);
-        if (w->should_exit) break;
+        if (!usm_worker_wait_for_go(w)) break;
         usm_worker_run(w);
-        sem_post(w->done);
+        /* Last worker to finish posts all_done exactly once. acq_rel so
+         * the dst writes above join the release sequence on *pending. */
+        if (atomic_fetch_sub_explicit(w->pending, 1, memory_order_acq_rel) == 1)
+            sem_post(w->all_done);
     }
     return NULL;
 }
@@ -265,10 +304,16 @@ static void *usm_worker_main(void *arg)
  * spawned but not all), n_threads is shrunk to the actually-spawned count
  * and we proceed - the partition logic handles uneven counts.
  * =========================================================================*/
-static int usm_pool_init_done_sem(usm_pool_t *p)
+static int usm_pool_init_gate(usm_pool_t *p)
 {
-    if (sem_init(&p->done, 0, 0) != 0) return -1;
-    p->done_inited = true;
+    if (pthread_mutex_init(&p->go_lock, NULL) != 0) return -1;
+    if (pthread_cond_init(&p->go_cv, NULL) != 0) {
+        pthread_mutex_destroy(&p->go_lock);
+        return -1;
+    }
+    p->go_gate_inited = true;
+    if (sem_init(&p->all_done, 0, 0) != 0) return -1;
+    p->all_done_inited = true;
     return 0;
 }
 
@@ -302,7 +347,12 @@ static int usm_pool_alloc_scratch(usm_pool_t *p)
 static int usm_pool_spawn_worker(usm_pool_t *p, int i, int n)
 {
     usm_worker_t *w = &p->workers[i];
-    w->done      = &p->done;
+    w->go_lock    = &p->go_lock;
+    w->go_cv      = &p->go_cv;
+    w->generation = &p->generation;
+    w->seen_gen   = p->generation;  /* don't run a frame before the first dispatch */
+    w->pending    = &p->pending;
+    w->all_done   = &p->all_done;
     w->scratch   = p->scratch + (size_t)i
                  * (size_t)USM_POOL_SCRATCH_ROWS * (size_t)p->width;
     w->width     = p->width;
@@ -312,17 +362,8 @@ static int usm_pool_spawn_worker(usm_pool_t *p, int i, int n)
         ? p->height
         : (int)((int64_t)(i + 1) * p->height / n);
 
-    if (sem_init(&w->go, 0, 0) != 0) return -1;
-    w->go_inited = true;
-
-    if (pthread_create(&w->thread, NULL, usm_worker_main, w) != 0) {
-        /* sem_init succeeded but the thread did not start: destroy the
-         * semaphore here so the slot (which falls outside the shrunk
-         * n_threads and is therefore skipped by destroy) leaks nothing. */
-        sem_destroy(&w->go);
-        w->go_inited = false;
+    if (pthread_create(&w->thread, NULL, usm_worker_main, w) != 0)
         return -1;
-    }
     w->thread_started = true;
     return 0;
 }
@@ -384,7 +425,7 @@ static int usm_pool_lazy_init(usm_pool_t *p)
 {
     if (usm_pool_alloc_scratch(p) != 0) return -1;
     if (usm_pool_alloc_workers(p) != 0) return -1;
-    if (usm_pool_init_done_sem(p) != 0) return -1;
+    if (usm_pool_init_gate(p) != 0) return -1;
     return usm_pool_spawn_all(p);
 }
 
@@ -417,7 +458,8 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
 /*
  * Update each worker's per-frame state to point at the current src/dst
  * buffers and amount. Called by the main thread while workers are
- * blocked on their `go` semaphore - no synchronization needed.
+ * blocked on the go gate - no synchronization needed (the gate's mutex
+ * in usm_pool_run publishes these writes; see usm_worker_s).
  */
 static void usm_pool_set_per_frame(usm_pool_t *p,
                                    uint8_t *dst, int dst_stride,
@@ -436,16 +478,20 @@ static void usm_pool_set_per_frame(usm_pool_t *p,
 
 /*
  * Dispatch the (single) fused sweep to all workers and wait for all to
- * finish. Returns after the N-th sem_wait(&done), which means every worker
- * has completed its row range. One dispatch per frame (the old two-phase
- * design did two).
+ * finish — O(1) syscalls each way (SYS-1, mirrors the zimg pool's
+ * SCAL-2 design): arm the done-barrier, bump the generation once and
+ * wake every worker with a single broadcast; then one wait on the
+ * counting barrier's sem, posted by the last worker to finish.
  */
 static void usm_pool_run(usm_pool_t *p)
 {
-    for (int i = 0; i < p->n_threads; i++)
-        sem_post(&p->workers[i].go);
-    for (int i = 0; i < p->n_threads; i++)
-        sem_wait(&p->done);
+    pthread_mutex_lock(&p->go_lock);
+    atomic_store_explicit(&p->pending, p->n_threads, memory_order_relaxed);
+    p->generation++;
+    pthread_cond_broadcast(&p->go_cv);
+    pthread_mutex_unlock(&p->go_lock);
+
+    sem_wait(&p->all_done);
 }
 
 static int usm_pool_validate_args(const usm_pool_t *p,
@@ -496,28 +542,41 @@ int up_usm_pool_apply(usm_pool_t *p,
     return 0;
 }
 
+/* Tell every started worker to finish its loop: set should_exit on all of
+ * them and bump the generation under go_lock, then one broadcast wakes the
+ * whole pool. Workers read should_exit under the same lock, so the writes
+ * never race their reads. Pair with the join loop in destroy. */
+static void usm_pool_wake_all_for_exit(usm_pool_t *p)
+{
+    /* If the gate never initialized, no thread was ever spawned (spawn
+     * runs after gate init), so there is nothing to wake. */
+    if (!p->go_gate_inited) return;
+    pthread_mutex_lock(&p->go_lock);
+    for (int i = 0; i < p->n_threads; i++)
+        if (p->workers[i].thread_started)
+            p->workers[i].should_exit = true;
+    p->generation++;
+    pthread_cond_broadcast(&p->go_cv);
+    pthread_mutex_unlock(&p->go_lock);
+}
+
 void up_usm_pool_destroy(usm_pool_t *p)
 {
     if (!p) return;
 
     if (p->workers) {
-        /* Signal all started threads to exit. Workers that never
-         * started (partial init) have thread_started == false. */
-        for (int i = 0; i < p->n_threads; i++) {
-            if (p->workers[i].thread_started) {
-                p->workers[i].should_exit = true;
-                sem_post(&p->workers[i].go);
-            }
-        }
+        usm_pool_wake_all_for_exit(p);
         for (int i = 0; i < p->n_threads; i++) {
             if (p->workers[i].thread_started)
                 pthread_join(p->workers[i].thread, NULL);
-            if (p->workers[i].go_inited)
-                sem_destroy(&p->workers[i].go);
         }
         free(p->workers);
     }
-    if (p->done_inited) sem_destroy(&p->done);
+    if (p->all_done_inited) sem_destroy(&p->all_done);
+    if (p->go_gate_inited) {
+        pthread_cond_destroy(&p->go_cv);
+        pthread_mutex_destroy(&p->go_lock);
+    }
     free(p->scratch);
     free(p);
 }

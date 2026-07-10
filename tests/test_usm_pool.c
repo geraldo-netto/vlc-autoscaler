@@ -470,9 +470,9 @@ static void test_apply_lazy_init_oom_sticky(void)
 }
 
 /*
- * Exercise the pthread_create-failure cleanup in usm_pool_spawn_worker:
- * sem_init succeeds, then pthread_create fails and the slot's semaphore
- * must be destroyed (not leaked) before lazy_init reports failure. We
+ * Exercise the pthread_create-failure path in usm_pool_spawn_worker: the
+ * spawn loop must stop cleanly and shrink the pool (or fail sticky) with
+ * nothing leaked from the failed slot. We
  * force the failure by dropping RLIMIT_NPROC so new threads can't start.
  * Whether the pool comes up with a partial set or none at all, the result
  * must be clean under ASan (no leaked semaphores, no crash). The frame is
