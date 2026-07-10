@@ -69,7 +69,8 @@ static void fill_smooth(zt_pic_t *tp)
 }
 
 /* Resample one config with `threads` workers into `out`. Returns process rc
- * (0 ok), or -2 if allocation/open failed. */
+ * (0 ok), or -2 if allocation/open failed. The caller owns `out` only on
+ * SCALER_PROCESS_OK; every failure path frees it here. */
 static int resample(uint32_t chroma, int sw, int sh, int dw, int dh,
                     int threads, zt_pic_t *out)
 {
@@ -87,6 +88,7 @@ static int resample(uint32_t chroma, int sw, int sh, int dw, int dh,
         ctx.backend->close(&ctx);
     }
     zt_pic_free(&src);
+    if (rc != SCALER_PROCESS_OK) zt_pic_free(out);
     return rc;
 }
 
