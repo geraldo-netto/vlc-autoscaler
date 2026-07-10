@@ -288,20 +288,24 @@ static int same_cfg(const struct zcfg *c, const zt_pic_t *a, const zt_pic_t *b)
     return diff == 0;
 }
 
+/* szc=1 keeps column tiling eligible (REL-10): the tiled path's full-write
+ * and determinism are only exercised through the source-direct runs. */
 static void test_full_write(void)
 {
     BEGIN("full-write: every visible dst byte written (0x00 init == 0xFF init)");
     for (size_t i = 0; i < NCFG; i++) {
-        for (int zc = 0; zc < 2; zc++) {
-            zt_pic_t a, b;
-            int r0 = run_zimg(&CFGS[i], 0, zc, 0x00, 0xC0FFEEu, &a);
-            int r1 = run_zimg(&CFGS[i], 0, zc, 0xFF, 0xC0FFEEu, &b);
-            CHECK(r0 == SCALER_PROCESS_OK);
-            CHECK(r1 == SCALER_PROCESS_OK);
-            if (r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK)
-                CHECK(same_cfg(&CFGS[i], &a, &b));
-            zt_pic_free(&a);
-            zt_pic_free(&b);
+        for (int szc = 0; szc < 2; szc++) {
+            for (int zc = 0; zc < 2; zc++) {
+                zt_pic_t a, b;
+                int r0 = run_zimg(&CFGS[i], szc, zc, 0x00, 0xC0FFEEu, &a);
+                int r1 = run_zimg(&CFGS[i], szc, zc, 0xFF, 0xC0FFEEu, &b);
+                CHECK(r0 == SCALER_PROCESS_OK);
+                CHECK(r1 == SCALER_PROCESS_OK);
+                if (r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK)
+                    CHECK(same_cfg(&CFGS[i], &a, &b));
+                zt_pic_free(&a);
+                zt_pic_free(&b);
+            }
         }
     }
     END();
@@ -311,14 +315,16 @@ static void test_determinism(void)
 {
     BEGIN("determinism: same input twice -> identical output");
     for (size_t i = 0; i < NCFG; i++) {
-        zt_pic_t a, b;
-        int r0 = run_zimg(&CFGS[i], 0, 0, 0x00, 0xBEEF01u, &a);
-        int r1 = run_zimg(&CFGS[i], 0, 0, 0x00, 0xBEEF01u, &b);
-        CHECK(r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK);
-        if (r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK)
-            CHECK(same_cfg(&CFGS[i], &a, &b));
-        zt_pic_free(&a);
-        zt_pic_free(&b);
+        for (int szc = 0; szc < 2; szc++) {
+            zt_pic_t a, b;
+            int r0 = run_zimg(&CFGS[i], szc, 0, 0x00, 0xBEEF01u, &a);
+            int r1 = run_zimg(&CFGS[i], szc, 0, 0x00, 0xBEEF01u, &b);
+            CHECK(r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK);
+            if (r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK)
+                CHECK(same_cfg(&CFGS[i], &a, &b));
+            zt_pic_free(&a);
+            zt_pic_free(&b);
+        }
     }
     END();
 }
@@ -669,8 +675,9 @@ static void zt_pic_fill_smooth(zt_pic_t *tp)
 }
 
 /* Run one config with an explicit worker-thread count (overriding c->threads),
- * copy-out path, no zero-copy. Fills `out`. Returns 0 on success. Used by the
- * SCAL-3 seam oracle: threads=1 is the single-graph untiled reference.
+ * dst copy-out, src at the production default (source-direct, so column
+ * tiling stays eligible — REL-10). Fills `out`. Returns 0 on success. Used by
+ * the SCAL-3 seam oracle: threads=1 is the single-graph untiled reference.
  * smooth=1 uses a gradient (realistic), smooth=0 uses noise (worst case). */
 static int run_zimg_threads_in(const struct zcfg *c, int threads, int smooth,
                                uint32_t seed, zt_pic_t *out)
@@ -770,7 +777,9 @@ static void test_pin_cpus_matches(void)
     BEGIN("CPU pinning output byte-identical to unpinned (and race-free)");
     for (size_t i = 0; i < NCFG; i++) {
         zt_pic_t a, b;
-        int r0 = run_zimg(&CFGS[i], 0, 0, 0x00, 0xC0FFEEu, &a);
+        /* src_zc=1 matches run_zimg_pinned's default so both runs use the
+         * same (possibly column-tiled) grid — byte-identity requires it. */
+        int r0 = run_zimg(&CFGS[i], 1, 0, 0x00, 0xC0FFEEu, &a);
         int r1 = run_zimg_pinned(&CFGS[i], 0xC0FFEEu, &b);
         CHECK(r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK);
         if (r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK)

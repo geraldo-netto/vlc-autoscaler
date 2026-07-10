@@ -127,6 +127,10 @@ static inline void zt_ctx_init(scaler_ctx_t *ctx, uint32_t chroma,
     ctx->threads_pref       = threads;
     ctx->zimg.min_stripe_lines = 0;
     ctx->zimg.zerocopy      = zerocopy;
+    /* Production default (REL-10): source-direct reads keep column tiling
+     * eligible. Tests that need the copy-in / rows-only path override this
+     * explicitly after init. */
+    ctx->zimg.src_zerocopy  = 1;
     ctx->chroma             = chroma;
     ctx->log_obj            = NULL;
 }
