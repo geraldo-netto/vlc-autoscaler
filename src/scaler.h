@@ -46,11 +46,12 @@ typedef struct scaler_ctx_s
         int min_stripe_lines; /* 0 = use default 16; smaller = more workers
                                * fit on low-res frames (lower latency,
                                * worse load balance) */
-        int zerocopy;         /* 0 = copy-out (safe); 1 = write directly to
-                               * VLC dst picture (opt-in, not everywhere) */
-        int src_zerocopy;     /* 0 = copy-in to scratch (safe default); 1 =
-                               * read VLC src picture directly from worker
-                               * graphs (experimental, opt-in) */
+        int zerocopy;         /* 1 = write directly to VLC dst picture
+                               * (default); 0 = copy-out via scratch
+                               * (safety fallback) */
+        int src_zerocopy;     /* 1 = worker graphs read VLC src picture
+                               * directly (default); 0 = copy-in to
+                               * scratch (safety fallback) */
     }                       zimg;
 
     vlc_fourcc_t            chroma;     /* same on input and output */

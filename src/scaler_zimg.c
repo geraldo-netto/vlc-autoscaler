@@ -273,7 +273,8 @@ typedef struct
      * fields above are NOT allocated and are instead overwritten per
      * frame from the picture passed to zimg_process(). Skips the final
      * memcpy back from scratch -> VLC dst (~125 us/frame at 1080p).
-     * Opt-in via the autoupscale-zerocopy-dst module option; default off. */
+     * ON by default (autoupscale-zerocopy-dst); set the option to 0 to
+     * fall back to copy-out via scratch. */
     bool              dst_zerocopy;
 
     /* Source zero-copy: when true, worker graphs read the VLC source picture
