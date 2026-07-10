@@ -56,7 +56,6 @@ the pool; `lazy_init_done/failed` plain bools safe under VLC's documented serial
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| CPLX-1 | open | S | `src/scaler_zimg.c:1143-1161` — `point_workers_planes` selects the target member via raw `offsetof` + `char*` cast through the four `WORKER_*_OFF` macros (scaler_zimg.c:1198-1201), making per-frame data flow opaque at the call site. | Correct and documented; a small `zimg_worker_view_for(worker, side, zerocopy)` accessor expresses the same consolidation without pointer arithmetic. Do only when the file is touched anyway. |
 
 Lizard at HEAD: zero CCN>10 in 684 functions (max is exactly 10 in four functions, one an
 exempt flat switch); zero src/ functions over 7 params. The tri-site zero-copy/tiling state

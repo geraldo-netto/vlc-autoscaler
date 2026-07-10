@@ -1084,29 +1084,40 @@ static int zimg_open(scaler_ctx_t *ctx)
     return 0;
 }
 
-/*
- * Per-frame: copy one VLC picture's plane pointers + pitches into the
- * `plane_view_t` member of every worker selected by `member_off` (an offsetof
- * into stripe_worker_t — one of src / dst / vlc_src / vlc_dst). Drives all
- * four per-frame pointer-sets through one loop (DUP-7/PERF-6):
+/* Which of the worker's four plane views a VLC picture lands in, per
+ * side and zero-copy mode (CPLX-1: replaces offsetof selectors):
  *   src      ← VLC src  when src zero-copy (graph reads VLC src)
  *   vlc_src  ← VLC src  when copy-in       (worker copies VLC src -> scratch)
  *   dst      ← VLC dst  when dst zero-copy  (graph writes VLC dst)
  *   vlc_dst  ← VLC dst  when copy-out       (worker copies scratch -> VLC dst)
- * Workers are blocked on `go` while this runs, so the writes need no
- * synchronization. YV12 U/V are swapped via the plane-index map.
+ */
+typedef enum { WORKER_VIEW_SRC, WORKER_VIEW_DST } worker_view_side_e;
+
+static plane_view_t *worker_view_for(stripe_worker_t *w,
+                                     worker_view_side_e side, bool zerocopy)
+{
+    if (side == WORKER_VIEW_SRC)
+        return zerocopy ? &w->src : &w->vlc_src;
+    return zerocopy ? &w->dst : &w->vlc_dst;
+}
+
+/*
+ * Per-frame: copy one VLC picture's plane pointers + pitches into the
+ * selected `plane_view_t` of every worker. Drives all four per-frame
+ * pointer-sets through one loop (DUP-7/PERF-6). Workers are blocked on
+ * the gate while this runs, so the writes need no synchronization.
+ * YV12 U/V are swapped via the plane-index map.
  */
 static void point_workers_planes(zimg_priv_t *p,
                                   const up_picture_view_t *pic,
-                                  size_t member_off)
+                                  worker_view_side_e side, bool zerocopy)
 {
     const int swap = p->yv12_swap_uv;
     const int iy = 0;
     const int iu = up_zimg_plane_idx(1, swap);
     const int iv = up_zimg_plane_idx(2, swap);
     for (int i = 0; i < p->n_threads; i++) {
-        plane_view_t *view =
-            (plane_view_t *)((char *)&p->workers[i] + member_off);
+        plane_view_t *view = worker_view_for(&p->workers[i], side, zerocopy);
         view->data[PLANE_Y] = pic->plane[iy].pixels;
         view->data[PLANE_U] = pic->plane[iu].pixels;
         view->data[PLANE_V] = pic->plane[iv].pixels;
@@ -1146,12 +1157,6 @@ static scaler_process_status_t zimg_dispatch_and_wait(zimg_priv_t *p)
     }
     return SCALER_PROCESS_OK;
 }
-
-/* offsetof selectors for the per-frame plane-pointer targets. */
-#define WORKER_SRC_OFF      offsetof(stripe_worker_t, src)
-#define WORKER_DST_OFF      offsetof(stripe_worker_t, dst)
-#define WORKER_VLC_SRC_OFF  offsetof(stripe_worker_t, vlc_src)
-#define WORKER_VLC_DST_OFF  offsetof(stripe_worker_t, vlc_dst)
 
 /*
  * Lazy init on the first valid frame: spawn workers, allocate scratch, and
@@ -1260,10 +1265,8 @@ static scaler_process_status_t zimg_process(scaler_ctx_t *ctx,
 
     /* Per-frame plane pointers. On each side the graph touches the VLC
      * picture directly (zero-copy) or the workers copy via scratch. */
-    point_workers_planes(p, &src_view,
-        p->src_zerocopy ? WORKER_SRC_OFF : WORKER_VLC_SRC_OFF);
-    point_workers_planes(p, &dst_view,
-        p->dst_zerocopy ? WORKER_DST_OFF : WORKER_VLC_DST_OFF);
+    point_workers_planes(p, &src_view, WORKER_VIEW_SRC, p->src_zerocopy);
+    point_workers_planes(p, &dst_view, WORKER_VIEW_DST, p->dst_zerocopy);
 
     return zimg_dispatch_and_wait(p);
 }
