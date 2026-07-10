@@ -38,6 +38,8 @@
 #ifndef AUTOUPSCALE_THREADING_H
 #define AUTOUPSCALE_THREADING_H
 
+#include <errno.h>
+#include <semaphore.h>
 #include <unistd.h>     /* sysconf */
 
 /* User-visible thread-count preset (do NOT renumber). */
@@ -112,6 +114,24 @@ static inline int up_threads_decide(int user_pref, int total_cores)
     if (n < 1) n = 1;
 
     return n;
+}
+
+/*
+ * sem_wait with the standard EINTR retry (CON-3). Both worker pools use
+ * a counting done-barrier whose final sem_wait runs on VLC's video
+ * thread; libvlc embedders routinely install non-SA_RESTART signal
+ * handlers, and an EINTR'd wait returning early would let Filter() hand
+ * a picture downstream while workers are still writing it.
+ *
+ * Returns 0 on success. Any non-EINTR failure (EINVAL: destroyed/corrupt
+ * sem) returns -1 — the caller must FAIL the dispatch, not proceed with
+ * the barrier broken.
+ */
+static inline int up_sem_wait_nointr(sem_t *s)
+{
+    int rc;
+    do { rc = sem_wait(s); } while (rc == -1 && errno == EINTR);
+    return rc;
 }
 
 #endif /* AUTOUPSCALE_THREADING_H */

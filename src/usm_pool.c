@@ -37,6 +37,7 @@
 
 #include "usm_pool.h"
 #include "usm.h"
+#include "threading.h"
 
 /*
  * Multi-versioning support: when this TU is compiled with -DUSM_VARIANT=name,
@@ -526,9 +527,12 @@ static void usm_pool_set_per_frame(usm_pool_t *p,
  * finish — O(1) syscalls each way (SYS-1, mirrors the zimg pool's
  * SCAL-2 design): arm the done-barrier, bump the generation once and
  * wake every worker with a single broadcast; then one wait on the
- * counting barrier's sem, posted by the last worker to finish.
+ * counting barrier's sem, posted by the last worker to finish. Returns
+ * 0 once every worker completed, -1 on a broken barrier wait (CON-3:
+ * EINTR is retried inside up_sem_wait_nointr; anything else means the
+ * sem itself is invalid and the caller must not touch dst).
  */
-static void usm_pool_run(usm_pool_t *p)
+static int usm_pool_run(usm_pool_t *p)
 {
     pthread_mutex_lock(&p->go_lock);
     atomic_store_explicit(&p->pending, p->n_threads, memory_order_relaxed);
@@ -536,7 +540,7 @@ static void usm_pool_run(usm_pool_t *p)
     pthread_cond_broadcast(&p->go_cv);
     pthread_mutex_unlock(&p->go_lock);
 
-    sem_wait(&p->all_done);
+    return up_sem_wait_nointr(&p->all_done);
 }
 
 static int usm_pool_validate_args(const usm_pool_t *p,
@@ -587,8 +591,7 @@ int up_usm_pool_apply(usm_pool_t *p,
     if (usm_pool_ensure_init(p) != 0) return -1;
 
     usm_pool_set_per_frame(p, dst, dst_stride, src, src_stride, amount_q8);
-    usm_pool_run(p);
-    return 0;
+    return usm_pool_run(p);
 }
 
 /* Tell every started worker to finish its loop: set should_exit on all of

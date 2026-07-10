@@ -56,7 +56,6 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| CON-3 | open | S | Unchecked `sem_wait` return at the two remaining barrier sites (both main-thread, both `all_done` counting-barrier waits): `usm_pool.c` `usm_pool_run` and `scaler_zimg.c:1099` `zimg_dispatch_and_wait`. `sem_wait` fails with `EINTR` when a signal handler interrupts it; an EINTR'd wait returns early while workers are still writing the (default zero-copy) VLC dst picture, which `Filter()` then hands downstream / releases → use-after-free writes. | The worker sides of BOTH pools are now immune (`pthread_cond_wait` predicate loops, no EINTR) after SYS-1 ported the zimg gate to the USM pool — the original worker-side spurious-frame/skewed-barrier failure modes are gone by construction. Not reproducible under TSan/stress (no signal delivered mid-wait), plausible in production: libvlc embedders routinely install non-`SA_RESTART` handlers and worker threads inherit an open signal mask. Fix (S): `while (sem_wait(s) == -1 && errno == EINTR) {}` at both sites (needs `<errno.h>`); on any other error, fail the dispatch rather than proceed. |
 | (none open beyond CON-3) | | | CON-2 RESOLVED by contract doc: the non-atomic `lazy_init_done`/`lazy_init_failed` check-then-act is sound under VLC's serial-per-instance `Filter()` contract, now stated at the field declaration with the pthread_once/`_Atomic` escape hatch if the scaler is ever shared across threads within one instance. | |
 
 ## code complexity

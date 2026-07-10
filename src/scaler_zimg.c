@@ -1097,7 +1097,11 @@ static int zimg_dispatch_and_wait(zimg_priv_t *p)
     pthread_cond_broadcast(&p->go_cv);
     pthread_mutex_unlock(&p->go_lock);
 
-    sem_wait(&p->all_done);   /* done side: one wait (counting barrier) */
+    /* Done side: one wait on the counting barrier. CON-3: EINTR retried
+     * inside; a real failure means the barrier is broken and the frame
+     * must be dropped — workers may still be writing dst. */
+    if (up_sem_wait_nointr(&p->all_done) != 0)
+        return -1;
     for (int i = 0; i < p->n_threads; i++) {
         if (p->workers[i].result != 0) return -1;
     }
