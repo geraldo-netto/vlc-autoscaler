@@ -328,10 +328,7 @@ static void *usm_worker_main(void *arg)
 static int usm_pool_init_gate(usm_pool_t *p)
 {
     if (pthread_mutex_init(&p->go_lock, NULL) != 0) return -1;
-    if (pthread_cond_init(&p->go_cv, NULL) != 0) {
-        pthread_mutex_destroy(&p->go_lock);
-        return -1;
-    }
+    if (pthread_cond_init(&p->go_cv, NULL) != 0) { pthread_mutex_destroy(&p->go_lock); return -1; }
     p->go_gate_inited = true;
     if (sem_init(&p->all_done, 0, 0) != 0) return -1;
     p->all_done_inited = true;
