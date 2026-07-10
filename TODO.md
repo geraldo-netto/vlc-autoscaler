@@ -32,7 +32,6 @@ implemented and tested; `git log` is the durable completion record.
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| UB-8 | open | S | `up_copy_plane` does not reject negative or undersized strides; they reach `size_t` pointer arithmetic and potentially out-of-bounds `memcpy` despite the helper's negative-input no-op contract (`src/zimg_helpers.h:128-147`). | Return early when either stride is non-positive or smaller than `row_bytes`. Extend `fuzz_copy_plane.c`, which currently normalizes strides upward at lines 56-67, and the unit tests to cover signed and undersized strides. Production callers currently pass validated views. |
 | UB-9 | open | S | Both benchmarks use `atoi` and five smoke runners use `atol`; out-of-range text has undefined behavior, negative iteration counts can report false-green zero randomized iterations, and `bench_scaler_zimg` accepts `INT_MAX` dimensions that overflow `zt_align_up(v + 63)` (`tests/zimg_test_util.h:41-44`). | Use one checked `strtol` parser with `errno`, end-pointer, and destination-range validation in the affected tools; cap zimg dimensions before alignment and reject non-positive iteration counts. Evidence: `bench_usm_pool.c:56-76`, `bench_scaler_zimg.c:36-60`, and the `atol` calls in `fuzz_copy_plane`, `fuzz_perfmon`, `fuzz_picture_view`, `fuzz_threading`, and `fuzz_stripe_bounds`. |
 
 ## memory management

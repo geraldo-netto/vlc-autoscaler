@@ -40,14 +40,15 @@ struct plane_params {
     int dst_stride;
 };
 
-/* Parse 4 uint16 from fuzz input, modulo into clamped plane geometry.
+/* Parse sizes and signed strides from fuzz input into bounded geometry.
  * Returns 0 on success, -1 if input too small. */
 static int parse_params(const uint8_t *data, size_t size,
                         struct plane_params *p)
 {
     if (size < 4 * sizeof(uint16_t)) return -1;
 
-    uint16_t r0, r1, r2, r3;
+    uint16_t r0, r1;
+    int16_t r2, r3;
     memcpy(&r0, data + 0, sizeof r0);
     memcpy(&r1, data + 2, sizeof r1);
     memcpy(&r2, data + 4, sizeof r2);
@@ -55,17 +56,25 @@ static int parse_params(const uint8_t *data, size_t size,
 
     p->rows       = (int)(r0 % (MAX_ROWS + 1));
     p->row_bytes  = (int)(r1 % (MAX_BYTES + 1));
-    p->src_stride = (int)(r2 % (MAX_STRIDE + 1));
-    p->dst_stride = (int)(r3 % (MAX_STRIDE + 1));
-
-    /* Strides must be at least row_bytes; if they're not, copy_plane
-     * would read/write past the row width into the padding region of the
-     * next row, which is fine for memory safety BUT means our "padding
-     * preserved" check below isn't meaningful. So clamp src/dst_stride
-     * up to row_bytes for a clean test. */
-    if (p->src_stride < p->row_bytes) p->src_stride = p->row_bytes;
-    if (p->dst_stride < p->row_bytes) p->dst_stride = p->row_bytes;
+    p->src_stride = (int)r2 % (MAX_STRIDE + 1);
+    p->dst_stride = (int)r3 % (MAX_STRIDE + 1);
     return 0;
+}
+
+static int geometry_valid(const struct plane_params *p)
+{
+    return p->rows > 0 && p->row_bytes > 0
+        && p->src_stride >= p->row_bytes
+        && p->dst_stride >= p->row_bytes;
+}
+
+static int check_invalid_geometry_noop(const struct plane_params *p)
+{
+    const uint8_t src = 0x5A;
+    uint8_t dst = 0xC3;
+    up_copy_plane(&dst, p->dst_stride, &src, p->src_stride,
+                  p->row_bytes, p->rows);
+    return dst != 0xC3;
 }
 
 /* Allocate exactly rows*stride bytes — no slack — so an out-of-bounds
@@ -139,6 +148,7 @@ static int run_one(const uint8_t *data, size_t size)
 {
     struct plane_params p;
     if (parse_params(data, size, &p) < 0) return 0;
+    if (!geometry_valid(&p)) return check_invalid_geometry_noop(&p);
 
     uint8_t *src = NULL, *dst = NULL;
     size_t src_size = 0, dst_size = 0;

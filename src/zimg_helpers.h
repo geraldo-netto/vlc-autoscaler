@@ -129,14 +129,16 @@ static inline int up_zimg_plane_idx(int idx, int swap)
  * copy_plane: memcpy `rows` rows of `row_bytes` bytes each, from src
  * (stride src_stride) to dst (stride dst_stride). When the strides are
  * equal AND match the row size, falls through to a single memcpy of the
- * whole block. Negative inputs are no-ops; null pointers with positive
- * sizes are undefined behaviour (caller must validate).
+ * whole block. Non-positive sizes and strides smaller than the row width are
+ * no-ops; null pointers with otherwise valid geometry are undefined behaviour
+ * (caller must validate).
  */
 static inline void up_copy_plane(uint8_t *dst, int dst_stride,
                                  const uint8_t *src, int src_stride,
                                  int row_bytes, int rows)
 {
     if (rows <= 0 || row_bytes <= 0) return;
+    if (dst_stride < row_bytes || src_stride < row_bytes) return;
     if (dst_stride == src_stride && row_bytes == src_stride) {
         memcpy(dst, src, (size_t)rows * (size_t)row_bytes);
         return;

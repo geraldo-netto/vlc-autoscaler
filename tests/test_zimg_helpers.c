@@ -274,15 +274,24 @@ static void test_copy_plane_zero_row_bytes(void)
 
 static void test_copy_plane_negative_inputs(void)
 {
-    BEGIN("copy_plane: negative rows/row_bytes is no-op");
+    BEGIN("copy_plane: invalid sizes and strides are no-ops");
     uint8_t dst[16];
-    memset(dst, 0xAA, 16);
     uint8_t src[16];
     memset(src, 0x55, 16);
+    memset(dst, 0xAA, 16);
     up_copy_plane(dst, 8, src, 8, -1, 1);
     for (int i = 0; i < 16; i++) CHECK_EQ(dst[i], 0xAA);
     up_copy_plane(dst, 8, src, 8, 8, -1);
     for (int i = 0; i < 16; i++) CHECK_EQ(dst[i], 0xAA);
+
+    const int strides[][2] = {
+        { -1, 8 }, { 8, -1 }, { 0, 8 }, { 8, 0 }, { 7, 8 }, { 8, 7 },
+    };
+    for (size_t i = 0; i < sizeof strides / sizeof *strides; i++) {
+        memset(dst, 0xAA, sizeof dst);
+        up_copy_plane(dst, strides[i][0], src, strides[i][1], 8, 2);
+        for (size_t j = 0; j < sizeof dst; j++) CHECK_EQ(dst[j], 0xAA);
+    }
     END();
 }
 
