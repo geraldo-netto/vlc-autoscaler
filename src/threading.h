@@ -2,12 +2,12 @@
 /*****************************************************************************
  * threading.h - pure thread-count decision logic for AutoUpscale
  *****************************************************************************
- * Header-only with zero VLC/FFmpeg deps. Two functions:
+ * Header-only with zero VLC/FFmpeg deps. Core helpers:
  *
- *   up_detect_cores(): wraps sysconf(_SC_NPROCESSORS_ONLN), clamps the
- *     result into [1, sane upper bound], returns int. Single source of
- *     truth — both DetectHardware (autoupscale.c) and the zimg backend
- *     call this so they can't drift.
+ *   up_detect_cpu_topology(): reads the process affinity mask and returns
+ *     both its usable CPU count and exact CPU IDs for optional pinning.
+ *     sysconf(_SC_NPROCESSORS_ONLN) is only a fallback when affinity lookup
+ *     fails. up_detect_cores() is the count-only wrapper.
  *
  *   up_threads_decide(): pure logic that maps a user preference + a
  *     detected core count to a worker-count decision. Unit-tested.
@@ -30,8 +30,7 @@
  * escape hatch for users who measured otherwise.
  *
  * Why int (not long)? UP_THREADS_MAX is 64. Anything larger gets
- * clamped. up_detect_cores narrows sysconf's long return to int after
- * the clamping check. Inside up_threads_decide, plain int is enough
+ * clamped before narrowing. Inside up_threads_decide, plain int is enough
  * and more honest about the actual range.
  *****************************************************************************/
 
@@ -39,7 +38,10 @@
 #define AUTOUPSCALE_THREADING_H
 
 #include <errno.h>
+#include <limits.h>
+#include <sched.h>
 #include <semaphore.h>
+#include <sys/types.h>
 #include <unistd.h>     /* sysconf */
 
 /* User-visible thread-count preset (do NOT renumber). */
@@ -49,22 +51,92 @@
  * would also need to worry about address-space fragmentation from many
  * tmp buffers. 64 is generous and sane. */
 #define UP_THREADS_MAX    64
+#define UP_CPU_COUNT_MAX  (UP_THREADS_MAX * 4)
+#define UP_CPU_ID_LIMIT   8192
+
+typedef struct
+{
+    int allowed_count;
+    int pin_count;
+    int pin_ids[UP_THREADS_MAX];
+} up_cpu_topology_t;
+
+static inline int up__clamp_core_count(long count)
+{
+    if (count <= 0) return 1;
+    if (count > UP_CPU_COUNT_MAX) return UP_CPU_COUNT_MAX;
+    return (int)count;
+}
+
+static inline int up_cpu_topology_from_set(up_cpu_topology_t *topology,
+                                            const cpu_set_t *set,
+                                            size_t set_size)
+{
+    if (topology == NULL) return 0;
+    *topology = (up_cpu_topology_t){ 0 };
+    if (set == NULL) return 0;
+
+    size_t scan_limit = set_size > UP_CPU_ID_LIMIT / CHAR_BIT
+        ? UP_CPU_ID_LIMIT : set_size * CHAR_BIT;
+    for (size_t cpu = 0; cpu < scan_limit; cpu++) {
+        if (!CPU_ISSET_S(cpu, set_size, set)) continue;
+        if (topology->pin_count < UP_THREADS_MAX)
+            topology->pin_ids[topology->pin_count++] = (int)cpu;
+        if (topology->allowed_count < UP_CPU_COUNT_MAX)
+            topology->allowed_count++;
+    }
+    return topology->allowed_count;
+}
+
+typedef int (*up_getaffinity_fn)(pid_t, size_t, cpu_set_t *);
+typedef long (*up_sysconf_fn)(int);
 
 /*
- * Detect the number of online CPU cores. Returns int in [1, INT_MAX/4];
- * never returns 0 or negative. If sysconf fails (very rare), returns 1.
+ * Detect CPUs available to this process. The allowed count is clamped into
+ * [1, 4*UP_THREADS_MAX], and up to UP_THREADS_MAX exact IDs are retained for
+ * worker pinning. If sched_getaffinity fails, the count falls back to the
+ * host-wide online count and no pin IDs are exposed.
  *
  * The 4*UP_THREADS_MAX cap defends against absurdly large values that
  * could overflow downstream arithmetic (`/2 - 2`, etc.); 256 is far
  * above any realistic CPU count this decade and well above what we'd
  * ever spawn workers for.
  */
+static inline void up_detect_cpu_topology_with(up_cpu_topology_t *topology,
+                                                up_getaffinity_fn getaffinity,
+                                                up_sysconf_fn getcores)
+{
+    if (topology == NULL) return;
+    *topology = (up_cpu_topology_t){ 0 };
+
+    size_t set_size = CPU_ALLOC_SIZE(UP_CPU_ID_LIMIT);
+    cpu_set_t *set = CPU_ALLOC(UP_CPU_ID_LIMIT);
+    if (set != NULL) {
+        CPU_ZERO_S(set_size, set);
+        if (getaffinity != NULL &&
+            getaffinity(0, set_size, set) == 0 &&
+            up_cpu_topology_from_set(topology, set, set_size) > 0) {
+            CPU_FREE(set);
+            return;
+        }
+        CPU_FREE(set);
+    }
+
+    long fallback = getcores != NULL ? getcores(_SC_NPROCESSORS_ONLN) : 1;
+    topology->allowed_count = up__clamp_core_count(fallback);
+    topology->pin_count = 0;
+}
+
+static inline void up_detect_cpu_topology(up_cpu_topology_t *topology)
+{
+    up_detect_cpu_topology_with(topology, sched_getaffinity, sysconf);
+}
+
 static inline int up_detect_cores(void)
 {
-    long c = sysconf(_SC_NPROCESSORS_ONLN);
-    if (c <= 0) return 1;
-    if (c > UP_THREADS_MAX * 4) return UP_THREADS_MAX * 4;
-    return (int)c;
+    up_cpu_topology_t topology;
+    up_detect_cpu_topology(&topology);
+    return topology.allowed_count;
 }
 
 /*

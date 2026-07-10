@@ -25,6 +25,67 @@
 #include <string.h>
 #include <limits.h>
 
+static void topology_mask_from_bytes(cpu_set_t *set,
+                                     const uint8_t *data, size_t size)
+{
+    CPU_ZERO(set);
+    size_t limit = size;
+    if (limit > CPU_SETSIZE / 8) limit = CPU_SETSIZE / 8;
+    for (size_t byte = 0; byte < limit; byte++) {
+        for (unsigned bit = 0; bit < 8; bit++) {
+            if ((data[byte] & (uint8_t)(1u << bit)) != 0)
+                CPU_SET((int)(byte * 8 + bit), set);
+        }
+    }
+}
+
+static void topology_expected_counts(const cpu_set_t *set,
+                                     int *allowed, int *pins)
+{
+    *allowed = 0;
+    *pins = 0;
+    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+        if (!CPU_ISSET(cpu, set)) continue;
+        if (*allowed < UP_CPU_COUNT_MAX) (*allowed)++;
+        if (*pins < UP_THREADS_MAX) (*pins)++;
+    }
+}
+
+static int topology_ids_valid(const up_cpu_topology_t *topology,
+                              const cpu_set_t *set)
+{
+    int previous = -1;
+    for (int i = 0; i < topology->pin_count; i++) {
+        int cpu = topology->pin_ids[i];
+        if (cpu <= previous || !CPU_ISSET(cpu, set)) return 0;
+        previous = cpu;
+    }
+    return 1;
+}
+
+static int check_topology_mask(const uint8_t *data, size_t size)
+{
+    cpu_set_t set;
+    topology_mask_from_bytes(&set, data, size);
+
+    up_cpu_topology_t topology;
+    up_cpu_topology_from_set(&topology, &set, sizeof set);
+    int expected_allowed, expected_pins;
+    topology_expected_counts(&set, &expected_allowed, &expected_pins);
+    if (topology.allowed_count != expected_allowed ||
+        topology.pin_count != expected_pins) {
+        fprintf(stderr, "FAIL: topology counts %d/%d, expected %d/%d\n",
+                topology.allowed_count, topology.pin_count,
+                expected_allowed, expected_pins);
+        return 1;
+    }
+    if (!topology_ids_valid(&topology, &set)) {
+        fprintf(stderr, "FAIL: topology pin IDs are not sparse-mask members\n");
+        return 1;
+    }
+    return 0;
+}
+
 /* Parse one trial (int user_pref + int64_t total_cores). Returns 1 on
  * success, 0 if not enough bytes left. Advances *data and *size. */
 static int parse_trial(const uint8_t **data, size_t *size,
@@ -123,6 +184,8 @@ static int run_one(const uint8_t *data, size_t size)
      * We accept int64_t for fuzz coverage of overflow-y values, then
      * narrow to int for the call (matching what up_detect_cores does
      * in production). */
+    if (check_topology_mask(data, size)) return 1;
+
     int user_pref;
     int64_t total_cores_64;
     while (parse_trial(&data, &size, &user_pref, &total_cores_64)) {

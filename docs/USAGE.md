@@ -659,8 +659,8 @@ vlc \
 | `--no-stats` | Suppresses end-of-playback statistics dump. |
 | `--verbose=0` | Only show actual errors; hide warnings and debug. |
 | `--autoupscale-target=0` | AUTO mode — picks 720p or 1080p based on source. Never goes above 1080p in AUTO. |
-| `--autoupscale-threads=0` | Auto: `cores/2 − 2` workers. On a 32-core box that's 14 — leaves 18 cores for decoder, encoder, audio, OS. |
-| `--autoupscale-pin-threads=0` | Off by default. `1` pins each scaler worker to a distinct core (Linux, best-effort) — only worth it on a dedicated high-core/NUMA transcode box where you measured a gain; can hurt on a shared desktop. |
+| `--autoupscale-threads=0` | Auto: `cores/2 − 2` workers, counting only CPUs allowed by the process's taskset/cgroup affinity. On an unrestricted 32-core box that's 14 — leaves 18 cores for decoder, encoder, audio, OS. |
+| `--autoupscale-pin-threads=0` | Off by default. `1` pins scaler workers across the exact allowed CPU IDs (Linux, best-effort) — only worth it on a dedicated high-core/NUMA transcode box where you measured a gain; can hurt on a shared desktop. |
 | `--autoupscale-content-probe=1` | Diagnostic only — measures source content quality and logs an advisory if upscaling looks unhelpful. ~27 µs/frame for 60 frames at startup, then off. |
 | `#transcode{...}:display` | Re-encode in a single pipeline, then display. Avoids the recursion mode that `vfilter=` directly into display sometimes hits. |
 | `vcodec=h264,vb=10000,venc=x264{preset=ultrafast}` | x264 ultrafast preset — costs ~5-8 ms/frame, well under the 16.7 ms budget for 60 fps. |

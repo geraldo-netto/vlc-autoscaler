@@ -116,16 +116,148 @@ static void test_32_core_target_machine(void)
     END();
 }
 
-/*
- * The detect_cores helper returns sysconf result clamped into a
- * sane range. We can't deterministically test what the OS reports,
- * but we CAN assert it returns something usable: at least 1, no
- * larger than 4 * UP_THREADS_MAX (the documented sanity cap).
- */
+static void test_core_count_clamp(void)
+{
+    BEGIN("core count clamp: fallback values stay in the supported range");
+    CHECK_EQ(up__clamp_core_count(-1), 1);
+    CHECK_EQ(up__clamp_core_count(0), 1);
+    CHECK_EQ(up__clamp_core_count(1), 1);
+    CHECK_EQ(up__clamp_core_count(UP_THREADS_MAX * 4),
+             UP_THREADS_MAX * 4);
+    CHECK_EQ(up__clamp_core_count(UP_THREADS_MAX * 4L + 1),
+             UP_THREADS_MAX * 4);
+    END();
+}
+
+static void test_topology_from_sparse_set(void)
+{
+    BEGIN("CPU topology: preserves sparse allowed CPU IDs");
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(2, &set);
+    CPU_SET(17, &set);
+    CPU_SET(63, &set);
+
+    up_cpu_topology_t topology;
+    CHECK_EQ(up_cpu_topology_from_set(&topology, &set, sizeof set), 3);
+    CHECK_EQ(topology.allowed_count, 3);
+    CHECK_EQ(topology.pin_count, 3);
+    CHECK_EQ(topology.pin_ids[0], 2);
+    CHECK_EQ(topology.pin_ids[1], 17);
+    CHECK_EQ(topology.pin_ids[2], 63);
+    CHECK_EQ(up_cpu_topology_from_set(NULL, &set, sizeof set), 0);
+    CHECK_EQ(up_cpu_topology_from_set(&topology, NULL, sizeof set), 0);
+    CHECK_EQ(topology.allowed_count, 0);
+    END();
+}
+
+static void test_topology_caps_counts(void)
+{
+    BEGIN("CPU topology: caps pin IDs independently of allowed count");
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    for (int cpu = 0; cpu < UP_CPU_COUNT_MAX + 10; cpu++)
+        CPU_SET(cpu, &set);
+
+    up_cpu_topology_t topology;
+    up_cpu_topology_from_set(&topology, &set, sizeof set);
+    CHECK_EQ(topology.allowed_count, UP_CPU_COUNT_MAX);
+    CHECK_EQ(topology.pin_count, UP_THREADS_MAX);
+    CHECK_EQ(topology.pin_ids[0], 0);
+    CHECK_EQ(topology.pin_ids[UP_THREADS_MAX - 1], UP_THREADS_MAX - 1);
+    END();
+}
+
+enum mock_affinity_mode {
+    MOCK_AFFINITY_SPARSE,
+    MOCK_AFFINITY_EMPTY,
+    MOCK_AFFINITY_FAIL
+};
+
+static enum mock_affinity_mode g_affinity_mode;
+static long g_mock_core_count;
+static int g_mock_sysconf_calls;
+
+static int mock_getaffinity(pid_t pid, size_t set_size, cpu_set_t *set)
+{
+    (void)pid;
+    CPU_ZERO_S(set_size, set);
+    switch (g_affinity_mode) {
+        case MOCK_AFFINITY_SPARSE:
+            CPU_SET_S(2, set_size, set);
+            CPU_SET_S(17, set_size, set);
+            CPU_SET_S(4097, set_size, set);
+            return 0;
+        case MOCK_AFFINITY_EMPTY:
+            return 0;
+        case MOCK_AFFINITY_FAIL:
+            return -1;
+    }
+    return -1;
+}
+
+static long mock_sysconf(int name)
+{
+    (void)name;
+    g_mock_sysconf_calls++;
+    return g_mock_core_count;
+}
+
+static void test_detect_topology_synthetic(void)
+{
+    BEGIN("CPU detection: sparse affinity and fallback paths");
+    up_cpu_topology_t topology;
+
+    g_affinity_mode = MOCK_AFFINITY_SPARSE;
+    g_mock_core_count = 99;
+    g_mock_sysconf_calls = 0;
+    up_detect_cpu_topology_with(&topology, mock_getaffinity, mock_sysconf);
+    CHECK_EQ(topology.allowed_count, 3);
+    CHECK_EQ(topology.pin_count, 3);
+    CHECK_EQ(topology.pin_ids[0], 2);
+    CHECK_EQ(topology.pin_ids[1], 17);
+    CHECK_EQ(topology.pin_ids[2], 4097);
+    CHECK_EQ(g_mock_sysconf_calls, 0);
+
+    g_affinity_mode = MOCK_AFFINITY_EMPTY;
+    g_mock_core_count = 12;
+    up_detect_cpu_topology_with(&topology, mock_getaffinity, mock_sysconf);
+    CHECK_EQ(topology.allowed_count, 12);
+    CHECK_EQ(topology.pin_count, 0);
+
+    g_affinity_mode = MOCK_AFFINITY_FAIL;
+    g_mock_core_count = LONG_MAX;
+    up_detect_cpu_topology_with(&topology, mock_getaffinity, mock_sysconf);
+    CHECK_EQ(topology.allowed_count, UP_CPU_COUNT_MAX);
+    CHECK_EQ(topology.pin_count, 0);
+
+    g_mock_core_count = 0;
+    up_detect_cpu_topology_with(&topology, NULL, mock_sysconf);
+    CHECK_EQ(topology.allowed_count, 1);
+    up_detect_cpu_topology_with(&topology, NULL, NULL);
+    CHECK_EQ(topology.allowed_count, 1);
+    up_detect_cpu_topology_with(NULL, mock_getaffinity, mock_sysconf);
+    END();
+}
+
 static void test_detect_cores_invariants(void)
 {
-    BEGIN("up_detect_cores: returns a usable int in [1, 4*UP_THREADS_MAX]");
-    int c = up_detect_cores();
+    BEGIN("CPU detection: matches the process affinity mask");
+    size_t set_size = CPU_ALLOC_SIZE(UP_CPU_ID_LIMIT);
+    cpu_set_t *set = CPU_ALLOC(UP_CPU_ID_LIMIT);
+    if (set == NULL) {
+        printf("    CPU_ALLOC failed\n");
+        g_cur_fail = 1;
+        END();
+        return;
+    }
+    CPU_ZERO_S(set_size, set);
+    int affinity_rc = sched_getaffinity(0, set_size, set);
+    CHECK_EQ(affinity_rc, 0);
+
+    up_cpu_topology_t topology;
+    up_detect_cpu_topology(&topology);
+    int c = topology.allowed_count;
     if (c < 1) {
         printf("    detect_cores returned %d (< 1)\n", c);
         g_cur_fail = 1;
@@ -135,6 +267,18 @@ static void test_detect_cores_invariants(void)
                c, UP_THREADS_MAX * 4);
         g_cur_fail = 1;
     }
+    if (affinity_rc == 0) {
+        int expected = CPU_COUNT_S(set_size, set);
+        CHECK_EQ(c, up__clamp_core_count(expected));
+        CHECK_EQ(topology.pin_count,
+                 expected < UP_THREADS_MAX ? expected : UP_THREADS_MAX);
+        for (int i = 0; i < topology.pin_count; i++)
+            CHECK_EQ(CPU_ISSET_S((size_t)topology.pin_ids[i],
+                                 set_size, set), 1);
+    }
+    CHECK_EQ(up_detect_cores(), c);
+    up_detect_cpu_topology(NULL);
+    CPU_FREE(set);
     END();
 }
 
@@ -181,6 +325,10 @@ int main(void)
     test_explicit_clamped_to_max();
     test_negative_user_pref_means_auto();
     test_32_core_target_machine();
+    test_core_count_clamp();
+    test_topology_from_sparse_set();
+    test_topology_caps_counts();
+    test_detect_topology_synthetic();
     test_detect_cores_invariants();
     test_detect_then_decide();
     test_explicit_at_max_boundary();

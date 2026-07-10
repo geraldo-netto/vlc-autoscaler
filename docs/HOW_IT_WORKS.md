@@ -764,13 +764,16 @@ Plus the escape hatch: `--autoupscale-target-fps=0` to silence the hint.
 
 The zimg backend slice-threads each frame: the destination is split into
 N horizontal stripes processed in parallel by a persistent worker pool.
-Default N = `cores/2 − 2`, clamped to `[1, 64]`. The "/ 2" reserves half
-the machine for VLC's main thread, decoder, encoder, audio, vout, and
-other libraries VLC pulls in; the "− 2" is an extra absolute reserve.
+Default N = `cores/2 − 2`, clamped to `[1, 64]`. `cores` comes from the
+calling thread's Linux affinity mask, so taskset and cgroup/cpuset limits
+are honored. The "/ 2" reserves half the available CPUs for VLC's main
+thread, decoder, encoder, audio, vout, and other libraries VLC pulls in;
+the "− 2" is an extra absolute reserve.
 On a 32-core box this gives 14 workers; on 16 cores, 6; on 8 cores, 2.
 Users on small machines or who measured differently can override with
-`--autoupscale-threads=N`. The decision logic lives in `src/threading.h`
-(header-only, exercised by `tests/test_threading.c`).
+`--autoupscale-threads=N`. The topology and decision logic live in
+`src/threading.h` and are exercised by `tests/test_threading.c`; the same
+topology snapshot supplies exact sparse CPU IDs when worker pinning is on.
 
 ### Architecture
 

@@ -58,7 +58,7 @@
  * Built only when HAVE_ZIMG is defined.
  *****************************************************************************/
 
-/* SCAL-4: pthread_setaffinity_np / CPU_SET need _GNU_SOURCE before any
+/* SCAL-4: pthread_setaffinity_np / CPU_ALLOC macros need _GNU_SOURCE before any
  * include. Defined unconditionally (harmless off-glibc, where the affinity
  * helper compiles to a no-op). */
 #ifndef _GNU_SOURCE
@@ -85,7 +85,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #if defined(__linux__)
 # include <sched.h>
 #endif
@@ -104,10 +103,13 @@
 static void pin_worker_to_cpu(pthread_t thread, int cpu)
 {
 #if defined(__linux__)
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    CPU_SET((size_t)cpu, &set);
-    (void)pthread_setaffinity_np(thread, sizeof set, &set);
+    size_t set_size = CPU_ALLOC_SIZE((size_t)cpu + 1);
+    cpu_set_t *set = CPU_ALLOC((size_t)cpu + 1);
+    if (set == NULL) return;
+    CPU_ZERO_S(set_size, set);
+    CPU_SET_S((size_t)cpu, set_size, set);
+    (void)pthread_setaffinity_np(thread, set_size, set);
+    CPU_FREE(set);
 #else
     (void)thread; (void)cpu;
 #endif
@@ -237,9 +239,9 @@ typedef struct
     int               n_rows, n_cols;
     bool              col_tiled;
 
-    /* SCAL-4: when set, pin worker i to CPU (i % cpus_online). */
+    /* SCAL-4/5: pin workers only to exact IDs in the allowed CPU set. */
     bool              pin_cpus;
-    int               cpus_online;
+    up_cpu_topology_t cpu_topology;
 
     /* Scratch buffers + geometry. Sized + allocated on first Filter() call
      * (lazy init), pinned for the plugin lifetime after that. Open() is
@@ -755,8 +757,10 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
     w->thread_started = true;
     /* SCAL-4: best-effort pin (opt-in). Round-robin so worker count > core
      * count still spreads evenly; failure is ignored inside the helper. */
-    if (p->pin_cpus && p->cpus_online > 0)
-        pin_worker_to_cpu(w->thread, worker_id % p->cpus_online);
+    if (p->pin_cpus && p->cpu_topology.pin_count > 0) {
+        int pin_index = worker_id % p->cpu_topology.pin_count;
+        pin_worker_to_cpu(w->thread, p->cpu_topology.pin_ids[pin_index]);
+    }
     return 0;
 }
 
@@ -1026,7 +1030,10 @@ static int zimg_open(scaler_ctx_t *ctx)
     if (!ChromaToZimg(ctx->chroma, &sub_w, &sub_h, &swap))
         return -1;
 
-    int n_threads = up_threads_decide(ctx->threads_pref, up_detect_cores());
+    up_cpu_topology_t cpu_topology;
+    up_detect_cpu_topology(&cpu_topology);
+    int n_threads = up_threads_decide(ctx->threads_pref,
+                                      cpu_topology.allowed_count);
 
     /* SCAL-3: pick a row x col worker grid. When the frame is too short for
      * row-stripes alone to use every thread, tile columns. cols==1 => the plain
@@ -1060,18 +1067,10 @@ static int zimg_open(scaler_ctx_t *ctx)
         p->dst_zerocopy = false;
     }
 
-    /* SCAL-4: resolve the online-CPU count once so the per-worker pin is a
-     * cheap modulo. Guard >= 1 so the modulo is always well-defined. */
+    /* SCAL-4/5: retain the same allowed topology used for thread planning so
+     * sparse cpusets are pinned correctly and capacity cannot drift. */
     p->pin_cpus = (ctx->pin_cpus != 0);
-    if (p->pin_cpus) {
-        /* sysconf returns long; clamp to a sane positive int so the later
-         * `worker_id % cpus_online` is well-defined and the long->int store
-         * can't truncate a pathological value to <= 0. */
-        long n = sysconf(_SC_NPROCESSORS_ONLN);
-        if (n < 1) n = 1;
-        if (n > UP_THREADS_MAX * 64) n = UP_THREADS_MAX * 64;   /* 4096 cap */
-        p->cpus_online = (int)n;
-    }
+    p->cpu_topology = cpu_topology;
 
     ctx->priv = p;
     return 0;

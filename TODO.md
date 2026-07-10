@@ -8,10 +8,10 @@ review categories. One table per category. Format: `id | status | effort | descr
 
 2026-07-10 post-fix rescan: full repository, every category, four parallel
 audit tracks covering production code, tests/fuzzers/benches, build/CI/scripts,
-and documentation. New or reopened: SCAL-5..6, CON-4,
+and documentation. New or reopened: SCAL-6, CON-4,
 ARCH-10, REL-6..8, ERR-3, PORT-6..8,
 BUILD-2, BUILD-11..12, BUILD-14..15,
-OBS-6..8, WIRE-5, DEAD-9; DG-1, DUP-9, PORT-3, and BUILD-10 were
+OBS-6..8, WIRE-5, DEAD-9; DG-1, PORT-3, and BUILD-10 were
 expanded with related evidence. ASan/UBSan unit tests and all deterministic
 smoke fuzzers pass; lizard is clean (538 functions, none above CCN 10).
 `make analyze` is currently red (BUILD-14).
@@ -51,13 +51,12 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| (none new) | | | No new standalone hot-path regression survived validation; worker-utilization and CPU-topology opportunities are tracked under SCAL-5/SCAL-6. | |
+| (none new) | | | No new standalone hot-path regression survived validation; worker-utilization is tracked under SCAL-6. | |
 
 ## scalability
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| SCAL-5 | open | M | `up_detect_cores()` uses host-wide `_SC_NPROCESSORS_ONLN` rather than the process's allowed CPU set (`threading.h:62-67`). Under `taskset -c 0`, it still reported 32 instead of 1, so AUTO can select 1080p and size both worker pools for CPUs the process cannot use. The optional pin path also assumes allowed CPU IDs are dense from zero. | On Linux, enumerate `sched_getaffinity` for both the count and pin targets, with `sysconf` fallback elsewhere. This is distinct from the cross-instance budget decision in RES-2. |
 | SCAL-6 | open | S | `up_decide_tile_grid` maximizes row stripes first and only then floors `cols = n_threads / rows` (`zimg_helpers.h:209-230`), leaving usable workers idle. With 14 threads and a 1920x128 destination at a 16-row minimum it chooses 8x1=8 workers although 7x2=14 satisfies both minima. | Search the bounded row/column combinations for the largest valid product, then prefer the desired shape on ties. Add optimality cases to the tile-grid unit/fuzz checks. |
 | — | | | SCAL-2 remains resolved: broadcast wake plus a single counting barrier keeps per-frame main-thread dispatch O(1). | |
 
@@ -80,7 +79,6 @@ under "Audit picks deliberately rejected".
 | DUP-3 | keep | S | Worker-pool lifecycle (lazy-init flags, aligned_alloc + memset, sem_init, spawn loop with `constructed`, sticky `lazy_init_failed`) duplicated between `scaler_zimg.c` and `usm_pool.c`; per-worker `_Alignas(64)` struct + rationale comment copy-pasted | DECISION (2026-05-30): keep. A shared scaffold needs a type-erased pool (void* element + per-worker construct/destroy callbacks) since the worker structs and per-worker work differ (per-stripe zimg graphs vs scratch rows). The common part is ~15 lines of alloc+memset+spawn; hiding it behind a callback interface across a module boundary adds indirection while the real work stays divergent — net clarity loss. Per AGENTS.md (SOLID only when it improves clarity). |
 | DUP-5 | keep | S | Args-valid checks parallel: `usm_pool.c` (`usm_pool_validate_args`) vs `usm.h` (`up_usm__args_valid`) — both null dst/src + stride<width | Marginal: the pool variant also checks its own ptr and uses the stored `p->width`, while `up_usm__args_valid` validates full dims; not cleanly mergeable without threading width/height through. Keep. |
 | DUP-8 | open | S | Stripe-partition math (`i*h/n`, last stripe absorbs remainder) computed twice in `usm_pool.c`: `usm_pool_spawn_worker` (:310-313) writes each worker's `y_start/y_end`, then `usm_pool_spawn_all` unconditionally calls `usm_pool_repartition_stripes` (:340-345) which recomputes and overwrites them before any worker can read them (workers block on `go` until the first apply). | The spawn-time assignment is dead code — always overwritten. Delete the `y_start/y_end` lines from `usm_pool_spawn_worker` and let `usm_pool_repartition_stripes` be the single partitioner (its comment already calls the spawn-time values a "redundant (idempotent) re-assignment"). Net −4 lines, one source of truth, no behavior change. |
-| DUP-9 | open | M | CPU discovery is duplicated with divergent clamps: `up_detect_cores()` drives AUTO/thread counts, while `zimg_open` repeats raw `_SC_NPROCESSORS_ONLN` for pinning (`threading.h:62-67`, `scaler_zimg.c:1029,1063-1073`). | Consolidate this as part of SCAL-5 into one affinity-aware topology helper that can return both count and allowed CPU IDs. Merely assigning `cpus_online = up_detect_cores()` removes duplicate code but still mis-pins sparse/cgroup CPU sets. |
 
 ## architecture/modularity/SOLID
 
@@ -245,7 +243,6 @@ One new finding recorded (DG-3); these candidates were traced and rejected:
 
 | candidate | why rejected |
 |----|--------------|
-| `scaler_zimg.c:104-114` `pin_worker_to_cpu` "CPU_SET with cpu >= CPU_SETSIZE (1024) is documented-undefined" (cpus_online capped at 4096) | Unreachable: `cpu = worker_id % cpus_online` and `worker_id < n_threads <= UP_THREADS_MAX (64)`, so cpu <= 63 < CPU_SETSIZE regardless of the 4096 cap on `cpus_online`. |
 | `scaler_zimg.c:494-498` `worker_main` "copies out uninitialized tile/dst scratch to VLC dst when `zimg_filter_graph_process` fails" | Copying indeterminate bytes via `uint8_t` memcpy is not UB, and the frame is unconditionally dropped: `zimg_dispatch_and_wait` returns -1 on any worker `result != 0`, so `Filter()` releases `p_out` — the garbage never leaves the plugin. |
 | `usm_pool.c` / `scaler_zimg.c` unchecked `sem_wait` EINTR (UAF/null-deref via broken frame barrier) | Real, but already tracked as CON-3 — found independently this pass, verbatim the same three sites; not re-filed. |
 | odd-height 4:2:0 source → zimg graph-build failure → sticky drop-every-frame | SUPERSEDED same day by REL-4 (filed open): the rejection's "conformant streams can't carry odd crops" premise holds only for H.264/HEVC 4:2:0 — VP9/AV1 permit odd frame dims with 4:2:0, and raw/container-cropped sources reach the filter too. See REL-4 for the fix. |

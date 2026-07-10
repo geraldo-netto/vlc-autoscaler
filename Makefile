@@ -37,7 +37,7 @@ VLC_PLUGIN_BASE := $(shell pkg-config --variable=pluginsdir vlc-plugin 2>/dev/nu
 VLC_PLUGIN_DIR  := $(VLC_PLUGIN_BASE)/video_filter
 
 # --------- common flags ---------
-WARN := -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes
+WARN := -D_GNU_SOURCE -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes
 
 # CPU baseline. Defaults to `native` because this plugin is a source
 # distribution: every user builds it on the same machine they run it on,
