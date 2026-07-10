@@ -70,7 +70,6 @@ implemented and tested; `git log` is the durable completion record.
 |----|--------|--------|-------------|-------|
 | DUP-9 | open | S | Source- and destination-shaped `up_picture_region_t` literals are rebuilt at six sites across `scaler_zimg.c`, `scaler_swscale.c`, and `autoupscale.c`. | Add `up_scaler_src_region()` and `up_scaler_dst_region()` helpers in `scaler.h`; crop-semantics changes then have one owner. Current sites: `scaler_zimg.c:1284-1299`, `scaler_swscale.c:111-124`, `autoupscale.c:806-813,900-907`. |
 | DUP-10 | open | S | The column-tiling to rows-only downgrade policy is duplicated in `zimg_honor_copy_in_grid` and `zimg_prepare_first_frame_io`; scattered assignments separately enforce the grid/I/O invariant. | Extract one rows-only transition helper. The first-frame path currently leaves `dst_zerocopy=false` after dropping column tiling even when destination alignment permits direct output, unlike the option-driven path (`scaler_zimg.c:1047-1062,1120-1123,1247-1266`). |
-| DUP-11 | open | S | The same eight-argument `apply_plane8` compatibility wrapper is copied into four test tools after the `up_usm_plane_io_t` refactor (`test_usm.c:15-21`, `test_usm_pool.c:33-39`, `fuzz_usm.c:22-28`, `stress_usm_pool.c:48-54`). | Construct the descriptor at call sites or share a test-only helper; retaining four flat wrappers recreates the interface duplication the descriptor removed. |
 
 ## architecture/modularity/SOLID
 

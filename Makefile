@@ -237,7 +237,7 @@ $(BUILD)/test_upscale_logic: tests/test_upscale_logic.c src/upscale_logic.h | $(
 $(BUILD)/test_geometry_edge_cases: tests/test_geometry_edge_cases.c src/upscale_logic.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
-$(BUILD)/test_usm: tests/test_usm.c src/usm.h src/perfmon.h src/threading.h | $(BUILD)
+$(BUILD)/test_usm: tests/test_usm.c tests/usm_test_util.h src/usm.h src/perfmon.h src/threading.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
 $(BUILD)/test_perfmon: tests/test_perfmon.c src/perfmon.h | $(BUILD)
@@ -271,7 +271,7 @@ fuzz: $(BUILD)/fuzz_upscale_logic $(BUILD)/fuzz_usm $(BUILD)/fuzz_perfmon $(BUIL
 $(BUILD)/fuzz_upscale_logic: tests/fuzz_upscale_logic.c src/upscale_logic.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
-$(BUILD)/fuzz_usm: tests/fuzz_usm.c src/usm.h src/perfmon.h src/threading.h | $(BUILD)
+$(BUILD)/fuzz_usm: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h src/perfmon.h src/threading.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
 $(BUILD)/fuzz_perfmon: tests/fuzz_perfmon.c src/perfmon.h | $(BUILD)
@@ -368,7 +368,7 @@ fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_perfmon_sm
 $(BUILD)/fuzz_smoke: tests/fuzz_upscale_logic.c src/upscale_logic.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
-$(BUILD)/fuzz_usm_smoke: tests/fuzz_usm.c src/usm.h src/perfmon.h src/threading.h | $(BUILD)
+$(BUILD)/fuzz_usm_smoke: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h src/perfmon.h src/threading.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
 $(BUILD)/fuzz_perfmon_smoke: tests/fuzz_perfmon.c src/perfmon.h | $(BUILD)
@@ -435,10 +435,10 @@ STRESS_LDFLAGS_ASAN := -fsanitize=address,undefined -lpthread
 STRESS_CFLAGS_TSAN := -O1 -g $(MARCH_FLAG) $(WARN) -fsanitize=thread
 STRESS_LDFLAGS_TSAN := -fsanitize=thread -lpthread
 
-$(BUILD)/stress_usm_pool: tests/stress_usm_pool.c src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
+$(BUILD)/stress_usm_pool: tests/stress_usm_pool.c tests/usm_test_util.h src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
 	$(CLANG) $(STRESS_CFLAGS_ASAN) -o $@ $< src/usm_pool.c $(STRESS_LDFLAGS_ASAN)
 
-$(BUILD)/stress_usm_pool_tsan: tests/stress_usm_pool.c src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
+$(BUILD)/stress_usm_pool_tsan: tests/stress_usm_pool.c tests/usm_test_util.h src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
 	$(CLANG) $(STRESS_CFLAGS_TSAN) -o $@ $< src/usm_pool.c $(STRESS_LDFLAGS_TSAN)
 
 stress: $(BUILD)/stress_usm_pool $(BUILD)/stress_usm_pool_tsan
@@ -632,7 +632,7 @@ $(COV_BUILD):
 
 $(COV_BUILD)/test_upscale_logic: tests/test_upscale_logic.c src/upscale_logic.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/test_usm: tests/test_usm.c src/usm.h | $(COV_BUILD)
+$(COV_BUILD)/test_usm: tests/test_usm.c tests/usm_test_util.h src/usm.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_perfmon: tests/test_perfmon.c src/perfmon.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
@@ -642,7 +642,7 @@ $(COV_BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/test_usm_pool: tests/test_usm_pool.c tests/barrier_fault_inject.h src/usm_pool.c src/usm_pool.h src/usm.h | $(COV_BUILD)
+$(COV_BUILD)/test_usm_pool: tests/test_usm_pool.c tests/usm_test_util.h tests/barrier_fault_inject.h src/usm_pool.c src/usm_pool.h src/usm.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< src/usm_pool.c $(COV_LDFLAGS) \
 	    $(BARRIER_WRAP_LDFLAGS) -lpthread
 $(COV_BUILD)/test_content_probe: tests/test_content_probe.c src/content_probe.h | $(COV_BUILD)
@@ -658,7 +658,7 @@ $(COV_BUILD)/test_lifetime: tests/test_lifetime.c src/usm_pool.c src/usm_pool.h 
 
 $(COV_BUILD)/fuzz_upscale_logic: tests/fuzz_upscale_logic.c src/upscale_logic.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/fuzz_usm: tests/fuzz_usm.c src/usm.h | $(COV_BUILD)
+$(COV_BUILD)/fuzz_usm: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/fuzz_perfmon: tests/fuzz_perfmon.c src/perfmon.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
@@ -777,7 +777,7 @@ $(BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $(BUI
 $(BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
-$(BUILD)/test_usm_pool: tests/test_usm_pool.c tests/barrier_fault_inject.h src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
+$(BUILD)/test_usm_pool: tests/test_usm_pool.c tests/usm_test_util.h tests/barrier_fault_inject.h src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< src/usm_pool.c $(TEST_LDFLAGS) \
 	    $(BARRIER_WRAP_LDFLAGS) -lpthread
 

@@ -9,25 +9,13 @@
  *   - Smoke runner (-DFUZZ_MAIN), useful when libFuzzer isn't available.
  *****************************************************************************/
 
-#include "../src/usm.h"
+#include "usm_test_util.h"
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* Compat shim over the io-struct oracle API (Sonar >7-params refactor):
- * preserves this file's original flat-argument call shape. */
-static int apply_plane8(uint8_t *dst, int dst_stride,
-                        const uint8_t *src, int src_stride,
-                        int width, int height,
-                        int amount_q8, uint8_t *workspace)
-{
-    up_usm_plane_io_t io = { dst, dst_stride, src, src_stride, width, height };
-    return up_usm_apply_plane(&io, amount_q8, workspace);
-}
-
 
 /* Bound the dimensions so we don't allocate gigabytes per fuzz iteration.
  * We're fuzzing the algorithm, not the OOM handler. */
@@ -144,7 +132,7 @@ static void run_kernel_and_check(uint8_t *dst, const uint8_t *src, uint8_t *ws,
                                  const uint8_t *src_copy,
                                  const fuzz_params_t *p)
 {
-    int rc = apply_plane8(dst, p->dst_stride, src, p->src_stride,
+    int rc = UP_TEST_USM_APPLY_PLANE(dst, p->dst_stride, src, p->src_stride,
                                 p->width, p->height, p->amount, ws);
     if (rc != 1) abort();  /* All inputs above are valid. */
 

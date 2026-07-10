@@ -15,7 +15,7 @@
  *         representative 1920x1080 configurations.
  *
  *   - Verifies BYTE-IDENTICAL output to the single-threaded reference
- *     apply_plane8() on every single frame, every config. If a
+ *     UP_TEST_USM_APPLY_PLANE() on every single frame, every config. If a
  *     race ever produces a wrong byte, this test will see it.
  *
  *   - Mutates the input data (xorshift32 fill) every frame so workers
@@ -35,25 +35,13 @@
  *****************************************************************************/
 
 #include "../src/usm_pool.h"
-#include "../src/usm.h"
+#include "usm_test_util.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
-/* Compat shim over the io-struct oracle API (Sonar >7-params refactor):
- * preserves this file's original flat-argument call shape. */
-static int apply_plane8(uint8_t *dst, int dst_stride,
-                        const uint8_t *src, int src_stride,
-                        int width, int height,
-                        int amount_q8, uint8_t *workspace)
-{
-    up_usm_plane_io_t io = { dst, dst_stride, src, src_stride, width, height };
-    return up_usm_apply_plane(&io, amount_q8, workspace);
-}
-
 
 /* xorshift32 — same as the smoke fuzzers. Deterministic across runs. */
 static uint32_t xs32(uint32_t *s)
@@ -127,7 +115,7 @@ static size_t run_one_frame(const stress_config_t *cfg, stress_bufs_t *b,
     /* Single-threaded reference. */
     memset(b->dst_st, 0, plane_size);
     memset(b->ws, 0, plane_size);
-    apply_plane8(b->dst_st, cfg->width, b->src, cfg->width,
+    UP_TEST_USM_APPLY_PLANE(b->dst_st, cfg->width, b->src, cfg->width,
                        cfg->width, cfg->height, amount, b->ws);
 
     /* Multi-threaded: same input, must produce identical output. The
@@ -273,35 +261,35 @@ int main(int argc, char **argv)
      * the TSan run (slower instrumentation) under ~30s. */
     stress_config_t configs[] = {
         /* High thread count, tiny frame -> clamp down to height/8 */
-        { 64,   64,   32,   100,  30, "64thr 64x32 (clamp)"     },
-        { 64,  128,   64,   100,  30, "64thr 128x64 (clamp)"    },
-        { 32,  256,  128,   100,  30, "32thr 256x128 (clamp)"   },
+        { 64,   64,   32,   100,  30, "64thr 64x32 (clamp)",       0 },
+        { 64,  128,   64,   100,  30, "64thr 128x64 (clamp)",      0 },
+        { 32,  256,  128,   100,  30, "32thr 256x128 (clamp)",     0 },
 
         /* Common video resolutions x typical thread counts */
-        {  1,  854,  480,    50,  30, "1thr  854x480"           },
-        {  2,  854,  480,    50,  30, "2thr  854x480"           },
-        {  4,  854,  480,    50,  30, "4thr  854x480"           },
-        {  8,  854,  480,    50,  30, "8thr  854x480"           },
-        { 16,  854,  480,    50,  30, "16thr 854x480"           },
-        { 32,  854,  480,    50,  30, "32thr 854x480"           },
-        { 64,  854,  480,    50,  30, "64thr 854x480"           },
+        {  1,  854,  480,    50,  30, "1thr  854x480",             0 },
+        {  2,  854,  480,    50,  30, "2thr  854x480",             0 },
+        {  4,  854,  480,    50,  30, "4thr  854x480",             0 },
+        {  8,  854,  480,    50,  30, "8thr  854x480",             0 },
+        { 16,  854,  480,    50,  30, "16thr 854x480",             0 },
+        { 32,  854,  480,    50,  30, "32thr 854x480",             0 },
+        { 64,  854,  480,    50,  30, "64thr 854x480",             0 },
 
         /* 1080p at 16 threads — most common real-world config */
-        { 16, 1920, 1080,    20,  30, "16thr 1920x1080"         },
-        { 16, 1920, 1080,    20,   0, "16thr 1080p amount=0"    },  /* identity path */
-        { 16, 1920, 1080,    20, 100, "16thr 1080p amount=100"  },
-        { 16, 1920, 1080,    20, 200, "16thr 1080p amount=200 (max)" },
+        { 16, 1920, 1080,    20,  30, "16thr 1920x1080",           0 },
+        { 16, 1920, 1080,    20,   0, "16thr 1080p amount=0",      0 },
+        { 16, 1920, 1080,    20, 100, "16thr 1080p amount=100",    0 },
+        { 16, 1920, 1080,    20, 200, "16thr 1080p amount=200 (max)", 0 },
 
         /* Pathological aspects */
-        {  8,    8, 1080,    50,  30, "8thr  tall narrow 8x1080" },
-        {  8, 4096,    8,    50,  30, "8thr  short wide 4096x8 (clamp)" },
+        {  8,    8, 1080,    50,  30, "8thr  tall narrow 8x1080", 0 },
+        {  8, 4096,    8,    50,  30, "8thr  short wide 4096x8 (clamp)", 0 },
 
         /* Odd dimensions to flush odd-row handling */
-        { 16,  853,  479,    50,  30, "16thr 853x479 (odd)"     },
-        { 16,  855,  481,    50,  30, "16thr 855x481 (odd)"     },
+        { 16,  853,  479,    50,  30, "16thr 853x479 (odd)",       0 },
+        { 16,  855,  481,    50,  30, "16thr 855x481 (odd)",       0 },
 
         /* Big frame, single thread - tests workspace alloc at scale */
-        {  1, 4096, 2160,     5,  30, "1thr  4096x2160"         },
+        {  1, 4096, 2160,     5,  30, "1thr  4096x2160",           0 },
 
         /* IN-PLACE (dst == src), the production call shape (SYS-4).
          * Multi-thread configs hammer the halo-row snapshots: every
