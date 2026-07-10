@@ -157,33 +157,22 @@ typedef struct
      * usm_worker_t in usm_pool.c. C11 disallows _Alignas on a typedef
      * name, hence on the first member. */
     alignas(64) pthread_t  thread;
-    /* SCAL-2: the wake side is a single broadcast gate, not N per-worker
-     * sems. The main thread bumps *generation once per dispatch under *go_lock
-     * and broadcasts *go_cv; each worker sleeps until *generation advances past
-     * its own seen_gen. The done side is a counting barrier: each worker
-     * decrements *pending after its stripe; the one that drives it to zero
-     * posts *all_done, which the main thread waits on exactly once. All four
-     * shared pointers point into the parent zimg_priv_t. */
-    pthread_mutex_t   *go_lock;
-    pthread_cond_t    *go_cv;
-    uint64_t          *generation;   /* shared, guarded by *go_lock */
+    /* Dispatch gate, owned by the priv and shared with the USM pool's
+     * design via up_pool_gate_t (DUP-1) — see threading.h for the full
+     * wake/done protocol and memory-ordering rationale. */
+    up_pool_gate_t    *gate;
     uint64_t           seen_gen;     /* worker-private: last dispatch handled */
-    atomic_int        *pending;
-    sem_t             *all_done;
     bool               thread_started; /* true iff pthread_create succeeded;
                                         * pthread_t is opaque, so a "== 0"
                                         * test on `thread` is not portable —
                                         * mirror usm_worker_t and gate join/
                                         * signal on this flag instead. */
     /* should_exit (main->worker): set by zimg_wake_all_for_exit() under
-     * *go_lock before a broadcast; the worker reads it under the same lock
-     * and finishes any unseen generation before exiting. result is
-     * single-writer (worker)
-     * / single-reader (main): each worker writes result, then does an acq_rel
-     * fetch_sub on *pending; those RMWs form a release sequence, so the worker
-     * that hits zero (acquire) observes every other worker's result write, and
-     * its sem_post(all_done) -> main's sem_wait(all_done) publishes them. */
-    int                should_exit;
+     * the gate lock before a broadcast; the worker reads it under the same
+     * lock and finishes any unseen generation before exiting. result is
+     * single-writer (worker) / single-reader (main), published by the
+     * gate's done barrier (see threading.h). */
+    bool               should_exit;
 
     /* Persistent: one graph + one tmp buffer per worker. */
     zimg_filter_graph *graph;
@@ -242,13 +231,9 @@ typedef struct
     int               n_threads;
     stripe_worker_t  *workers;
     /* SCAL-2 wake gate: one broadcast wakes all workers (was N sem_post). */
-    pthread_mutex_t   go_lock;
-    pthread_cond_t    go_cv;
-    uint64_t          generation;    /* bumped per dispatch under go_lock */
-    bool              go_gate_inited; /* destroy guard: mutex+cond init'd */
-    atomic_int        pending;       /* SCAL-2: live workers this dispatch */
-    sem_t             all_done;      /* posted once when pending hits 0 */
-    bool              all_done_inited; /* sem_destroy guard: true iff sem_init succeeded */
+    /* Shared wake gate + counting done-barrier (DUP-1, threading.h).
+     * calloc zeroing marks it not-yet-initialized for destroy. */
+    up_pool_gate_t    gate;
     bool              pool_broken;
 
     int               yv12_swap_uv;
@@ -463,25 +448,14 @@ static void worker_emit_output(stripe_worker_t *w)
     else if (w->copy_out) worker_copy_out_stripe(w);  /* PERF-5 */
 }
 
-/* Block for a new dispatch or exit request. Fatal barrier recovery sets exit
- * but workers still complete an unseen generation before terminating. */
-static bool worker_wait_for_go(stripe_worker_t *w)
-{
-    pthread_mutex_lock(w->go_lock);
-    while (*w->generation == w->seen_gen && !w->should_exit)
-        pthread_cond_wait(w->go_cv, w->go_lock);
-    bool run = *w->generation != w->seen_gen;
-    w->seen_gen = *w->generation;
-    pthread_mutex_unlock(w->go_lock);
-    return run;
-}
-
 static void *worker_main(void *arg)
 {
     stripe_worker_t *w = (stripe_worker_t *)arg;
     for (;;)
     {
-        if (!worker_wait_for_go(w)) break;
+        if (!up_pool_gate_wait_for_go(w->gate, &w->seen_gen,
+                                      &w->should_exit))
+            break;
 
         if (w->copy_in) worker_copy_in_stripe(w);  /* PERF-1: parallel copy-in */
 
@@ -524,10 +498,7 @@ static void *worker_main(void *arg)
 
         worker_emit_output(w);
 
-        /* SCAL-2: last worker to finish posts all_done exactly once. acq_rel
-         * so the result writes above join the release sequence on *pending. */
-        if (atomic_fetch_sub_explicit(w->pending, 1, memory_order_acq_rel) == 1)
-            sem_post(w->all_done);
+        up_pool_gate_worker_done(w->gate);
     }
     return NULL;
 }
@@ -781,12 +752,8 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
     /* I/O mode: copy on the side that is NOT zero-copy. */
     w->copy_in      = !p->src_zerocopy;
     w->copy_out     = !p->dst_zerocopy;
-    w->go_lock      = &p->go_lock;
-    w->go_cv        = &p->go_cv;
-    w->generation   = &p->generation;
-    w->seen_gen     = p->generation;   /* don't run a frame before the first dispatch */
-    w->pending      = &p->pending;
-    w->all_done     = &p->all_done;
+    w->gate         = &p->gate;
+    w->seen_gen     = p->gate.generation;  /* don't run a frame before the first dispatch */
     w->worker_id    = worker_id;
     w->src = plane_buffer_view(&p->src);
 
@@ -855,13 +822,12 @@ static void zimg_wake_all_for_exit(zimg_priv_t *p)
 {
     /* If the gate never initialized, no thread was ever spawned (construct
      * runs after gate init), so there is nothing to wake. */
-    if (!p->go_gate_inited) return;
-    pthread_mutex_lock(&p->go_lock);
+    if (!up_pool_gate_ready(&p->gate)) return;
+    up_pool_gate_lock(&p->gate);
     for (int i = 0; i < p->n_threads; i++)
         if (p->workers[i].thread_started)
-            p->workers[i].should_exit = 1;
-    pthread_cond_broadcast(&p->go_cv);
-    pthread_mutex_unlock(&p->go_lock);
+            p->workers[i].should_exit = true;
+    up_pool_gate_unlock_broadcast(&p->gate);
 }
 
 static void zimg_stop_workers(zimg_priv_t *p)
@@ -1003,19 +969,9 @@ static int zimg_lazy_init(zimg_priv_t *p)
         memset(p->workers, 0, total);
     }
 
-    atomic_init(&p->pending, 0);
-    if (sem_init(&p->all_done, 0, 0) != 0) return -1;
-    p->all_done_inited = true;
-
-    /* SCAL-2 wake gate. Must be live before construct_workers spawns threads,
-     * since each worker blocks on go_cv immediately (seen_gen == generation). */
-    if (pthread_mutex_init(&p->go_lock, NULL) != 0) return -1;
-    if (pthread_cond_init(&p->go_cv, NULL) != 0) {
-        pthread_mutex_destroy(&p->go_lock);
-        return -1;
-    }
-    p->generation = 0;
-    p->go_gate_inited = true;
+    /* Gate must be live before construct_workers spawns threads, since
+     * each worker blocks on the cv immediately (seen_gen == generation). */
+    if (up_pool_gate_init(&p->gate) != 0) return -1;
 
     int constructed = 0;
     /* ARCH-1: the worker-construction chain reads only src/dst geometry, all
@@ -1166,21 +1122,18 @@ static void point_workers_planes(zimg_priv_t *p,
  */
 static scaler_process_status_t zimg_dispatch_and_wait(zimg_priv_t *p)
 {
-    /* SCAL-2 wake side: arm the done-barrier and reset results, then bump the
-     * generation once and wake every worker with a single broadcast (was N
-     * sem_post). All of this under go_lock, so a worker that wakes sees pending
-     * already armed and its result already reset. */
-    pthread_mutex_lock(&p->go_lock);
-    atomic_store_explicit(&p->pending, p->n_threads, memory_order_relaxed);
+    /* Wake side: arm the barrier and reset results inside the gate's
+     * critical section, so a worker that wakes sees pending already
+     * armed and its result already reset. */
+    up_pool_gate_lock(&p->gate);
+    up_pool_gate_arm_locked(&p->gate, p->n_threads);
     for (int i = 0; i < p->n_threads; i++)
         p->workers[i].result = 0;
-    p->generation++;
-    pthread_cond_broadcast(&p->go_cv);
-    pthread_mutex_unlock(&p->go_lock);
+    up_pool_gate_unlock_broadcast(&p->gate);
 
     /* On a fatal barrier error, synchronously drain the dispatched generation
      * and join the pool before returning control to the picture owner. */
-    if (up_sem_wait_nointr(&p->all_done) != 0) {
+    if (up_pool_gate_wait_all(&p->gate) != 0) {
         p->pool_broken = true;
         zimg_stop_workers(p);
         return SCALER_PROCESS_FATAL;
@@ -1328,11 +1281,7 @@ static void zimg_close(scaler_ctx_t *ctx)
         }
         free(p->workers);
     }
-    if (p->go_gate_inited) {
-        pthread_cond_destroy(&p->go_cv);
-        pthread_mutex_destroy(&p->go_lock);
-    }
-    if (p->all_done_inited) sem_destroy(&p->all_done);
+    up_pool_gate_destroy(&p->gate);
 
     free_plane_buffer(&p->src);
     free_plane_buffer(&p->dst);

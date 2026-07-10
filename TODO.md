@@ -74,7 +74,6 @@ machine complexity is tracked as PAT-1 (the consolidation is the fix).
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| ARCH-1 | open | M | `src/scaler_zimg.c` (1351 lines, 44 functions) carries two responsibilities: a generic persistent worker-pool/dispatch engine and zimg-specific graph/geometry/IO management. | Same root cause as DUP-1; extracting the shared pool gate into threading.h resolves both, leaving scaler_zimg.c owning only zimg concerns. |
 
 Otherwise clean: header-heavy pure-logic layout is a deliberate documented testability
 convention; `scaler_ctx_t.zimg` sub-struct isolates backend tunables; scaler.c cleanly
