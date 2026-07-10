@@ -8,8 +8,7 @@ review categories. One table per category. Format: `id | status | effort | descr
 
 2026-07-10 post-fix rescan: full repository, every category, four parallel
 audit tracks covering production code, tests/fuzzers/benches, build/CI/scripts,
-and documentation. New or reopened: CON-4,
-ARCH-10, REL-6..9, ERR-3, PORT-6..8,
+and documentation. New or reopened: ARCH-10, REL-6..9, ERR-3, PORT-6..8,
 BUILD-2, BUILD-11..12, BUILD-14..15,
 OBS-6..8, WIRE-5, DEAD-9; DG-1, PORT-3, and BUILD-10 were
 expanded with related evidence. ASan/UBSan unit tests and all deterministic
@@ -63,7 +62,6 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| CON-4 | open | M | A non-`EINTR` done-barrier failure returns while workers may still write the destination (`threading.h:119-135`, `usm_pool.c:522-540`, `scaler_zimg.c:1114-1132`). USM then lets `Filter()` forward that picture, and forced-zimg mode releases it without first closing/joining the pool. | Mark the pool fatally broken and synchronously stop/join or otherwise drain its workers before any caller touches/releases the picture. This is the residual error path after CON-3 fixed retryable `EINTR`. |
 | — | | | CON-2 remains resolved by the documented serial-per-instance `Filter()` contract. | |
 
 ## code complexity

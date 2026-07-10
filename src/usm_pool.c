@@ -104,7 +104,7 @@ typedef struct usm_worker_s {
      * typedef name itself, hence placing it here. */
     alignas(64) pthread_t  thread;
     bool       thread_started;
-    bool       should_exit;   /* set under *go_lock (exit wake) */
+    bool       should_exit;   /* finish unseen generation, then exit */
 
     /* Dispatch gate, shared across workers and owned by the pool — the
      * same design as the zimg pool (SCAL-2): the main thread bumps
@@ -217,7 +217,7 @@ struct usm_pool_s {
     /* SCAL-2-style wake gate + counting done-barrier (see usm_worker_s). */
     pthread_mutex_t go_lock;
     pthread_cond_t  go_cv;
-    uint64_t        generation;     /* bumped per dispatch + on exit, under go_lock */
+    uint64_t        generation;     /* bumped per dispatch under go_lock */
     bool            go_gate_inited; /* destroy guard: mutex+cond init'd */
     atomic_int      pending;        /* live workers this dispatch */
     sem_t           all_done;       /* posted once when pending hits 0 */
@@ -227,6 +227,7 @@ struct usm_pool_s {
 
     bool           lazy_init_done;
     bool           lazy_init_failed;
+    bool           pool_broken;
 };
 
 /* ===========================================================================
@@ -289,15 +290,14 @@ static void usm_worker_run(usm_worker_t *w)
 }
 
 /* Block until the main thread bumps *generation (new dispatch) or sets
- * should_exit. Returns true to run a frame, false to exit the loop. The
- * predicate loop absorbs spurious wakeups; no EINTR issue (pthread_cond_wait
- * never returns it). */
+ * should_exit. An unseen dispatch is completed before exit so fatal barrier
+ * recovery can join without leaving a partly-written frame. */
 static bool usm_worker_wait_for_go(usm_worker_t *w)
 {
     pthread_mutex_lock(w->go_lock);
     while (*w->generation == w->seen_gen && !w->should_exit)
         pthread_cond_wait(w->go_cv, w->go_lock);
-    bool run = !w->should_exit;
+    bool run = *w->generation != w->seen_gen;
     w->seen_gen = *w->generation;
     pthread_mutex_unlock(w->go_lock);
     return run;
@@ -525,10 +525,12 @@ static void usm_pool_set_per_frame(usm_pool_t *p,
  * SCAL-2 design): arm the done-barrier, bump the generation once and
  * wake every worker with a single broadcast; then one wait on the
  * counting barrier's sem, posted by the last worker to finish. Returns
- * 0 once every worker completed, -1 on a broken barrier wait (CON-3:
- * EINTR is retried inside up_sem_wait_nointr; anything else means the
- * sem itself is invalid and the caller must not touch dst).
+ * 0 once every worker completed. On a non-EINTR barrier failure, drains the
+ * dispatched generation, joins the pool, and returns -1 with a sticky fatal
+ * state.
  */
+static void usm_pool_stop_workers(usm_pool_t *p);
+
 static int usm_pool_run(usm_pool_t *p)
 {
     pthread_mutex_lock(&p->go_lock);
@@ -537,7 +539,10 @@ static int usm_pool_run(usm_pool_t *p)
     pthread_cond_broadcast(&p->go_cv);
     pthread_mutex_unlock(&p->go_lock);
 
-    return up_sem_wait_nointr(&p->all_done);
+    if (up_sem_wait_nointr(&p->all_done) == 0) return 0;
+    p->pool_broken = true;
+    usm_pool_stop_workers(p);
+    return -1;
 }
 
 static int usm_pool_validate_args(const usm_pool_t *p,
@@ -575,6 +580,7 @@ int up_usm_pool_apply(usm_pool_t *p,
 {
     if (usm_pool_validate_args(p, dst, dst_stride, src, src_stride) != 0)
         return -1;
+    if (p->pool_broken) return -1;
 
     amount_q8 = up_usm__clamp_amount_q8(amount_q8);
 
@@ -591,10 +597,7 @@ int up_usm_pool_apply(usm_pool_t *p,
     return usm_pool_run(p);
 }
 
-/* Tell every started worker to finish its loop: set should_exit on all of
- * them and bump the generation under go_lock, then one broadcast wakes the
- * whole pool. Workers read should_exit under the same lock, so the writes
- * never race their reads. Pair with the join loop in destroy. */
+/* Tell every started worker to finish any unseen generation, then exit. */
 static void usm_pool_wake_all_for_exit(usm_pool_t *p)
 {
     /* If the gate never initialized, no thread was ever spawned (spawn
@@ -604,9 +607,19 @@ static void usm_pool_wake_all_for_exit(usm_pool_t *p)
     for (int i = 0; i < p->n_threads; i++)
         if (p->workers[i].thread_started)
             p->workers[i].should_exit = true;
-    p->generation++;
     pthread_cond_broadcast(&p->go_cv);
     pthread_mutex_unlock(&p->go_lock);
+}
+
+static void usm_pool_stop_workers(usm_pool_t *p)
+{
+    if (!p->workers) return;
+    usm_pool_wake_all_for_exit(p);
+    for (int i = 0; i < p->n_threads; i++) {
+        if (!p->workers[i].thread_started) continue;
+        pthread_join(p->workers[i].thread, NULL);
+        p->workers[i].thread_started = false;
+    }
 }
 
 void up_usm_pool_destroy(usm_pool_t *p)
@@ -614,11 +627,7 @@ void up_usm_pool_destroy(usm_pool_t *p)
     if (!p) return;
 
     if (p->workers) {
-        usm_pool_wake_all_for_exit(p);
-        for (int i = 0; i < p->n_threads; i++) {
-            if (p->workers[i].thread_started)
-                pthread_join(p->workers[i].thread, NULL);
-        }
+        usm_pool_stop_workers(p);
         free(p->workers);
     }
     if (p->all_done_inited) sem_destroy(&p->all_done);

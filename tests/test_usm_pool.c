@@ -19,6 +19,7 @@
 
 #include "../src/usm.h"
 #include "../src/usm_pool.h"
+#include "barrier_fault_inject.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -538,6 +539,46 @@ static void test_apply_lazy_init_oom_sticky(void)
     END();
 }
 
+static void test_barrier_failure_drains_and_sticks(void)
+{
+    BEGIN("barrier failure drains frame, stops pool, and sticks");
+    enum { W = 64, H = 64 };
+    size_t bytes = (size_t)W * H;
+    uint8_t *src = malloc(bytes);
+    uint8_t *expected = malloc(bytes);
+    uint8_t *inplace = malloc(bytes);
+    uint8_t *workspace = malloc(bytes);
+    usm_pool_t *pool = up_usm_pool_create(4, W, H, 0);
+    if (!src || !expected || !inplace || !workspace || !pool) {
+        printf("    setup failed\n");
+        g_cur_fail = 1;
+        free(src); free(expected); free(inplace); free(workspace);
+        up_usm_pool_destroy(pool);
+        END();
+        return;
+    }
+
+    int amount = up_usm_amount_pct_to_q8(30);
+    fill_pseudorandom(src, bytes, 0xC04B4AULL);
+    up_usm_apply_plane(expected, W, src, W, W, H, amount, workspace);
+
+    memcpy(inplace, src, bytes);
+    CHECK(up_usm_pool_apply(pool, inplace, W, inplace, W, amount) == 0);
+    memcpy(inplace, src, bytes);
+    barrier_fault_inject_next_dispatch();
+    CHECK(up_usm_pool_apply(pool, inplace, W, inplace, W, amount) == -1);
+    CHECK(memcmp(inplace, expected, bytes) == 0);
+    CHECK(barrier_fault_injection_consumed());
+
+    memset(inplace, 0xA5, bytes);
+    CHECK(up_usm_pool_apply(pool, inplace, W, src, W, 0) == -1);
+    for (size_t i = 0; i < bytes; i++) CHECK(inplace[i] == 0xA5);
+
+    up_usm_pool_destroy(pool);
+    free(src); free(expected); free(inplace); free(workspace);
+    END();
+}
+
 /*
  * Exercise the pthread_create-failure path in usm_pool_spawn_worker: the
  * spawn loop must stop cleanly and shrink the pool (or fail sticky) with
@@ -598,6 +639,7 @@ int main(void)
     test_create_invalid_args();
     test_create_stripe_min_rows_boundaries();
     test_apply_lazy_init_oom_sticky();
+    test_barrier_failure_drains_and_sticks();
     test_destroy_null_safe();
     test_destroy_unused_pool();
     test_apply_null_pool();

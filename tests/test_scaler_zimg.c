@@ -27,6 +27,7 @@
  *****************************************************************************/
 #define ZIMG_TEST_DEFINE_MODULE_NAME
 #include "zimg_test_util.h"
+#include "barrier_fault_inject.h"
 
 #include <stdio.h>
 #include <sys/resource.h>
@@ -325,6 +326,46 @@ static void test_construction_pthread_fail(void)
     END();
 }
 
+static void test_barrier_failure_drains_and_sticks(void)
+{
+    BEGIN("barrier failure drains frame, stops pool, and sticks");
+    const struct zcfg *c = &CFGS[1];
+    const uint32_t seed = 0xC04B4Au;
+    zt_pic_t expected = {0}, src = {0}, dst = {0}, untouched = {0};
+    int expected_rc = run_zimg(c, 0, 1, 0x00, seed, &expected);
+    int alloc_ok = zt_pic_alloc(&src, c->chroma, c->sw, c->sh) == 0
+        && zt_pic_alloc(&dst, c->chroma, c->dw, c->dh) == 0
+        && zt_pic_alloc(&untouched, c->chroma, c->dw, c->dh) == 0;
+
+    scaler_ctx_t ctx;
+    zt_ctx_init(&ctx, c->chroma, c->sw, c->sh,
+                c->dw, c->dh, c->threads, 1);
+    ctx.zimg.src_zerocopy = 0;
+    int open_rc = alloc_ok ? ctx.backend->open(&ctx) : -1;
+    CHECK(expected_rc == 0 && alloc_ok && open_rc == 0);
+    if (expected_rc == 0 && alloc_ok && open_rc == 0) {
+        zt_pic_fill(&src, seed);
+        CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic) == 0);
+
+        zt_pic_memset(&dst, 0x00);
+        barrier_fault_inject_next_dispatch();
+        CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic) == -1);
+        CHECK(cmp_visible(&expected, &dst) == 0);
+        CHECK(barrier_fault_injection_consumed());
+
+        zt_pic_memset(&dst, 0xA5);
+        zt_pic_memset(&untouched, 0xA5);
+        CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic) == -1);
+        CHECK(cmp_visible(&untouched, &dst) == 0);
+    }
+    if (open_rc == 0) ctx.backend->close(&ctx);
+    zt_pic_free(&expected);
+    zt_pic_free(&src);
+    zt_pic_free(&dst);
+    zt_pic_free(&untouched);
+    END();
+}
+
 /* open() rejects a chroma the backend can't handle (the ChromaToZimg gate). */
 static void test_open_rejects_unsupported(void)
 {
@@ -507,6 +548,7 @@ int main(void)
     test_open_rejects_unsupported();
     test_extreme_ratio_no_crash();
     test_construction_pthread_fail();
+    test_barrier_failure_drains_and_sticks();
     test_pin_cpus_matches();
     test_tiling_matches_untiled();
     printf("\n%d tests run, %d failed\n", g_run, g_fail);

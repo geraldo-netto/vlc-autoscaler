@@ -71,7 +71,9 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
  * (SYS-4). Partial overlap (dst != src but ranges overlapping, or same
  * base with different strides) is rejected/undefined. Returns 0 on
  * success, -1 if the pool is NULL, the strides are too small or
- * mismatched while aliased, or lazy thread spawn fails.
+ * mismatched while aliased, lazy thread spawn fails, or the completion
+ * barrier fails. A barrier failure drains and joins the workers before
+ * returning and leaves the pool in a sticky failed state.
  *
  * (Convention matches the rest of the project: 0 = success, negative
  * = failure. Was inverted in earlier versions; flipped 2026-05.)

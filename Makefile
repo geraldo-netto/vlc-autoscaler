@@ -78,6 +78,7 @@ endif
 
 TEST_CFLAGS  := -O2 -g $(MARCH_FLAG) $(WARN) -fsanitize=address,undefined
 TEST_LDFLAGS := -fsanitize=address,undefined
+BARRIER_WRAP_LDFLAGS := -Wl,--wrap=sem_wait -Wl,--wrap=pthread_cond_broadcast
 
 FUZZ_SAN     := -fsanitize=fuzzer,address,undefined
 FUZZ_CFLAGS  := -O1 -g $(MARCH_FLAG) $(WARN) $(FUZZ_SAN)
@@ -430,16 +431,19 @@ ifdef HAVE_ZIMG
 ZIMG_H_CFLAGS  := -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS)
 ZIMG_H_LIBS    := $(VLC_LIBS) $(ZIMG_LIBS) -lpthread
 ZIMG_H_DEPS    := tests/zimg_test_util.h src/scaler_zimg.c src/scaler.h \
+                  tests/barrier_fault_inject.h \
                   src/zimg_helpers.h src/scaler_zimg_chroma.h \
                   src/upscale_logic.h src/threading.h
 
 $(BUILD)/test_scaler_zimg: tests/test_scaler_zimg.c $(ZIMG_H_DEPS) | $(BUILD)
 	$(CC) -O2 $(ZIMG_H_CFLAGS) -fsanitize=address,undefined -o $@ \
-	    $< src/scaler_zimg.c -fsanitize=address,undefined $(ZIMG_H_LIBS)
+	    $< src/scaler_zimg.c -fsanitize=address,undefined \
+	    $(BARRIER_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
 
 $(BUILD)/test_scaler_zimg_tsan: tests/test_scaler_zimg.c $(ZIMG_H_DEPS) | $(BUILD)
 	$(CLANG) -O1 $(ZIMG_H_CFLAGS) -fsanitize=thread -o $@ \
-	    $< src/scaler_zimg.c -fsanitize=thread $(ZIMG_H_LIBS)
+	    $< src/scaler_zimg.c -fsanitize=thread \
+	    $(BARRIER_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
 
 $(BUILD)/bench_scaler_zimg: tests/bench_scaler_zimg.c $(ZIMG_H_DEPS) | $(BUILD)
 	$(CC) -O2 $(ZIMG_H_CFLAGS) -o $@ $< src/scaler_zimg.c $(ZIMG_H_LIBS)
@@ -486,7 +490,8 @@ stress-zimg: $(BUILD)/test_scaler_zimg $(BUILD)/test_scaler_zimg_tsan
 coverage-zimg:
 	@rm -rf $(BUILD)/covz && mkdir -p $(BUILD)/covz
 	$(CC) -O0 -g --coverage $(ZIMG_H_CFLAGS) -o $(BUILD)/covz/tz \
-	    tests/test_scaler_zimg.c src/scaler_zimg.c --coverage $(ZIMG_H_LIBS)
+	    tests/test_scaler_zimg.c src/scaler_zimg.c --coverage \
+	    $(BARRIER_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
 	@$(BUILD)/covz/tz >/dev/null 2>&1 || true
 	@gcov -m -o $(BUILD)/covz $(BUILD)/covz/tz-scaler_zimg.gcda >/dev/null 2>&1 || true
 	@awk -F: 'NF>=2{c=$$1;gsub(/[ \t]/,"",c); if(c!="-"&&c!=""){t++; if(c=="#####"||c=="=====")u++}} \
@@ -602,8 +607,9 @@ $(COV_BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/test_usm_pool: tests/test_usm_pool.c src/usm_pool.c src/usm_pool.h src/usm.h | $(COV_BUILD)
-	$(COV_CC) $(COV_CFLAGS) -o $@ $< src/usm_pool.c $(COV_LDFLAGS) -lpthread
+$(COV_BUILD)/test_usm_pool: tests/test_usm_pool.c tests/barrier_fault_inject.h src/usm_pool.c src/usm_pool.h src/usm.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< src/usm_pool.c $(COV_LDFLAGS) \
+	    $(BARRIER_WRAP_LDFLAGS) -lpthread
 $(COV_BUILD)/test_content_probe: tests/test_content_probe.c src/content_probe.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h | $(COV_BUILD)
@@ -728,8 +734,9 @@ $(BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $(BUI
 $(BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
-$(BUILD)/test_usm_pool: tests/test_usm_pool.c src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
-	$(CC) $(TEST_CFLAGS) -o $@ $< src/usm_pool.c $(TEST_LDFLAGS) -lpthread
+$(BUILD)/test_usm_pool: tests/test_usm_pool.c tests/barrier_fault_inject.h src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
+	$(CC) $(TEST_CFLAGS) -o $@ $< src/usm_pool.c $(TEST_LDFLAGS) \
+	    $(BARRIER_WRAP_LDFLAGS) -lpthread
 
 # Cross-variant byte-equivalence test: links all three SIMD variants and the
 # dispatcher's variant_name symbol. Each variant .o is the same usm_pool.c

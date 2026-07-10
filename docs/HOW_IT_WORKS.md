@@ -796,6 +796,10 @@ backend lazily:
    chroma subsampling.
 4. Spawns the worker threads, which block on a shared condition variable.
 
+If a completion-barrier wait fails, the pool is marked fatal, any dispatched
+generation is drained, and every worker is joined before the frame returns to
+its owner. Later calls fail without touching the picture.
+
 At each `Filter()` call the backend:
 
 1. **Copy-in** (only when `--autoupscale-zerocopy-src=0`): each worker
