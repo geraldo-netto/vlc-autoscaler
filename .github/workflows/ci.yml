@@ -53,8 +53,8 @@ jobs:
             EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
           make clean
 
-      - name: Unit tests (ASan + UBSan)
-        run: make test
+      - name: Unit tests (ASan + UBSan) + complexity gate
+        run: make check
 
       - name: zimg backend invariants (ASan + UBSan)
         run: make test-zimg

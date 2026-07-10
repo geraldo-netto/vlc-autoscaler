@@ -154,7 +154,7 @@ endif
 
 PLUGIN_OBJS += $(USM_OBJS)
 
-.PHONY: all plugin test fuzz fuzz-smoke fuzz-seam analyze scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
+.PHONY: all plugin test check fuzz fuzz-smoke fuzz-seam analyze scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
 
 all: plugin
 
@@ -188,7 +188,12 @@ $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CC) $(PLUGIN_CFLAGS) -c -o $@ $<
 
 # --------- unit tests ---------
-test: complexity $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants
+# `test` runs the suites only; `check` adds the lizard complexity gate.
+# CI runs `check` so CCN regressions still fail there, while `make test`
+# works on machines without lizard installed.
+check: complexity test
+
+test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/test_upscale_logic
