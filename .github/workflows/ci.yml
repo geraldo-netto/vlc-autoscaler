@@ -103,13 +103,41 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Install dependencies
+        # VLC + zimg headers let this job build fuzz_scaler_seam too
+        # (BUILD-9); without them the seam corpus was never replayed
+        # under libFuzzer.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential clang
+            build-essential clang pkg-config \
+            libvlccore-dev libvlc-dev libzimg-dev
 
       - name: Build fuzzers
         run: make fuzz
+
+      # BUILD-9: every built fuzzer gets at least a short libFuzzer pass;
+      # previously 8 of 13 were built but never run.
+      - name: Run libFuzzer (pure-logic targets, short pass)
+        run: |
+          for t in perfmon threading copy_plane stripe_bounds \
+                   decide_tile_grid scaler_open picture_view; do
+            mkdir -p "corpus_$t"
+            "build/fuzz_$t" "corpus_$t" -max_total_time=30 -print_final_stats=1
+          done
+
+      - name: Run libFuzzer (usm_variants, curated corpus)
+        run: |
+          mkdir -p corpus_usm_variants_work
+          cp tests/corpus_usm_variants/* corpus_usm_variants_work/ 2>/dev/null || true
+          build/fuzz_usm_variants corpus_usm_variants_work \
+            -max_total_time=60 -print_final_stats=1
+
+      - name: Run libFuzzer (scaler_seam, curated corpus)
+        run: |
+          mkdir -p corpus_scaler_seam_work
+          cp tests/corpus_scaler_seam/* corpus_scaler_seam_work/ 2>/dev/null || true
+          build/fuzz_scaler_seam corpus_scaler_seam_work \
+            -max_total_time=90 -max_len=16 -print_final_stats=1
 
       - name: Run libFuzzer (upscale_logic)
         run: |

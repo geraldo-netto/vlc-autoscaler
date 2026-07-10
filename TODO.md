@@ -158,7 +158,6 @@ Test-harness pic leaks are tracked as MEM-1/MEM-3.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | BUILD-7 | open | S | `.github/workflows/ci.yml:124` — `actions/upload-artifact@v4` is tag-pinned while checkout and sonarqube-scan-action are SHA-pinned; inconsistent supply-chain pinning. | Pin by SHA. |
-| BUILD-9 | open | S | The libFuzzer CI job builds 13 fuzzers but runs only 5 (ci.yml:91-120); `fuzz_scaler_seam` is neither in `make fuzz` nor buildable in that job (no libzimg), so `tests/corpus_scaler_seam/` (80+ curated seeds) and `corpus_usm_variants/` are never replayed under libFuzzer in CI. | The seam smoke variant does run via test-zimg; add libzimg + the missing fuzzers/corpora to the fuzz job. |
 
 ## observability
 
