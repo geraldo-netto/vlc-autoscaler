@@ -26,6 +26,7 @@
  * The test is a NO-OP on non-AVX-512 CPUs for the AVX-512 variant, etc.
  *****************************************************************************/
 
+#include "../src/cpu_level.h"
 #include "../src/usm.h"
 #include "../src/usm_pool.h"
 
@@ -344,9 +345,10 @@ static void test_dispatcher_init(void)
 int main(void)
 {
     __builtin_cpu_init();
-    has_avx2   = __builtin_cpu_supports("avx2");
-    has_avx512 = __builtin_cpu_supports("avx512f")
-              && __builtin_cpu_supports("avx512bw");
+    /* Level probes, not headline features: the variant kernels are compiled
+     * at -march=x86-64-v3/v4, so running them needs the full level (PORT-6). */
+    has_avx2   = up_cpu_supports_v3();
+    has_avx512 = up_cpu_supports_v4();
 
     printf("CPU feature gating:\n");
     printf("  AVX2:     %s\n", has_avx2 ? "available — testing variant" : "absent — variant skipped");

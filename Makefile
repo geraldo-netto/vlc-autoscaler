@@ -143,7 +143,7 @@ $(BUILD)/usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
 
 # Dispatcher must be at the lowest baseline so it runs on ANY CPU. It just
 # does CPU-feature checks and indirect calls — no SIMD work itself.
-$(BUILD)/usm_pool_dispatch.o: src/usm_pool_dispatch.c src/usm_pool.h | $(BUILD)
+$(BUILD)/usm_pool_dispatch.o: src/usm_pool_dispatch.c src/usm_pool.h src/cpu_level.h | $(BUILD)
 	$(CC) $(PLUGIN_CFLAGS) -march=x86-64 -c -o $@ $<
 else
 USM_OBJS := $(BUILD)/usm_pool.o
@@ -791,13 +791,13 @@ $(BUILD)/test_usm_pool_avx2.o:   src/usm_pool.c src/usm.h src/usm_pool.h | $(BUI
 	$(CC) $(TEST_CFLAGS) -march=x86-64-v3 -DUSM_VARIANT=avx2   -c -o $@ $<
 $(BUILD)/test_usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -march=x86-64-v4 -DUSM_VARIANT=avx512 -c -o $@ $<
-$(BUILD)/test_usm_pool_dispatch.o: src/usm_pool_dispatch.c src/usm_pool.h | $(BUILD)
+$(BUILD)/test_usm_pool_dispatch.o: src/usm_pool_dispatch.c src/usm_pool.h src/cpu_level.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -march=x86-64 -c -o $@ $<
 
 $(BUILD)/test_usm_pool_variants: tests/test_usm_pool_variants.c \
     $(BUILD)/test_usm_pool_sse2.o $(BUILD)/test_usm_pool_avx2.o \
     $(BUILD)/test_usm_pool_avx512.o $(BUILD)/test_usm_pool_dispatch.o \
-    src/usm.h src/usm_pool.h | $(BUILD)
+    src/usm.h src/usm_pool.h src/cpu_level.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< \
 	    $(BUILD)/test_usm_pool_sse2.o $(BUILD)/test_usm_pool_avx2.o \
 	    $(BUILD)/test_usm_pool_avx512.o $(BUILD)/test_usm_pool_dispatch.o \

@@ -40,6 +40,7 @@
  * levels used to compile the objects. The complete guard is tracked as PORT-6.
  *****************************************************************************/
 
+#include "cpu_level.h"
 #include "usm_pool.h"
 
 #include <stdint.h>
@@ -101,22 +102,23 @@ static usm_pool_ops_t g_ops;
  * Selection priority: AVX-512 > AVX2 > SSE2. The SSE2 baseline is always a
  * valid fallback (every x86_64 CPU has SSE2; it's part of the architecture).
  *
- * These headline probes are narrower than the full x86-64-v3/v4 compile
- * levels used for the objects; the complete guard is tracked as PORT-6.
+ * PORT-6: the variant objects are compiled at -march=x86-64-v4/v3, so
+ * selection proves the full level (the v4 object contains EVEX.256
+ * instructions requiring AVX512VL, not just F+BW).
  */
 static void __attribute__((constructor))
 up_usm_pool_dispatch_init(void)
 {
 #if defined(__GNUC__) || defined(__clang__)
     __builtin_cpu_init();
-    if (__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512bw")) {
+    if (up_cpu_supports_v4()) {
         g_ops = (usm_pool_ops_t){ up_usm_pool_create_avx512,
                                   up_usm_pool_destroy_avx512,
                                   up_usm_pool_apply_avx512 };
         up_usm_pool_variant_name = "avx512";
         return;
     }
-    if (__builtin_cpu_supports("avx2")) {
+    if (up_cpu_supports_v3()) {
         g_ops = (usm_pool_ops_t){ up_usm_pool_create_avx2,
                                   up_usm_pool_destroy_avx2,
                                   up_usm_pool_apply_avx2 };

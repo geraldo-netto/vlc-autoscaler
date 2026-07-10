@@ -27,6 +27,7 @@
 #  include <sys/sysinfo.h>
 #endif
 
+#include "cpu_level.h"
 #include "upscale_logic.h"
 #include "usm.h"
 #include "usm_pool.h"
@@ -623,16 +624,18 @@ static int Open( vlc_object_t *p_this )
     filter_t *p_filter = (filter_t *)p_this;
 
 #if defined(__x86_64__)
-    /* BUILD-5: Reject CPUs missing the build's headline SIMD feature. Full
-     * x86-64-v3/v4 level validation remains tracked as PORT-6. */
+    /* BUILD-5/PORT-6: this whole object is compiled at the build's -march
+     * level, so reject CPUs below that LEVEL — the headline feature alone
+     * does not cover BMI2/FMA/... (v3) or AVX512VL/... (v4) instructions
+     * the compiler is free to emit anywhere in the plugin. */
 #if defined(__AVX512F__)
-    if (!__builtin_cpu_supports("avx512f")) {
-        msg_Err(p_this, "AutoUpscale: CPU lacks AVX-512F required by this build");
+    if (!up_cpu_supports_v4()) {
+        msg_Err(p_this, "AutoUpscale: CPU below x86-64-v4 required by this build");
         return VLC_EGENERIC;
     }
 #elif defined(__AVX2__)
-    if (!__builtin_cpu_supports("avx2")) {
-        msg_Err(p_this, "AutoUpscale: CPU lacks AVX2 required by this build");
+    if (!up_cpu_supports_v3()) {
+        msg_Err(p_this, "AutoUpscale: CPU below x86-64-v3 required by this build");
         return VLC_EGENERIC;
     }
 #endif
