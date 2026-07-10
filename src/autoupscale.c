@@ -104,7 +104,7 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 #define USM_TEXT        N_("Unsharp-mask amount (post-upscale, percent)")
 #define USM_LONGTEXT    N_( \
     "Amount of unsharp-mask sharpening applied to the luma plane after " \
-    "the upscale, as a percentage. 0 disables. Default 30 (subtle). " \
+    "the upscale, as a percentage. 0 disables. Default 20 (subtle). " \
     "Only applied to YUV chromas; ignored for RGB.")
 
 #define BACKEND_TEXT    N_("Scaler backend")
@@ -170,14 +170,14 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
     "Each USM worker thread processes at least this many rows. " \
     "Smaller values let more workers fit on low-resolution frames " \
     "(e.g. 480p) but increase per-frame thread-dispatch overhead. " \
-    "Default 8 (matches the kernel boundary handling). " \
-    "Range 1..256.")
+    "0 = auto (8, matches the kernel boundary handling). " \
+    "Range 0..256.")
 
 #define ZIMG_STRIPE_LINES_TEXT N_("Minimum dst lines per zimg stripe")
 #define ZIMG_STRIPE_LINES_LONGTEXT N_( \
     "Each zimg worker thread emits at least this many destination " \
     "rows. Smaller values let more workers fit on low-res output but " \
-    "increase per-stripe boundary work. Default 16. Range 4..128.")
+    "increase per-stripe boundary work. 0 = auto (16). Range 0..128.")
 
 #define USM_SHARP_THRESH_TEXT N_("USM-skip sharpness threshold")
 #define USM_SHARP_THRESH_LONGTEXT N_( \
