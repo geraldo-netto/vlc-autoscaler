@@ -38,6 +38,19 @@ endif
 VLC_PLUGIN_BASE := $(shell pkg-config --variable=pluginsdir vlc-plugin 2>/dev/null)
 VLC_PLUGIN_DIR  := $(VLC_PLUGIN_BASE)/video_filter
 
+# Fail fast, at parse time, when a plugin build is requested without the
+# required SDKs — otherwise the first object compile dies on a cryptic
+# "vlc_common.h: No such file" long before any friendly message.
+PLUGIN_GOALS := all plugin install scan-build $(BUILD)/$(PLUGIN).so
+ifneq ($(filter $(PLUGIN_GOALS),$(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)),)
+  ifeq ($(strip $(VLC_LIBS)),)
+    $(error vlc-plugin pkg-config not found. Install libvlccore-dev (Debian/Ubuntu) or vlc-devel (Fedora))
+  endif
+  ifeq ($(strip $(SWS_LIBS)),)
+    $(error libswscale pkg-config not found. Install libswscale-dev / libavutil-dev)
+  endif
+endif
+
 # --------- common flags ---------
 WARN := -D_GNU_SOURCE -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes
 
@@ -163,16 +176,6 @@ plugin: $(BUILD)/$(PLUGIN).so
 	@chmod 0644 $<
 
 $(BUILD)/$(PLUGIN).so: $(PLUGIN_OBJS) | $(BUILD)
-	@if [ -z "$(VLC_LIBS)" ]; then \
-		echo "ERROR: vlc-plugin pkg-config not found."; \
-		echo "Install libvlccore-dev (Debian/Ubuntu) or vlc-devel (Fedora)."; \
-		exit 1; \
-	fi
-	@if [ -z "$(SWS_LIBS)" ]; then \
-		echo "ERROR: libswscale pkg-config not found."; \
-		echo "Install libswscale-dev / libavutil-dev."; \
-		exit 1; \
-	fi
 	@echo "  CPU baseline:    -march=$(MARCH)$(if $(filter native,$(MARCH)), (build-host ISA),$(if $(filter x86-64-v4,$(MARCH)), (Intel Skylake-X 2017+ / AMD Zen 4 2022+),$(if $(filter x86-64-v3,$(MARCH)), (Intel Haswell 2013+ / AMD Zen 1 2017+),$(if $(filter x86-64,$(MARCH)), (Linux x86-64 / SSE2 baseline),))))"
 	@if [ "$(MULTIVERSION)" = "1" ]; then \
 	    echo "  USM SIMD:        multi-versioned (SSE2 + AVX2 + AVX-512, runtime dispatch)"; \
