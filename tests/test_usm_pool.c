@@ -28,6 +28,18 @@
 #include <string.h>
 #include <sys/resource.h>
 
+/* Compat shim over the io-struct oracle API (Sonar >7-params refactor):
+ * preserves this file's original flat-argument call shape. */
+static int apply_plane8(uint8_t *dst, int dst_stride,
+                        const uint8_t *src, int src_stride,
+                        int width, int height,
+                        int amount_q8, uint8_t *workspace)
+{
+    up_usm_plane_io_t io = { dst, dst_stride, src, src_stride, width, height };
+    return up_usm_apply_plane(&io, amount_q8, workspace);
+}
+
+
 /*
  * AddressSanitizer aborts the program when an allocation request
  * exceeds its internal hard cap (0x10000000000 = 1 TB). We deliberately
@@ -94,7 +106,7 @@ static size_t run_compare(int n_threads, int width, int height,
     fill_pseudorandom(src, plane_bytes, seed);
 
     /* Single-threaded reference */
-    up_usm_apply_plane(dst_st, width,
+    apply_plane8(dst_st, width,
                        src, width,
                        width, height,
                        amount_q8,
@@ -137,7 +149,7 @@ static size_t run_compare_inplace(int n_threads, int width, int height,
 
     if (src && dst_st && inplace && workspace) {
         fill_pseudorandom(src, plane_bytes, seed);
-        up_usm_apply_plane(dst_st, width, src, width,
+        apply_plane8(dst_st, width, src, width,
                            width, height, amount_q8, workspace);
 
         memcpy(inplace, src, plane_bytes);
@@ -345,7 +357,7 @@ static void test_repeat_same_pool(void)
      * threads on frame 1 and reuses them for frames 2..5. */
     for (int frame = 0; frame < 5; frame++) {
         fill_pseudorandom(src, n, 0x1000 + frame);
-        up_usm_apply_plane(dst_st, width, src, width, width, height, amount, ws);
+        apply_plane8(dst_st, width, src, width, width, height, amount, ws);
         up_usm_pool_apply(pool, dst_mt, width, src, width, amount);
 
         size_t diff = 0;
@@ -450,7 +462,7 @@ static void test_create_stripe_min_rows_boundaries(void)
         free(src); free(dst); free(ref); free(ws); END(); return;
     }
     fill_pseudorandom(src, (size_t)W * H, 0xB0BABEEFu);
-    up_usm_apply_plane(ref, W, src, W, W, H, amount, ws);
+    apply_plane8(ref, W, src, W, W, H, amount, ws);
 
     int boundaries[] = {
         INT_MIN, -1, 0,            /* sentinels: all map to default 8 */
@@ -560,7 +572,7 @@ static void test_barrier_failure_drains_and_sticks(void)
 
     int amount = up_usm_amount_pct_to_q8(30);
     fill_pseudorandom(src, bytes, 0xC04B4AULL);
-    up_usm_apply_plane(expected, W, src, W, W, H, amount, workspace);
+    apply_plane8(expected, W, src, W, W, H, amount, workspace);
 
     memcpy(inplace, src, bytes);
     CHECK(up_usm_pool_apply(pool, inplace, W, inplace, W, amount) == 0);

@@ -543,13 +543,23 @@ static void *worker_main(void *arg)
  * active_region is left at its default (no crop) so the result is byte-identical
  * to the row-stripe-only path. `dst_w` is the cell's TILE dst width.
  */
+/* One grid cell's ranges on both axes: rows partition heights, cols
+ * partition widths (both produced by up_compute_stripe_bounds). */
+typedef struct {
+    up_stripe_bounds_t rows;
+    up_stripe_bounds_t cols;
+} cell_bounds_t;
+
 static zimg_filter_graph *build_stripe_graph(
-    int src_full_w, int src_stripe_h,
-    int act_left, int act_width,
-    int dst_w, int dst_stripe_h,
+    int src_full_w, const cell_bounds_t *c,
     unsigned sub_w, unsigned sub_h,
     zimg_resample_filter_e filt)
 {
+    const int src_stripe_h = c->rows.src_end - c->rows.src_start;
+    const int dst_stripe_h = c->rows.dst_end - c->rows.dst_start;
+    const int act_left     = c->cols.src_start;
+    const int act_width    = c->cols.src_end - c->cols.src_start;
+    const int dst_w        = c->cols.dst_end - c->cols.dst_start;
     zimg_image_format src_fmt, dst_fmt;
     zimg_image_format_default(&src_fmt, ZIMG_API_VERSION);
     zimg_image_format_default(&dst_fmt, ZIMG_API_VERSION);
@@ -735,14 +745,11 @@ static int alloc_tile_dst(stripe_worker_t *w, const zimg_priv_t *p,
  * tile-width dst) and allocate its tmp buffer. Returns 0, or -1 on build/alloc
  * failure (caller releases via release_worker_resources). CCN 4. */
 static int build_worker_graph_and_tmp(stripe_worker_t *w, const zimg_priv_t *p,
-                                      int src_stripe_h, int dst_stripe_h,
-                                      int src_x_start, int tile_src_w,
+                                      const cell_bounds_t *c,
                                       unsigned sub_w, unsigned sub_h,
                                       zimg_resample_filter_e filt)
 {
-    w->graph = build_stripe_graph(p->src_w, src_stripe_h,
-                                  src_x_start, tile_src_w,
-                                  w->dst_w, dst_stripe_h, sub_w, sub_h, filt);
+    w->graph = build_stripe_graph(p->src_w, c, sub_w, sub_h, filt);
     if (!w->graph) return -1;
     if (zimg_filter_graph_get_tmp_size(w->graph, &w->tmp_size) != 0) return -1;
     if (w->tmp_size > 0) {
@@ -754,23 +761,19 @@ static int build_worker_graph_and_tmp(stripe_worker_t *w, const zimg_priv_t *p,
 }
 
 static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
-                              int worker_id,
-                              int src_y_start, int src_y_end,
-                              int dst_y_start, int dst_y_end,
-                              int src_x_start, int src_x_end,
-                              int dst_x_start, int dst_x_end,
+                              int worker_id, const cell_bounds_t *c,
                               unsigned sub_w, unsigned sub_h,
                               zimg_resample_filter_e filt)
 {
-    w->src_y_start  = src_y_start;
-    w->src_y_end    = src_y_end;
-    w->dst_y_start  = dst_y_start;
-    w->dst_y_end    = dst_y_end;
-    w->src_x_start  = src_x_start;
-    w->dst_x_start  = dst_x_start;
+    w->src_y_start  = c->rows.src_start;
+    w->src_y_end    = c->rows.src_end;
+    w->dst_y_start  = c->rows.dst_start;
+    w->dst_y_end    = c->rows.dst_end;
+    w->src_x_start  = c->cols.src_start;
+    w->dst_x_start  = c->cols.dst_start;
     w->col_tiled    = p->col_tiled;
-    w->src_w        = src_x_end - src_x_start;   /* TILE widths */
-    w->dst_w        = dst_x_end - dst_x_start;
+    w->src_w        = c->cols.src_end - c->cols.src_start;   /* TILE widths */
+    w->dst_w        = c->cols.dst_end - c->cols.dst_start;
     /* worker_main shifts row offsets by sub (`>> w->sub_h`); a value >= the
      * int width would be UB. Valid YUV chroma gives 0 or 1, but clamp both
      * exponents defensively so a malformed value can never reach the shift
@@ -793,15 +796,13 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
      * otherwise it shares the priv-level dst scratch (or VLC dst in zerocopy,
      * set per-frame). */
     if (w->col_tiled) {
-        if (alloc_tile_dst(w, p, dst_y_end - dst_y_start) != 0) return -1;
+        if (alloc_tile_dst(w, p, c->rows.dst_end - c->rows.dst_start) != 0)
+            return -1;
     } else {
         w->dst = plane_buffer_view(&p->dst);
     }
 
-    if (build_worker_graph_and_tmp(w, p, src_y_end - src_y_start,
-                                   dst_y_end - dst_y_start,
-                                   src_x_start, src_x_end - src_x_start,
-                                   sub_w, sub_h, filt) != 0)
+    if (build_worker_graph_and_tmp(w, p, c, sub_w, sub_h, filt) != 0)
         return -1;
 
     if (pthread_create(&w->thread, NULL, worker_main, w) != 0) {
@@ -910,16 +911,15 @@ static int try_spawn_one_worker(zimg_priv_t *p, int i,
     const int row = i / p->n_cols;
     const int col = i % p->n_cols;
 
-    int sys, sye, dys, dye, sxs, sxe, dxs, dxe;
+    cell_bounds_t c;
     if (!up_compute_stripe_bounds(row, p->n_rows, p->src_h, p->dst_h,
-                                  &sys, &sye, &dys, &dye))
+                                  &c.rows))
         return -1;
     if (!up_compute_stripe_bounds(col, p->n_cols, p->src_w, p->dst_w,
-                                  &sxs, &sxe, &dxs, &dxe))
+                                  &c.cols))
         return -1;
 
-    if (init_stripe_worker(w, p, i, sys, sye, dys, dye,
-                           sxs, sxe, dxs, dxe, sub_w, sub_h, filt) != 0) {
+    if (init_stripe_worker(w, p, i, &c, sub_w, sub_h, filt) != 0) {
         release_worker_resources(w, false);   /* no thread started yet */
         return -1;
     }

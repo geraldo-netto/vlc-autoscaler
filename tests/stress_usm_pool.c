@@ -15,7 +15,7 @@
  *         representative 1920x1080 configurations.
  *
  *   - Verifies BYTE-IDENTICAL output to the single-threaded reference
- *     up_usm_apply_plane() on every single frame, every config. If a
+ *     apply_plane8() on every single frame, every config. If a
  *     race ever produces a wrong byte, this test will see it.
  *
  *   - Mutates the input data (xorshift32 fill) every frame so workers
@@ -42,6 +42,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+/* Compat shim over the io-struct oracle API (Sonar >7-params refactor):
+ * preserves this file's original flat-argument call shape. */
+static int apply_plane8(uint8_t *dst, int dst_stride,
+                        const uint8_t *src, int src_stride,
+                        int width, int height,
+                        int amount_q8, uint8_t *workspace)
+{
+    up_usm_plane_io_t io = { dst, dst_stride, src, src_stride, width, height };
+    return up_usm_apply_plane(&io, amount_q8, workspace);
+}
+
 
 /* xorshift32 — same as the smoke fuzzers. Deterministic across runs. */
 static uint32_t xs32(uint32_t *s)
@@ -115,7 +127,7 @@ static size_t run_one_frame(const stress_config_t *cfg, stress_bufs_t *b,
     /* Single-threaded reference. */
     memset(b->dst_st, 0, plane_size);
     memset(b->ws, 0, plane_size);
-    up_usm_apply_plane(b->dst_st, cfg->width, b->src, cfg->width,
+    apply_plane8(b->dst_st, cfg->width, b->src, cfg->width,
                        cfg->width, cfg->height, amount, b->ws);
 
     /* Multi-threaded: same input, must produce identical output. The

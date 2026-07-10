@@ -10,6 +10,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Compat shim over the struct-based bounds API (Sonar >7-params refactor):
+ * preserves this file's original out-pointer call shape. */
+static int stripe_bounds4(int i, int n, int src_h, int dst_h,
+                          int *src_start, int *src_end,
+                          int *dst_start, int *dst_end)
+{
+    up_stripe_bounds_t b = { 0, 0, 0, 0 };
+    int ok = up_compute_stripe_bounds(i, n, src_h, dst_h, &b);
+    *src_start = b.src_start; *src_end = b.src_end;
+    *dst_start = b.dst_start; *dst_end = b.dst_end;
+    return ok;
+}
+
+
 static int g_run = 0, g_fail = 0, g_cur_fail = 0;
 static const char *g_cur = NULL;
 
@@ -303,7 +317,7 @@ static void test_stripe_bounds_n1_full_coverage(void)
 {
     BEGIN("stripe_bounds: N=1 covers the entire image in one stripe");
     int sys, sye, dys, dye;
-    int ok = up_compute_stripe_bounds(0, 1, 480, 1080, &sys, &sye, &dys, &dye);
+    int ok = stripe_bounds4(0, 1, 480, 1080, &sys, &sye, &dys, &dye);
     CHECK(ok);
     CHECK_EQ(sys, 0);   CHECK_EQ(sye, 480);
     CHECK_EQ(dys, 0);   CHECK_EQ(dye, 1080);
@@ -314,12 +328,12 @@ static void test_stripe_bounds_n2_clean_split(void)
 {
     BEGIN("stripe_bounds: N=2 on 480x1080 splits exactly at midpoint");
     int sys, sye, dys, dye;
-    int ok0 = up_compute_stripe_bounds(0, 2, 480, 1080,
+    int ok0 = stripe_bounds4(0, 2, 480, 1080,
                                        &sys, &sye, &dys, &dye);
     CHECK(ok0);
     CHECK_EQ(sys, 0);   CHECK_EQ(sye, 240);
     CHECK_EQ(dys, 0);   CHECK_EQ(dye, 540);
-    int ok1 = up_compute_stripe_bounds(1, 2, 480, 1080,
+    int ok1 = stripe_bounds4(1, 2, 480, 1080,
                                        &sys, &sye, &dys, &dye);
     CHECK(ok1);
     CHECK_EQ(sys, 240); CHECK_EQ(sye, 480);
@@ -335,7 +349,7 @@ static void test_stripe_bounds_full_coverage_n_arbitrary(void)
         int last_src_end = 0;
         for (int i = 0; i < n; i++) {
             int sys, sye, dys, dye;
-            int ok = up_compute_stripe_bounds(i, n, 480, 1080,
+            int ok = stripe_bounds4(i, n, 480, 1080,
                                               &sys, &sye, &dys, &dye);
             if (!ok) {
                 printf("    N=%d i=%d: empty stripe\n", n, i);
@@ -359,12 +373,12 @@ static void test_stripe_bounds_invalid_inputs(void)
 {
     BEGIN("stripe_bounds: invalid inputs return 0");
     int sys, sye, dys, dye;
-    CHECK(!up_compute_stripe_bounds(0,  0, 480, 1080, &sys, &sye, &dys, &dye));
-    CHECK(!up_compute_stripe_bounds(0, -1, 480, 1080, &sys, &sye, &dys, &dye));
-    CHECK(!up_compute_stripe_bounds(-1, 4, 480, 1080, &sys, &sye, &dys, &dye));
-    CHECK(!up_compute_stripe_bounds(5,  4, 480, 1080, &sys, &sye, &dys, &dye));
-    CHECK(!up_compute_stripe_bounds(0,  4,   0, 1080, &sys, &sye, &dys, &dye));
-    CHECK(!up_compute_stripe_bounds(0,  4, 480,    0, &sys, &sye, &dys, &dye));
+    CHECK(!stripe_bounds4(0,  0, 480, 1080, &sys, &sye, &dys, &dye));
+    CHECK(!stripe_bounds4(0, -1, 480, 1080, &sys, &sye, &dys, &dye));
+    CHECK(!stripe_bounds4(-1, 4, 480, 1080, &sys, &sye, &dys, &dye));
+    CHECK(!stripe_bounds4(5,  4, 480, 1080, &sys, &sye, &dys, &dye));
+    CHECK(!stripe_bounds4(0,  4,   0, 1080, &sys, &sye, &dys, &dye));
+    CHECK(!stripe_bounds4(0,  4, 480,    0, &sys, &sye, &dys, &dye));
     END();
 }
 
@@ -398,7 +412,7 @@ static void test_stripe_bounds_ratio_preservation(void)
     int n = 4;
     for (int i = 0; i < n; i++) {
         int sys, sye, dys, dye;
-        int ok = up_compute_stripe_bounds(i, n, 480, 1080,
+        int ok = stripe_bounds4(i, n, 480, 1080,
                                           &sys, &sye, &dys, &dye);
         CHECK(ok);
         int dst_stripe_h = dye - dys;

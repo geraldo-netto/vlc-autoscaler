@@ -54,6 +54,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Compat shim over the struct-based bounds API (Sonar >7-params refactor):
+ * preserves this file's original out-pointer call shape. */
+static int stripe_bounds4(int i, int n, int src_h, int dst_h,
+                          int *src_start, int *src_end,
+                          int *dst_start, int *dst_end)
+{
+    up_stripe_bounds_t b = { 0, 0, 0, 0 };
+    int ok = up_compute_stripe_bounds(i, n, src_h, dst_h, &b);
+    *src_start = b.src_start; *src_end = b.src_end;
+    *dst_start = b.dst_start; *dst_end = b.dst_end;
+    return ok;
+}
+
+
 /* ---- curated chroma fourccs ---- */
 
 /* Known opaque (must be rejected by is_opaque). Subset of up_opaque_chromas
@@ -292,7 +306,7 @@ static void check_stripe_step(int i, int n, int src_h, int dst_h, int max_n,
 {
     /* Pre-fill with canaries to catch writes-on-failure. */
     int s_a = -777, s_b = -777, d_a = -888, d_b = -888;
-    int ok = up_compute_stripe_bounds(i, n, src_h, dst_h,
+    int ok = stripe_bounds4(i, n, src_h, dst_h,
                                       &s_a, &s_b, &d_a, &d_b);
     if (!ok) {
         FAIL("stripe_bounds returned 0 for valid input "
@@ -359,7 +373,7 @@ static void check_stripe_invalid(int i, int n, int src_h, int dst_h)
      * don't assert anything about them in that case, only that it
      * doesn't crash and returns 0 for invalid inputs. */
     int s_a = 0x4DEAD, s_b = 0x4BEEF, d_a = 0x4CAFE, d_b = 0x4BABE;
-    int ok = up_compute_stripe_bounds(i, n, src_h, dst_h,
+    int ok = stripe_bounds4(i, n, src_h, dst_h,
                                       &s_a, &s_b, &d_a, &d_b);
 
     int invalid = stripe_invalid_input(i, n, src_h, dst_h);

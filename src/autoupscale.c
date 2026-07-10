@@ -506,17 +506,18 @@ static int OpenScalerOrFallback( filter_t *p_filter, filter_sys_t *p_sys )
 /* Populate the scaler_ctx_t from filter parameters and VLC vars. CCN 2. */
 static void ConfigureScaler( scaler_ctx_t *sc,
                              const scaler_backend_t *be,
-                             filter_t *p_filter, vlc_object_t *p_this,
+                             filter_t *p_filter,
                              vlc_fourcc_t chroma, int algo,
-                             int src_w, int src_h, up_dims_t target )
+                             up_dims_t src, up_dims_t target )
 {
+    vlc_object_t *p_this = (vlc_object_t *)p_filter;
     int threads = var_InheritInteger( p_filter, CFG_PREFIX "threads" );
     if( threads < 0 ) threads = 0;
     if( threads > UP_THREADS_MAX ) threads = UP_THREADS_MAX;
 
     sc->backend      = be;
-    sc->src_w        = src_w;
-    sc->src_h        = src_h;
+    sc->src_w        = src.width;
+    sc->src_h        = src.height;
     sc->src_coded_w  = p_filter->fmt_in.video.i_width;
     sc->src_coded_h  = p_filter->fmt_in.video.i_height;
     sc->src_x_offset = p_filter->fmt_in.video.i_x_offset;
@@ -678,8 +679,8 @@ static int Open( vlc_object_t *p_this )
     if( !p_sys ) return VLC_ENOMEM;
 
     p_sys->backend_pref = backend_pref;   /* SYS-2: fallback respects it */
-    ConfigureScaler( &p_sys->scaler, be, p_filter, p_this,
-                     chroma, algo, src_w, src_h, target );
+    ConfigureScaler( &p_sys->scaler, be, p_filter, chroma, algo,
+                     (up_dims_t){ src_w, src_h }, target );
 
     if( OpenScalerOrFallback( p_filter, p_sys ) != 0 )
     {

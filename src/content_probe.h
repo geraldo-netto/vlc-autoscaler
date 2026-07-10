@@ -123,30 +123,36 @@ static inline uint64_t up_laplacian_variance(const uint8_t *plane,
  * pixels. Caller can divide by *n_samples_out for a mean. 0 if input is
  * invalid or the plane is too small to sample.
  */
+/* Running block-edge accumulator shared by the two samplers below. */
+typedef struct {
+    uint64_t sum;
+    uint64_t n;
+} up_edge_acc_t;
+
 /* Vertical block edges: difference between column (k*b - 1) and
- * column (k*b) at every step-th row. Accumulates into sum and n. */
+ * column (k*b) at every step-th row. Accumulates into acc. */
 static inline void up_block_edge_vertical(const uint8_t *plane,
                                           int stride, int w, int h,
                                           int b, int step,
-                                          uint64_t *sum, uint64_t *n)
+                                          up_edge_acc_t *acc)
 {
     for (int y = 0; y < h; y += step) {
         const uint8_t *row = plane + (size_t)y * (size_t)stride;
         for (int x = b; x < w; x += b) {
             int diff = (int)row[x] - (int)row[x - 1];
             if (diff < 0) diff = -diff;
-            *sum += (uint64_t)diff;
-            (*n)++;
+            acc->sum += (uint64_t)diff;
+            acc->n++;
         }
     }
 }
 
 /* Horizontal block edges: difference between row (k*b - 1) and
- * row (k*b) at every step-th column. Accumulates into sum and n. */
+ * row (k*b) at every step-th column. Accumulates into acc. */
 static inline void up_block_edge_horizontal(const uint8_t *plane,
                                             int stride, int w, int h,
                                             int b, int step,
-                                            uint64_t *sum, uint64_t *n)
+                                            up_edge_acc_t *acc)
 {
     for (int y = b; y < h; y += b) {
         const uint8_t *row    = plane + (size_t)y * (size_t)stride;
@@ -154,8 +160,8 @@ static inline void up_block_edge_horizontal(const uint8_t *plane,
         for (int x = 0; x < w; x += step) {
             int diff = (int)row[x] - (int)row_up[x];
             if (diff < 0) diff = -diff;
-            *sum += (uint64_t)diff;
-            (*n)++;
+            acc->sum += (uint64_t)diff;
+            acc->n++;
         }
     }
 }
@@ -173,18 +179,17 @@ static inline uint64_t up_block_edge_strength(const uint8_t *plane,
     if (stride < w)
         return 0;
 
-    uint64_t sum_abs = 0;
-    uint64_t n = 0;
+    up_edge_acc_t acc = { 0, 0 };
     int b = UP_PROBE_BLOCK_SIZE;
     int step = UP_PROBE_GRID_STEP;
     /* UP_PROBE_GRID_STEP and UP_PROBE_BLOCK_SIZE are compile-time
      * constants >= 1; no defensive clamp needed. */
 
-    up_block_edge_vertical(plane, stride, w, h, b, step, &sum_abs, &n);
-    up_block_edge_horizontal(plane, stride, w, h, b, step, &sum_abs, &n);
+    up_block_edge_vertical(plane, stride, w, h, b, step, &acc);
+    up_block_edge_horizontal(plane, stride, w, h, b, step, &acc);
 
-    if (n_samples_out) *n_samples_out = n;
-    return sum_abs;
+    if (n_samples_out) *n_samples_out = acc.n;
+    return acc.sum;
 }
 
 /*

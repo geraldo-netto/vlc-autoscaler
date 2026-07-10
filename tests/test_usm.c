@@ -10,6 +10,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Compat shim over the io-struct oracle API (Sonar >7-params refactor):
+ * preserves this file's original flat-argument call shape. */
+static int apply_plane8(uint8_t *dst, int dst_stride,
+                        const uint8_t *src, int src_stride,
+                        int width, int height,
+                        int amount_q8, uint8_t *workspace)
+{
+    up_usm_plane_io_t io = { dst, dst_stride, src, src_stride, width, height };
+    return up_usm_apply_plane(&io, amount_q8, workspace);
+}
+
+
 static int g_run = 0, g_fail = 0, g_cur_fail = 0;
 static const char *g_cur = NULL;
 
@@ -113,7 +125,7 @@ static void test_apply_amount_zero_is_identity(void)
     for (size_t i = 0; i < sizeof src; i++) src[i] = (uint8_t)(i * 11);
     memset(dst, 0xAB, sizeof dst);
 
-    int rc = up_usm_apply_plane(dst, 8, src, 8, 8, 6, 0, ws);
+    int rc = apply_plane8(dst, 8, src, 8, 8, 6, 0, ws);
     CHECK_EQ(rc, 1);
     CHECK_EQ(memcmp(dst, src, sizeof src), 0);
     END();
@@ -128,7 +140,7 @@ static void test_apply_constant_input(void)
     int amounts[] = { 0, 76, 256, 512, 4096 };
     for (size_t i = 0; i < sizeof amounts / sizeof amounts[0]; i++) {
         memset(dst, 0xAB, sizeof dst);
-        int rc = up_usm_apply_plane(dst, 8, src, 8, 8, 6, amounts[i], ws);
+        int rc = apply_plane8(dst, 8, src, 8, 8, 6, amounts[i], ws);
         CHECK_EQ(rc, 1);
         for (size_t j = 0; j < sizeof dst; j++)
             CHECK_EQ(dst[j], 128);
@@ -162,7 +174,7 @@ static void test_apply_impulse_amount_one(void)
     uint8_t ws[3 * 3];
 
     memset(dst, 0xAB, sizeof dst);
-    int rc = up_usm_apply_plane(dst, 3, src, 3, 3, 3, 256, ws);
+    int rc = apply_plane8(dst, 3, src, 3, 3, 3, 256, ws);
     CHECK_EQ(rc, 1);
     /* Centre pixel is sharpened. */
     CHECK_EQ(dst[1 * 3 + 1], 175);
@@ -185,7 +197,7 @@ static void test_apply_saturation(void)
     uint8_t dst[3 * 3];
     uint8_t ws[3 * 3];
 
-    int rc = up_usm_apply_plane(dst, 3, src, 3, 3, 3, 4096, ws);
+    int rc = apply_plane8(dst, 3, src, 3, 3, 3, 4096, ws);
     CHECK_EQ(rc, 1);
 
     for (int i = 0; i < 9; i++) {
@@ -217,8 +229,8 @@ static void test_apply_in_place_equals_out_of_place(void)
     int amounts[] = { 50, 256, 1000 };
     for (size_t i = 0; i < sizeof amounts / sizeof amounts[0]; i++) {
         memcpy(a, src, sizeof src);
-        int rc1 = up_usm_apply_plane(a, W, a, W, W, H, amounts[i], ws);
-        int rc2 = up_usm_apply_plane(b, W, src, W, W, H, amounts[i], ws);
+        int rc1 = apply_plane8(a, W, a, W, W, H, amounts[i], ws);
+        int rc2 = apply_plane8(b, W, src, W, W, H, amounts[i], ws);
         CHECK_EQ(rc1, 1);
         CHECK_EQ(rc2, 1);
         CHECK_EQ(memcmp(a, b, sizeof a), 0);
@@ -239,7 +251,7 @@ static void test_apply_stride_greater_than_width(void)
     }
     memset(dst, 0xAB, sizeof dst);
 
-    int rc = up_usm_apply_plane(dst, STRIDE, src, STRIDE, W, H, 256, ws);
+    int rc = apply_plane8(dst, STRIDE, src, STRIDE, W, H, 256, ws);
     CHECK_EQ(rc, 1);
 
     /* Padding bytes in dst must NOT have been touched. */
@@ -278,7 +290,7 @@ static void test_apply_amount_zero_unified_stride_fast_path(void)
     for (size_t i = 0; i < sizeof src; i++) src[i] = (uint8_t)(i * 13 + 7);
     memset(dst, 0xAB, sizeof dst);
 
-    int rc = up_usm_apply_plane(dst, W, src, W, W, H, 0, ws);
+    int rc = apply_plane8(dst, W, src, W, W, H, 0, ws);
     CHECK_EQ(rc, 1);
     CHECK_EQ(memcmp(dst, src, sizeof src), 0);
     END();
@@ -323,7 +335,7 @@ static void test_apply_amount_zero_strided_slow_path(void)
     }
     memset(dst, 0xAB, sizeof dst);  /* sentinel everywhere */
 
-    int rc = up_usm_apply_plane(dst, STRIDE, src, STRIDE, W, H, 0, ws);
+    int rc = apply_plane8(dst, STRIDE, src, STRIDE, W, H, 0, ws);
     CHECK_EQ(rc, 1);
 
     check_strided_slow_path_result(dst, src, W, H, STRIDE);
@@ -354,11 +366,11 @@ static void test_apply_amount_zero_fast_and_slow_agree(void)
     memset(dst2, 0xEE, sizeof dst2);
 
     /* Fast path: stride == width */
-    int rc1 = up_usm_apply_plane(dst1, W, src1, W, W, H, 0, ws);
+    int rc1 = apply_plane8(dst1, W, src1, W, W, H, 0, ws);
     CHECK_EQ(rc1, 1);
 
     /* Slow path: stride > width */
-    int rc2 = up_usm_apply_plane(dst2, STRIDE, src2, STRIDE, W, H, 0, ws);
+    int rc2 = apply_plane8(dst2, STRIDE, src2, STRIDE, W, H, 0, ws);
     CHECK_EQ(rc2, 1);
 
     /* Visible region must match across both paths. */
@@ -382,7 +394,7 @@ static void test_apply_amount_zero_in_place_alias_no_copy(void)
     uint8_t saved[sizeof buf];
     memcpy(saved, buf, sizeof buf);
 
-    int rc = up_usm_apply_plane(buf, W, buf, W, W, H, 0, ws);
+    int rc = apply_plane8(buf, W, buf, W, W, H, 0, ws);
     CHECK_EQ(rc, 1);
     CHECK_EQ(memcmp(buf, saved, sizeof buf), 0);
     END();
@@ -397,21 +409,21 @@ static void test_apply_invalid_inputs(void)
     uint8_t buf[16] = {0}, ws[16] = {0};
 
     /* NULL pointers. */
-    CHECK_EQ(up_usm_apply_plane(NULL, 4, buf, 4, 4, 4, 256, ws), 0);
-    CHECK_EQ(up_usm_apply_plane(buf, 4, NULL, 4, 4, 4, 256, ws), 0);
+    CHECK_EQ(apply_plane8(NULL, 4, buf, 4, 4, 4, 256, ws), 0);
+    CHECK_EQ(apply_plane8(buf, 4, NULL, 4, 4, 4, 256, ws), 0);
     /* NULL workspace with non-zero amount. */
-    CHECK_EQ(up_usm_apply_plane(buf, 4, buf, 4, 4, 4, 256, NULL), 0);
+    CHECK_EQ(apply_plane8(buf, 4, buf, 4, 4, 4, 256, NULL), 0);
     /* NULL workspace with amount=0 is OK (identity path). */
-    CHECK_EQ(up_usm_apply_plane(buf, 4, buf, 4, 4, 4, 0, NULL), 1);
+    CHECK_EQ(apply_plane8(buf, 4, buf, 4, 4, 4, 0, NULL), 1);
 
     /* Zero / negative dims. */
-    CHECK_EQ(up_usm_apply_plane(buf, 4, buf, 4, 0, 4, 256, ws), 0);
-    CHECK_EQ(up_usm_apply_plane(buf, 4, buf, 4, 4, 0, 256, ws), 0);
-    CHECK_EQ(up_usm_apply_plane(buf, 4, buf, 4, -1, 4, 256, ws), 0);
+    CHECK_EQ(apply_plane8(buf, 4, buf, 4, 0, 4, 256, ws), 0);
+    CHECK_EQ(apply_plane8(buf, 4, buf, 4, 4, 0, 256, ws), 0);
+    CHECK_EQ(apply_plane8(buf, 4, buf, 4, -1, 4, 256, ws), 0);
 
     /* Stride less than width. */
-    CHECK_EQ(up_usm_apply_plane(buf, 2, buf, 4, 4, 4, 256, ws), 0);
-    CHECK_EQ(up_usm_apply_plane(buf, 4, buf, 2, 4, 4, 256, ws), 0);
+    CHECK_EQ(apply_plane8(buf, 2, buf, 4, 4, 4, 256, ws), 0);
+    CHECK_EQ(apply_plane8(buf, 4, buf, 2, 4, 4, 256, ws), 0);
     END();
 }
 
@@ -419,7 +431,7 @@ static void test_apply_1x1_plane(void)
 {
     BEGIN("apply_plane: 1x1 plane is identity for any amount");
     uint8_t src = 42, dst = 0, ws = 0;
-    int rc = up_usm_apply_plane(&dst, 1, &src, 1, 1, 1, 256, &ws);
+    int rc = apply_plane8(&dst, 1, &src, 1, 1, 1, 256, &ws);
     CHECK_EQ(rc, 1);
     /* hblur 1px = identity; vertical blur of single row = identity;
      * high-pass = 0 -> output = src. */
@@ -434,12 +446,12 @@ static void test_apply_amount_clamping(void)
     uint8_t a[3*3], b[3*3], ws[3*3];
 
     /* Negative amount should behave as 0 (identity). */
-    int rc = up_usm_apply_plane(a, 3, src, 3, 3, 3, -100, ws);
+    int rc = apply_plane8(a, 3, src, 3, 3, 3, -100, ws);
     CHECK_EQ(rc, 1);
     CHECK_EQ(memcmp(a, src, sizeof src), 0);
 
     /* Amount > MAX should clamp to MAX, not reject. */
-    rc = up_usm_apply_plane(b, 3, src, 3, 3, 3, 999999, ws);
+    rc = apply_plane8(b, 3, src, 3, 3, 3, 999999, ws);
     CHECK_EQ(rc, 1);
     /* Centre should be saturated at 255. */
     CHECK_EQ(b[4], 255);

@@ -102,12 +102,20 @@ static inline void up_usm__hblur_row(uint8_t *restrict out,
     out[width-1] = (uint8_t)(((int)in[width-2] + (int)in[width-1] * 3 + 2) >> 2);
 }
 
+/* Plane I/O descriptor for up_usm_apply_plane / up_usm__pass2_combine. */
+typedef struct {
+    uint8_t       *dst;         /* destination (may equal src, in-place)  */
+    int            dst_stride;
+    const uint8_t *src;         /* source (read-only)                     */
+    int            src_stride;
+    int            width;       /* plane dimensions in pixels             */
+    int            height;
+} up_usm_plane_io_t;
+
 /*
  * Apply unsharp mask to a single 8-bit plane.
  *
- *   dst, dst_stride : destination plane (may equal src for in-place)
- *   src, src_stride : source plane (read-only)
- *   width, height   : plane dimensions in pixels
+ *   io              : plane descriptor (dst may equal src for in-place)
  *   amount_q8       : sharpening amount in Q8 fixed point
  *                       0    = identity (output = input)
  *                       256  = 1.0 (typical)
@@ -115,7 +123,7 @@ static inline void up_usm__hblur_row(uint8_t *restrict out,
  *                     Negative values are clamped to 0; values above
  *                     UP_USM_AMOUNT_Q8_MAX are clamped down.
  *   workspace       : caller-provided buffer of at least
- *                     up_usm_workspace_size(width, height) bytes.
+ *                     up_usm_workspace_size(io->width, io->height) bytes.
  *                     Contents on entry don't matter; on exit they're
  *                     a horizontal-blurred copy of src (caller may reuse).
  *
@@ -222,18 +230,18 @@ static inline void up_usm__combine_row(
  * helper. CCN 4.
  */
 static inline void up_usm__pass2_combine(
-    uint8_t *dst, int dst_stride,
-    const uint8_t *src, int src_stride,
+    const up_usm_plane_io_t *io,
     const uint8_t *workspace,
-    int width, int height,
     int amount_q8)
 {
+    const int width  = io->width;
+    const int height = io->height;
     for (int y = 0; y < height; y++) {
         int yu = (y > 0) ? (y - 1) : 0;
         int yd = (y < height - 1) ? (y + 1) : (height - 1);
         up_usm__combine_row(
-            dst + (size_t)y * (size_t)dst_stride,
-            src + (size_t)y * (size_t)src_stride,
+            io->dst + (size_t)y * (size_t)io->dst_stride,
+            io->src + (size_t)y * (size_t)io->src_stride,
             workspace + (size_t)yu * (size_t)width,
             workspace + (size_t)y  * (size_t)width,
             workspace + (size_t)yd * (size_t)width,
@@ -267,30 +275,30 @@ static inline int up_usm__args_valid(
 }
 
 static inline int up_usm_apply_plane(
-    uint8_t *dst, int dst_stride,
-    const uint8_t *src, int src_stride,
-    int width, int height,
+    const up_usm_plane_io_t *io,
     int amount_q8,
     uint8_t *workspace)
 {
-    if (!up_usm__args_valid(dst, dst_stride, src, src_stride, width, height))
+    if (io == NULL) return 0;
+    if (!up_usm__args_valid(io->dst, io->dst_stride, io->src, io->src_stride,
+                            io->width, io->height))
         return 0;
 
     amount_q8 = up_usm__clamp_amount_q8(amount_q8);
 
     /* Identity fast path. */
     if (amount_q8 == 0) {
-        up_usm__apply_identity(dst, dst_stride, src, src_stride,
-                               width, height);
+        up_usm__apply_identity(io->dst, io->dst_stride, io->src,
+                               io->src_stride, io->width, io->height);
         return 1;
     }
 
     /* Anything else needs workspace. */
     if (workspace == NULL) return 0;
 
-    up_usm__pass1_hblur(workspace, src, src_stride, width, height);
-    up_usm__pass2_combine(dst, dst_stride, src, src_stride,
-                          workspace, width, height, amount_q8);
+    up_usm__pass1_hblur(workspace, io->src, io->src_stride,
+                        io->width, io->height);
+    up_usm__pass2_combine(io, workspace, amount_q8);
     return 1;
 }
 

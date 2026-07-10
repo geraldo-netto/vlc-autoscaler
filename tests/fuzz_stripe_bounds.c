@@ -24,6 +24,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Compat shim over the struct-based bounds API (Sonar >7-params refactor):
+ * preserves this file's original out-pointer call shape. */
+static int stripe_bounds4(int i, int n, int src_h, int dst_h,
+                          int *src_start, int *src_end,
+                          int *dst_start, int *dst_end)
+{
+    up_stripe_bounds_t b = { 0, 0, 0, 0 };
+    int ok = up_compute_stripe_bounds(i, n, src_h, dst_h, &b);
+    *src_start = b.src_start; *src_end = b.src_end;
+    *dst_start = b.dst_start; *dst_end = b.dst_end;
+    return ok;
+}
+
+
 #define MAX_N      64
 #define MAX_DIM    8192
 
@@ -46,7 +60,7 @@ static int parse_input(const uint8_t *data, size_t size,
 static int check_invalid_input(int n, int src_h, int dst_h)
 {
     int sys, sye, dys, dye;
-    if (up_compute_stripe_bounds(0, n, src_h, dst_h,
+    if (stripe_bounds4(0, n, src_h, dst_h,
                                  &sys, &sye, &dys, &dye)) {
         fprintf(stderr,
             "FAIL: invalid input (n=%d src_h=%d dst_h=%d) returned ok\n",
@@ -103,7 +117,7 @@ static int validate_partition(int n, int src_h, int dst_h)
 
     for (int i = 0; i < n; i++) {
         int sys, sye, dys, dye;
-        int ok = up_compute_stripe_bounds(i, n, src_h, dst_h,
+        int ok = stripe_bounds4(i, n, src_h, dst_h,
                                           &sys, &sye, &dys, &dye);
         if (!ok) break;
         stripes_ok++;

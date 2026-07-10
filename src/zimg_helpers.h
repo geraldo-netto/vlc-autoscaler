@@ -175,23 +175,31 @@ static inline int up__stripe_args_valid(int i, int n, int src_h, int dst_h)
     return 1;
 }
 
+/* One stripe's source/destination range along a single axis. The same
+ * partition is used for row stripes (heights) and column tiles (widths),
+ * so the field names are axis-neutral. */
+typedef struct {
+    int src_start;
+    int src_end;
+    int dst_start;
+    int dst_end;
+} up_stripe_bounds_t;
+
 static inline int up_compute_stripe_bounds(
-    int i, int n, int src_h, int dst_h,
-    int *src_y_start, int *src_y_end,
-    int *dst_y_start, int *dst_y_end)
+    int i, int n, int src_h, int dst_h, up_stripe_bounds_t *out)
 {
     if (!up__stripe_args_valid(i, n, src_h, dst_h)) return 0;
 
-    *dst_y_start = (i == 0) ? 0
+    out->dst_start = (i == 0) ? 0
         : UP_ALIGN_DOWN_2((int)((int64_t)i * dst_h / n));
-    *dst_y_end = (i == n - 1) ? dst_h
+    out->dst_end = (i == n - 1) ? dst_h
         : UP_ALIGN_DOWN_2((int)((int64_t)(i + 1) * dst_h / n));
-    *src_y_start = (i == 0) ? 0
-        : UP_ALIGN_DOWN_2((int)((int64_t)src_h * (*dst_y_start) / dst_h));
-    *src_y_end = (i == n - 1) ? src_h
-        : UP_ALIGN_DOWN_2((int)((int64_t)src_h * (*dst_y_end) / dst_h));
+    out->src_start = (i == 0) ? 0
+        : UP_ALIGN_DOWN_2((int)((int64_t)src_h * out->dst_start / dst_h));
+    out->src_end = (i == n - 1) ? src_h
+        : UP_ALIGN_DOWN_2((int)((int64_t)src_h * out->dst_end / dst_h));
 
-    return (*dst_y_end > *dst_y_start) && (*src_y_end > *src_y_start);
+    return (out->dst_end > out->dst_start) && (out->src_end > out->src_start);
 }
 
 /*

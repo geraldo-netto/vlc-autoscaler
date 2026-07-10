@@ -163,8 +163,12 @@ static void test_invalid_format_contract(void)
     test_picture_t test;
     up_picture_view_t view;
     up_picture_region_t region = test_region();
-    const up_picture_plane_extent_t empty =
-        up_picture_plane_extent(0, 0, 1, 1, 0, 1, 1, 1);
+    const up_picture_plane_geom_t zero_group = {
+        .x_offset = 0, .y_offset = 0, .width = 1, .height = 1,
+        .x_group_pixels = 0, .x_group_bytes = 1, .y_group_pixels = 1,
+        .pixel_pitch = 1,
+    };
+    const up_picture_plane_extent_t empty = up_picture_plane_extent(&zero_group);
     CHECK(empty.row_bytes == 0 && empty.height == 0);
     init_picture(&test, VLC_CODEC_I420);
 

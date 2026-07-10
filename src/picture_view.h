@@ -98,26 +98,38 @@ up_picture_format_layout(vlc_fourcc_t chroma)
     return NULL;
 }
 
+/* Pixel-space window plus the plane's group/pitch layout — everything
+ * needed to derive a plane extent or view. */
+typedef struct {
+    int      x_offset;
+    int      y_offset;
+    int      width;
+    int      height;
+    unsigned x_group_pixels;
+    unsigned x_group_bytes;
+    unsigned y_group_pixels;
+    int      pixel_pitch;
+} up_picture_plane_geom_t;
+
 static inline up_picture_plane_extent_t up_picture_plane_extent(
-    int x_offset, int y_offset, int width, int height,
-    unsigned x_group_pixels, unsigned x_group_bytes,
-    unsigned y_group_pixels, int pixel_pitch)
+    const up_picture_plane_geom_t *g)
 {
     up_picture_plane_extent_t extent = { 0 };
-    if (x_group_pixels == 0 || x_group_bytes == 0
-        || y_group_pixels == 0 || pixel_pitch <= 0
-        || x_group_bytes % (unsigned)pixel_pitch != 0)
+    if (g->x_group_pixels == 0 || g->x_group_bytes == 0
+        || g->y_group_pixels == 0 || g->pixel_pitch <= 0
+        || g->x_group_bytes % (unsigned)g->pixel_pitch != 0)
         return extent;
-    const size_t x_end = (size_t)x_offset + (size_t)width;
-    const size_t y_end = (size_t)y_offset + (size_t)height;
-    extent.x = (size_t)x_offset / x_group_pixels;
-    extent.y = (size_t)y_offset / y_group_pixels;
-    const size_t x_groups = (x_end + x_group_pixels - 1)
-                          / x_group_pixels - extent.x;
-    extent.width = x_groups * x_group_bytes / (unsigned)pixel_pitch;
-    extent.height = (y_end + y_group_pixels - 1) / y_group_pixels - extent.y;
-    extent.x_bytes = extent.x * x_group_bytes;
-    extent.row_bytes = x_groups * x_group_bytes;
+    const size_t x_end = (size_t)g->x_offset + (size_t)g->width;
+    const size_t y_end = (size_t)g->y_offset + (size_t)g->height;
+    extent.x = (size_t)g->x_offset / g->x_group_pixels;
+    extent.y = (size_t)g->y_offset / g->y_group_pixels;
+    const size_t x_groups = (x_end + g->x_group_pixels - 1)
+                          / g->x_group_pixels - extent.x;
+    extent.width = x_groups * g->x_group_bytes / (unsigned)g->pixel_pitch;
+    extent.height = (y_end + g->y_group_pixels - 1) / g->y_group_pixels
+                  - extent.y;
+    extent.x_bytes = extent.x * g->x_group_bytes;
+    extent.row_bytes = x_groups * g->x_group_bytes;
     return extent;
 }
 
@@ -146,15 +158,11 @@ static inline bool up_picture_plane_extent_ok(
 
 static inline bool up_picture_plane_view_init(
     up_picture_plane_view_t *out, const plane_t *plane,
-    int x_offset, int y_offset, int width, int height,
-    unsigned x_group_pixels, unsigned x_group_bytes,
-    unsigned y_group_pixels, int pixel_pitch)
+    const up_picture_plane_geom_t *g)
 {
-    if (!up_picture_plane_storage_ok(plane, pixel_pitch))
+    if (!up_picture_plane_storage_ok(plane, g->pixel_pitch))
         return false;
-    const up_picture_plane_extent_t extent = up_picture_plane_extent(
-        x_offset, y_offset, width, height, x_group_pixels, x_group_bytes,
-        y_group_pixels, pixel_pitch);
+    const up_picture_plane_extent_t extent = up_picture_plane_extent(g);
     if (!up_picture_plane_extent_ok(plane, &extent))
         return false;
 
@@ -164,7 +172,7 @@ static inline bool up_picture_plane_view_init(
 
     out->pixels = plane->p_pixels + row_offset + extent.x_bytes;
     out->pitch = plane->i_pitch;
-    out->pixel_pitch = pixel_pitch;
+    out->pixel_pitch = g->pixel_pitch;
     out->width = (int)extent.width;
     out->height = (int)extent.height;
     out->row_bytes = (int)extent.row_bytes;
@@ -227,18 +235,22 @@ static inline bool up_picture_view_init(
     if (!layout)
         return false;
 
-    for (int i = 0; i < layout->plane_count; ++i)
-        if (!up_picture_plane_view_init(&out->plane[i], &pic->p[i],
-                                        x_offset, y_offset,
-                                        region->width, region->height,
-                                        layout->x_group_pixels[i],
-                                        layout->x_group_bytes[i],
-                                        layout->y_group_pixels[i],
-                                        layout->pixel_pitch[i]))
-        {
+    for (int i = 0; i < layout->plane_count; ++i) {
+        const up_picture_plane_geom_t geom = {
+            .x_offset       = x_offset,
+            .y_offset       = y_offset,
+            .width          = region->width,
+            .height         = region->height,
+            .x_group_pixels = layout->x_group_pixels[i],
+            .x_group_bytes  = layout->x_group_bytes[i],
+            .y_group_pixels = layout->y_group_pixels[i],
+            .pixel_pitch    = layout->pixel_pitch[i],
+        };
+        if (!up_picture_plane_view_init(&out->plane[i], &pic->p[i], &geom)) {
             memset(out, 0, sizeof *out);
             return false;
         }
+    }
     out->plane_count = layout->plane_count;
     return true;
 }

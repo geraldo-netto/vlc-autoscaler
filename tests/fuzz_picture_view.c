@@ -47,10 +47,17 @@ static bool fuzz_plane_alloc(fuzz_picture_t *test,
                              int plane_index, int coded_w, int coded_h,
                              fuzz_input_t *input)
 {
-    const up_picture_plane_extent_t extent = up_picture_plane_extent(
-        0, 0, coded_w, coded_h, layout->x_group_pixels[plane_index],
-        layout->x_group_bytes[plane_index],
-        layout->y_group_pixels[plane_index], layout->pixel_pitch[plane_index]);
+    const up_picture_plane_geom_t geom = {
+        .x_offset       = 0,
+        .y_offset       = 0,
+        .width          = coded_w,
+        .height         = coded_h,
+        .x_group_pixels = layout->x_group_pixels[plane_index],
+        .x_group_bytes  = layout->x_group_bytes[plane_index],
+        .y_group_pixels = layout->y_group_pixels[plane_index],
+        .pixel_pitch    = layout->pixel_pitch[plane_index],
+    };
+    const up_picture_plane_extent_t extent = up_picture_plane_extent(&geom);
     const size_t pitch = extent.row_bytes + fuzz_take(input) % 8u;
     const size_t lines = extent.height + fuzz_take(input) % 4u;
     const size_t bytes = pitch * lines;
