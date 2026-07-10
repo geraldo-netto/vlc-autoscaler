@@ -1165,9 +1165,9 @@ static void point_workers_planes(zimg_priv_t *p, const picture_t *pic,
 
 /*
  * Dispatch all workers and wait for completion.
- * Returns 0 if every worker succeeded, -1 otherwise.
+ * A barrier or worker failure poisons the backend, so both are fatal.
  */
-static int zimg_dispatch_and_wait(zimg_priv_t *p)
+static scaler_process_status_t zimg_dispatch_and_wait(zimg_priv_t *p)
 {
     /* SCAL-2 wake side: arm the done-barrier and reset results, then bump the
      * generation once and wake every worker with a single broadcast (was N
@@ -1186,12 +1186,15 @@ static int zimg_dispatch_and_wait(zimg_priv_t *p)
     if (up_sem_wait_nointr(&p->all_done) != 0) {
         p->pool_broken = true;
         zimg_stop_workers(p);
-        return -1;
+        return SCALER_PROCESS_FATAL;
     }
     for (int i = 0; i < p->n_threads; i++) {
-        if (p->workers[i].result != 0) return -1;
+        if (p->workers[i].result != 0) {
+            p->pool_broken = true;
+            return SCALER_PROCESS_FATAL;
+        }
     }
-    return 0;
+    return SCALER_PROCESS_OK;
 }
 
 /*
@@ -1247,13 +1250,14 @@ static int zimg_ensure_lazy_init(zimg_priv_t *p)
     return 0;
 }
 
-static int zimg_process(scaler_ctx_t *ctx,
-                        const picture_t *src, picture_t *dst)
+static scaler_process_status_t zimg_process(scaler_ctx_t *ctx,
+                                            const picture_t *src,
+                                            picture_t *dst)
 {
     zimg_priv_t *p = ctx->priv;
-    if (!p) return -1;
-    if (p->pool_broken) return -1;
-    if (zimg_ensure_lazy_init(p) != 0) return -1;
+    if (!p) return SCALER_PROCESS_FATAL;
+    if (p->pool_broken) return SCALER_PROCESS_FATAL;
+    if (zimg_ensure_lazy_init(p) != 0) return SCALER_PROCESS_FATAL;
 
     /* Pre-flight guard: a malformed src/dst picture (null plane or pitch <
      * width) would make the workers read/write out of bounds — drop the frame
@@ -1266,7 +1270,7 @@ static int zimg_process(scaler_ctx_t *ctx,
                          "zimg: source/destination picture geometry unusable "
                          "(null plane or pitch < width); dropping frame(s)");
         }
-        return -1;
+        return SCALER_PROCESS_TRANSIENT;
     }
 
     /* Per-frame plane pointers. On each side the graph touches the VLC

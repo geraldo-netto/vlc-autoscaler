@@ -17,6 +17,8 @@
 #include <vlc_common.h>
 #include <vlc_picture.h>
 
+#include "scaler_status.h"
+
 /* User-visible backend preference (do NOT renumber). */
 #define SCALER_BACKEND_AUTO     0
 #define SCALER_BACKEND_ZIMG     1
@@ -75,9 +77,10 @@ struct scaler_backend_s
      * chroma) must already be set. Returns 0 on success, -1 on failure. */
     int  (*open)   ( scaler_ctx_t *ctx );
 
-    /* Process one frame. Returns 0 on success, -1 on failure. */
-    int  (*process)( scaler_ctx_t *ctx,
-                     const picture_t *src, picture_t *dst );
+    /* Process one frame. TRANSIENT drops only this frame; FATAL means the
+     * backend is unusable and the caller may replace it. */
+    scaler_process_status_t (*process)( scaler_ctx_t *ctx,
+                                        const picture_t *src, picture_t *dst );
 
     /* Tear down priv. Always safe to call after open() success. */
     void (*close)  ( scaler_ctx_t *ctx );

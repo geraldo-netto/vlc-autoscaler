@@ -186,7 +186,7 @@ $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CC) $(PLUGIN_CFLAGS) -c -o $@ $<
 
 # --------- unit tests ---------
-test: complexity $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_threading $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants
+test: complexity $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_threading $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/test_upscale_logic
@@ -217,6 +217,9 @@ test: complexity $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $
 	@echo
 	@echo "=== scaler_pick ==="
 	@$(BUILD)/test_scaler_pick
+	@echo
+	@echo "=== scaler_swscale ==="
+	@$(BUILD)/test_scaler_swscale
 	@echo
 	@echo "=== lifetime / UAF ==="
 	@$(BUILD)/test_lifetime
@@ -431,6 +434,7 @@ ifdef HAVE_ZIMG
 ZIMG_H_CFLAGS  := -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS)
 ZIMG_H_LIBS    := $(VLC_LIBS) $(ZIMG_LIBS) -lpthread
 ZIMG_H_DEPS    := tests/zimg_test_util.h src/scaler_zimg.c src/scaler.h \
+                  src/scaler_status.h \
                   tests/barrier_fault_inject.h \
                   src/zimg_helpers.h src/scaler_zimg_chroma.h \
                   src/upscale_logic.h src/threading.h
@@ -576,6 +580,7 @@ COV_TESTS := \
     $(COV_BUILD)/test_usm_pool \
     $(COV_BUILD)/test_content_probe \
     $(COV_BUILD)/test_scaler_pick \
+    $(COV_BUILD)/test_scaler_swscale \
     $(COV_BUILD)/test_lifetime
 
 COV_FUZZERS := \
@@ -612,8 +617,10 @@ $(COV_BUILD)/test_usm_pool: tests/test_usm_pool.c tests/barrier_fault_inject.h s
 	    $(BARRIER_WRAP_LDFLAGS) -lpthread
 $(COV_BUILD)/test_content_probe: tests/test_content_probe.c src/content_probe.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h | $(COV_BUILD)
+$(COV_BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h src/scaler_status.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/test_scaler_swscale: tests/test_scaler_swscale.c src/scaler_swscale.c src/scaler.h src/scaler_status.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h tests/stubs/libswscale/swscale.h tests/stubs/libavutil/pixfmt.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -Itests/stubs -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_lifetime: tests/test_lifetime.c src/usm_pool.c src/usm_pool.h src/usm.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< src/usm_pool.c $(COV_LDFLAGS) -lpthread
 
@@ -763,8 +770,11 @@ $(BUILD)/test_usm_pool_variants: tests/test_usm_pool_variants.c \
 $(BUILD)/test_content_probe: tests/test_content_probe.c src/content_probe.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
-$(BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h | $(BUILD)
+$(BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h src/scaler_status.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
+
+$(BUILD)/test_scaler_swscale: tests/test_scaler_swscale.c src/scaler_swscale.c src/scaler.h src/scaler_status.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h tests/stubs/libswscale/swscale.h tests/stubs/libavutil/pixfmt.h | $(BUILD)
+	$(CC) $(TEST_CFLAGS) -Itests/stubs -o $@ $< $(TEST_LDFLAGS)
 
 $(BUILD)/test_lifetime: tests/test_lifetime.c src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< src/usm_pool.c $(TEST_LDFLAGS) -lpthread

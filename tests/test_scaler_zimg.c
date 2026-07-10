@@ -217,9 +217,9 @@ static void test_full_write(void)
             zt_pic_t a, b;
             int r0 = run_zimg(&CFGS[i], 0, zc, 0x00, 0xC0FFEEu, &a);
             int r1 = run_zimg(&CFGS[i], 0, zc, 0xFF, 0xC0FFEEu, &b);
-            CHECK(r0 == 0);
-            CHECK(r1 == 0);
-            if (r0 == 0 && r1 == 0)
+            CHECK(r0 == SCALER_PROCESS_OK);
+            CHECK(r1 == SCALER_PROCESS_OK);
+            if (r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK)
                 CHECK(same_cfg(&CFGS[i], &a, &b));
             zt_pic_free(&a);
             zt_pic_free(&b);
@@ -235,8 +235,8 @@ static void test_determinism(void)
         zt_pic_t a, b;
         int r0 = run_zimg(&CFGS[i], 0, 0, 0x00, 0xBEEF01u, &a);
         int r1 = run_zimg(&CFGS[i], 0, 0, 0x00, 0xBEEF01u, &b);
-        CHECK(r0 == 0 && r1 == 0);
-        if (r0 == 0 && r1 == 0)
+        CHECK(r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK);
+        if (r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK)
             CHECK(same_cfg(&CFGS[i], &a, &b));
         zt_pic_free(&a);
         zt_pic_free(&b);
@@ -251,8 +251,8 @@ static void test_zerocopy_matches_copyout(void)
         zt_pic_t a, b;
         int r0 = run_zimg(&CFGS[i], 0, 0, 0x00, 0x5EED77u, &a);  /* dst copy-out */
         int r1 = run_zimg(&CFGS[i], 0, 1, 0x00, 0x5EED77u, &b);  /* dst zero-copy */
-        CHECK(r0 == 0 && r1 == 0);
-        if (r0 == 0 && r1 == 0)
+        CHECK(r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK);
+        if (r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK)
             CHECK(same_cfg(&CFGS[i], &a, &b));
         zt_pic_free(&a);
         zt_pic_free(&b);
@@ -271,8 +271,10 @@ static void test_src_zerocopy_matches_copy(void)
         int r0 = run_zimg(&CFGS[i], 0, 0, 0x00, 0x70DDu, &a);  /* all copy */
         int r1 = run_zimg(&CFGS[i], 1, 0, 0x00, 0x70DDu, &b);  /* src zero-copy */
         int r2 = run_zimg(&CFGS[i], 1, 1, 0x00, 0x70DDu, &c);  /* full zero-copy */
-        CHECK(r0 == 0 && r1 == 0 && r2 == 0);
-        if (r0 == 0 && r1 == 0 && r2 == 0) {
+        CHECK(r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK
+              && r2 == SCALER_PROCESS_OK);
+        if (r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK
+                && r2 == SCALER_PROCESS_OK) {
             if (CFGS[i].col_tiled) {
                 /* SYS-5: src_zerocopy=0 runs a rows-only grid here — a
                  * DIFFERENT graph partition from the tiled zero-copy
@@ -305,8 +307,10 @@ static void test_asymmetric_chroma_pitches(void)
                                        0xA5, 0xA5C440u, &expected);
             int actual_rc = run_zimg_asymmetric_pitch(
                 configs[c], modes[i][0], modes[i][1], 0xA5C440u, &actual);
-            CHECK(expected_rc == 0 && actual_rc == 0);
-            if (expected_rc == 0 && actual_rc == 0)
+            CHECK(expected_rc == SCALER_PROCESS_OK
+                  && actual_rc == SCALER_PROCESS_OK);
+            if (expected_rc == SCALER_PROCESS_OK
+                    && actual_rc == SCALER_PROCESS_OK)
                 CHECK(same_cfg(configs[c], &expected, &actual));
             zt_pic_free(&expected);
             zt_pic_free(&actual);
@@ -348,12 +352,52 @@ static void test_all_algos(void)
             zt_ctx_init(&ctx, VLC_CODEC_I420, 640, 360, 1280, 720, 4, 1);
             ctx.algo = algos[i];
             CHECK(ctx.backend->open(&ctx) == 0);
-            CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic) == 0);
+            CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+                  == SCALER_PROCESS_OK);
             ctx.backend->close(&ctx);
         }
         zt_pic_free(&src);
         zt_pic_free(&dst);
     }
+    END();
+}
+
+static void test_transient_preflight_recovers(void)
+{
+    BEGIN("malformed frame is transient; same backend accepts the next frame");
+    zt_pic_t src = {0}, dst = {0};
+    int ok = zt_pic_alloc(&src, VLC_CODEC_I420, 640, 360) == 0
+          && zt_pic_alloc(&dst, VLC_CODEC_I420, 1280, 720) == 0;
+    scaler_ctx_t ctx;
+    zt_ctx_init(&ctx, VLC_CODEC_I420, 640, 360, 1280, 720, 4, 1);
+    CHECK(ok);
+    if (ok) {
+        zt_pic_fill(&src, 0x7711u);
+        CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+              == SCALER_PROCESS_FATAL);
+        int open_rc = ctx.backend->open(&ctx);
+        CHECK(open_rc == 0);
+        if (open_rc == 0) {
+            CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+                  == SCALER_PROCESS_OK);
+            uint8_t *src_u = src.pic.p[1].p_pixels;
+            src.pic.p[1].p_pixels = NULL;
+            CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+                  == SCALER_PROCESS_TRANSIENT);
+            src.pic.p[1].p_pixels = src_u;
+
+            int dst_v_pitch = dst.pic.p[2].i_pitch;
+            dst.pic.p[2].i_pitch = 0;
+            CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+                  == SCALER_PROCESS_TRANSIENT);
+            dst.pic.p[2].i_pitch = dst_v_pitch;
+            CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+                  == SCALER_PROCESS_OK);
+            ctx.backend->close(&ctx);
+        }
+    }
+    zt_pic_free(&src);
+    zt_pic_free(&dst);
     END();
 }
 
@@ -373,7 +417,7 @@ static void test_construction_pthread_fail(void)
     zt_pic_t src, dst;
     int ok = zt_pic_alloc(&src, VLC_CODEC_I420, 854, 480) == 0
           && zt_pic_alloc(&dst, VLC_CODEC_I420, 1920, 1080) == 0;
-    int rc1 = -1, rc2 = -1;
+    int rc1 = SCALER_PROCESS_OK, rc2 = SCALER_PROCESS_OK;
     scaler_ctx_t ctx;
     zt_ctx_init(&ctx, VLC_CODEC_I420, 854, 480, 1920, 1080, 16, 1);
     if (ok && ctx.backend->open(&ctx) == 0) {
@@ -385,8 +429,8 @@ static void test_construction_pthread_fail(void)
     setrlimit(RLIMIT_NPROC, &old);   /* restore before any later test */
 
     CHECK(ok);
-    CHECK(rc1 == -1);   /* no workers spawned -> lazy init failed */
-    CHECK(rc2 == -1);   /* sticky */
+    CHECK(rc1 == SCALER_PROCESS_FATAL);   /* lazy init failed */
+    CHECK(rc2 == SCALER_PROCESS_FATAL);   /* sticky */
     zt_pic_free(&src);
     zt_pic_free(&dst);
     END();
@@ -408,20 +452,23 @@ static void test_barrier_failure_drains_and_sticks(void)
                 c->dw, c->dh, c->threads, 1);
     ctx.zimg.src_zerocopy = 0;
     int open_rc = alloc_ok ? ctx.backend->open(&ctx) : -1;
-    CHECK(expected_rc == 0 && alloc_ok && open_rc == 0);
-    if (expected_rc == 0 && alloc_ok && open_rc == 0) {
+    CHECK(expected_rc == SCALER_PROCESS_OK && alloc_ok && open_rc == 0);
+    if (expected_rc == SCALER_PROCESS_OK && alloc_ok && open_rc == 0) {
         zt_pic_fill(&src, seed);
-        CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic) == 0);
+        CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+              == SCALER_PROCESS_OK);
 
         zt_pic_memset(&dst, 0x00);
         barrier_fault_inject_next_dispatch();
-        CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic) == -1);
+        CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+              == SCALER_PROCESS_FATAL);
         CHECK(cmp_visible(&expected, &dst) == 0);
         CHECK(barrier_fault_injection_consumed());
 
         zt_pic_memset(&dst, 0xA5);
         zt_pic_memset(&untouched, 0xA5);
-        CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic) == -1);
+        CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+              == SCALER_PROCESS_FATAL);
         CHECK(cmp_visible(&untouched, &dst) == 0);
     }
     if (open_rc == 0) ctx.backend->close(&ctx);
@@ -451,7 +498,7 @@ static void test_open_rejects_unsupported(void)
  * crash or leak (ASan/UBSan enforce); accept both results. */
 static void test_extreme_ratio_no_crash(void)
 {
-    BEGIN("extreme src->dst ratio: graceful (no crash/leak), rc 0 or -1");
+    BEGIN("extreme src->dst ratio: graceful success or fatal status");
     zt_pic_t src, dst;
     int ok = zt_pic_alloc(&src, VLC_CODEC_I420, 100, 8) == 0
           && zt_pic_alloc(&dst, VLC_CODEC_I420, 1920, 1080) == 0;
@@ -464,7 +511,7 @@ static void test_extreme_ratio_no_crash(void)
         ctx.backend->close(&ctx);
     }
     CHECK(ok);
-    CHECK(rc == 0 || rc == -1);
+    CHECK(rc == SCALER_PROCESS_OK || rc == SCALER_PROCESS_FATAL);
     zt_pic_free(&src);
     zt_pic_free(&dst);
     END();
@@ -538,12 +585,13 @@ static void test_tiling_matches_untiled(void)
     static const int TCOUNTS[] = { 2, 4, 8, 16 };
     for (size_t i = 0; i < NCFG; i++) {
         zt_pic_t ref;
-        if (run_zimg_threads_in(&CFGS[i], 1, 1, 0, &ref) != 0) { CHECK(0); continue; }
+        if (run_zimg_threads_in(&CFGS[i], 1, 1, 0, &ref)
+                != SCALER_PROCESS_OK) { CHECK(0); continue; }
         for (size_t t = 0; t < sizeof TCOUNTS / sizeof *TCOUNTS; t++) {
             zt_pic_t tiled;
             int r = run_zimg_threads_in(&CFGS[i], TCOUNTS[t], 1, 0, &tiled);
-            CHECK(r == 0);
-            if (r == 0) {
+            CHECK(r == SCALER_PROCESS_OK);
+            if (r == SCALER_PROCESS_OK) {
                 int maxd = 0; size_t big = 0;
                 cmp_visible_mag(&ref, &tiled, &maxd, &big);
                 if (maxd > SEAM_MAX_DELTA)
@@ -593,8 +641,8 @@ static void test_pin_cpus_matches(void)
         zt_pic_t a, b;
         int r0 = run_zimg(&CFGS[i], 0, 0, 0x00, 0xC0FFEEu, &a);
         int r1 = run_zimg_pinned(&CFGS[i], 0xC0FFEEu, &b);
-        CHECK(r0 == 0 && r1 == 0);
-        if (r0 == 0 && r1 == 0)
+        CHECK(r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK);
+        if (r0 == SCALER_PROCESS_OK && r1 == SCALER_PROCESS_OK)
             CHECK(same_cfg(&CFGS[i], &a, &b));
         zt_pic_free(&a);
         zt_pic_free(&b);
@@ -612,6 +660,7 @@ int main(void)
     test_asymmetric_chroma_pitches();
     test_supports();
     test_all_algos();
+    test_transient_preflight_recovers();
     test_open_rejects_unsupported();
     test_extreme_ratio_no_crash();
     test_construction_pthread_fail();

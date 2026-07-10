@@ -25,6 +25,8 @@ TRACKED=(
     scaler_zimg_chroma.h
     content_probe.h
     scaler_pick_logic.h
+    scaler_status.h
+    scaler_swscale.c
     usm_pool.c
 )
 

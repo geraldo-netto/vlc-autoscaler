@@ -878,9 +878,9 @@ static void RecordPerf( filter_t *p_filter, filter_sys_t *p_sys,
 }
 
 /* SYS-2: one-shot runtime fallback to swscale after the active backend
- * fails to process a frame. zimg defers its heavy setup (worker spawn,
- * scratch alloc, per-stripe graph build) to the FIRST frame, so a
- * first-frame failure (OOM under pressure, graph-build edge case) is
+ * reports a fatal processing failure. zimg defers its heavy setup
+ * (worker spawn, scratch alloc, per-stripe graph build) to the FIRST frame,
+ * so a first-frame failure (OOM under pressure, graph-build edge case) is
  * sticky: Open() already succeeded, VLC committed to this filter, and
  * without a swap every frame of the playback would be dropped — the
  * universal-fallback role swscale exists for would never engage. The
@@ -943,7 +943,9 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
 
     int64_t t_start = monotonic_ns();
 
-    if( p_sys->scaler.backend->process( &p_sys->scaler, p_in, p_out ) != 0 )
+    scaler_process_status_t status = p_sys->scaler.backend->process(
+        &p_sys->scaler, p_in, p_out );
+    if( status != SCALER_PROCESS_OK )
     {
         if( !p_sys->process_fail_logged )
         {
@@ -953,7 +955,8 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
                       "dropping frame(s) (this is logged only once)",
                       p_sys->scaler.backend->name );
         }
-        TryBackendFallback( p_filter, p_sys );
+        if( scaler_process_needs_fallback( status ) )
+            TryBackendFallback( p_filter, p_sys );
         p_sys->dropped_count++;
         picture_Release( p_out );
         picture_Release( p_in );

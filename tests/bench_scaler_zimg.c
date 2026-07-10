@@ -76,12 +76,14 @@ static int run_timed(const struct bargs *a, double *us_per_frame)
     if (ctx.backend->open(&ctx) == 0) {
         rc = 0;
         for (int i = 0; i < 5; i++)
-            if (ctx.backend->process(&ctx, &src.pic, &dst.pic) != 0) rc = 1;
+            if (ctx.backend->process(&ctx, &src.pic, &dst.pic)
+                    != SCALER_PROCESS_OK) rc = 1;
 
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
         for (int i = 0; i < a->frames; i++)
-            if (ctx.backend->process(&ctx, &src.pic, &dst.pic) != 0) rc = 1;
+            if (ctx.backend->process(&ctx, &src.pic, &dst.pic)
+                    != SCALER_PROCESS_OK) rc = 1;
         clock_gettime(CLOCK_MONOTONIC, &t1);
 
         double ns = (t1.tv_sec - t0.tv_sec) * 1.0e9

@@ -91,11 +91,12 @@ static int sws_open( scaler_ctx_t *ctx )
     return 0;
 }
 
-static int sws_process( scaler_ctx_t *ctx,
-                        const picture_t *src, picture_t *dst )
+static scaler_process_status_t sws_process( scaler_ctx_t *ctx,
+                                            const picture_t *src,
+                                            picture_t *dst )
 {
     sws_priv_t *p = ctx->priv;
-    if( !p ) return -1;
+    if( !p ) return SCALER_PROCESS_FATAL;
 
     const uint8_t *src_data[4]   = { NULL };
     int            src_stride[4] = { 0 };
@@ -119,7 +120,7 @@ static int sws_process( scaler_ctx_t *ctx,
      * scale must emit exactly dst_h lines; a short return (rc < dst_h, incl.
      * 0 or a negative error) leaves the destination partially filled, so
      * fail rather than forward a half-written frame. */
-    return rc == ctx->dst_h ? 0 : -1;
+    return scaler_process_lines_status( rc, ctx->dst_h );
 }
 
 static void sws_close( scaler_ctx_t *ctx )

@@ -12,6 +12,7 @@
  *****************************************************************************/
 
 #include "../src/scaler_pick_logic.h"
+#include "../src/scaler_status.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -64,6 +65,15 @@ static int g_run = 0, g_fail = 0, g_failed_in_test = 0;
 #define CHECK_NULL(p)    CHECK_EQ_PTR(p, NULL)
 #define CHECK_ZIMG(p)    CHECK_EQ_PTR(p, ZIMG_TAG)
 #define CHECK_SWSCALE(p) CHECK_EQ_PTR(p, SWSCALE_TAG)
+#define CHECK_EQ_INT(got, want) do { \
+    int actual_ = (int)(got); \
+    int expected_ = (int)(want); \
+    if (actual_ != expected_) { \
+        printf("    %s:%d: expected %d, got %d\n", __FILE__, __LINE__, \
+               expected_, actual_); \
+        g_failed_in_test = 1; \
+    } \
+} while (0)
 
 #define PICK(zh, zs, sh, ss, pref, chroma, algo) \
     up_scaler_pick_with((zh), (zs), (sh), (ss), (pref), (chroma), (algo))
@@ -260,6 +270,22 @@ static void test_null_zimg_supports_in_auto_falls_back(void)
     END();
 }
 
+static void test_process_status_contract(void)
+{
+    BEGIN("process statuses distinguish frame drop from backend fallback");
+    CHECK_EQ_INT(SCALER_PROCESS_OK, 0);
+    CHECK_EQ_INT(SCALER_PROCESS_TRANSIENT, 1);
+    CHECK_EQ_INT(SCALER_PROCESS_FATAL, 2);
+    CHECK_EQ_INT(scaler_process_needs_fallback(SCALER_PROCESS_OK), 0);
+    CHECK_EQ_INT(scaler_process_needs_fallback(SCALER_PROCESS_TRANSIENT), 0);
+    CHECK_EQ_INT(scaler_process_needs_fallback(SCALER_PROCESS_FATAL), 1);
+    CHECK_EQ_INT(scaler_process_lines_status(720, 720), SCALER_PROCESS_OK);
+    CHECK_EQ_INT(scaler_process_lines_status(719, 720), SCALER_PROCESS_TRANSIENT);
+    CHECK_EQ_INT(scaler_process_lines_status(-1, 720), SCALER_PROCESS_TRANSIENT);
+    CHECK_EQ_INT(scaler_process_lines_status(721, 720), SCALER_PROCESS_TRANSIENT);
+    END();
+}
+
 int main(void)
 {
     printf("Running scaler_pick tests...\n");
@@ -284,6 +310,7 @@ int main(void)
     test_null_swscale_returns_null();
     test_null_swscale_supports_returns_null();
     test_null_zimg_supports_in_auto_falls_back();
+    test_process_status_contract();
 
     printf("\n%d tests run, %d failed\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;

@@ -128,8 +128,10 @@ static void run_one(const uint8_t *data, size_t size)
     if (sw < 2 || sh < 2 || dw < 2 || dh < 2) return;
 
     zt_pic_t ref, tiled;
-    if (resample(chroma, sw, sh, dw, dh, 1, &ref) != 0) return;
-    if (resample(chroma, sw, sh, dw, dh, threads, &tiled) == 0) {
+    if (resample(chroma, sw, sh, dw, dh, 1, &ref)
+            != SCALER_PROCESS_OK) return;
+    if (resample(chroma, sw, sh, dw, dh, threads, &tiled)
+            == SCALER_PROCESS_OK) {
         int md = max_delta(&ref, &tiled);
         if (md > SEAM_MAX_DELTA) {
             fprintf(stderr, "SEAM: %dx%d->%dx%d t=%d chroma=%08x maxdelta=%d\n",
