@@ -188,6 +188,8 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
     "Lower = trip more aggressively (skip USM on more sources). " \
     "Higher = trip rarely (USM stays on most content). " \
     "0 = feature off, USM always runs regardless of source. " \
+    "Independent of --autoupscale-content-probe: the sharpness metric " \
+    "is collected even with the probe advisory disabled. " \
     "Default 3500. Range 0..20000.")
 
 #define PROBE_TEXT N_("Content-aware quality probe")
@@ -201,7 +203,9 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
     "only — VLC 3's filter API does not allow runtime format " \
     "renegotiation, so the filter cannot self-bypass mid-stream. " \
     "Probe cost is ~50us/frame at 480p (only during the first 60 " \
-    "frames). 0 = off: skip the probe entirely. The probe is also " \
+    "frames). 0 = off: no advisory is logged (metric collection still " \
+    "runs when --autoupscale-usm-sharp-threshold needs it, since that " \
+    "gate changes pixel output and is not diagnostic). The probe is " \
     "skipped automatically for non-planar chromas (no Y plane).")
 
 /*****************************************************************************
@@ -301,12 +305,18 @@ struct filter_sys_t
      * achievable; a real bypass would need a structural change to
      * VLC's filter graph that we can't make from a video filter.
      *
-     *   probe_enabled : 1 if the probe is configured to run (option), 0 disabled
+     *   probe_enabled : 1 if metric collection runs — either the
+     *                   content-probe option is on, or the USM sharpness
+     *                   gate needs the metrics (usm > 0 and
+     *                   usm-sharp-threshold > 0)
+     *   probe_advice  : 1 if the bypass advisory may be logged
+     *                   (content-probe option only)
      *   probe_active  : 1 while we're still collecting samples
      *   advice_logged : 1 once we've logged the bypass recommendation
      *   probe_accum   : accumulator state passed to up_probe_observe()
      */
     int                probe_enabled;
+    int                probe_advice;
     int                probe_active;
     int                advice_logged;
     up_probe_accum_t   probe_accum;
@@ -490,14 +500,19 @@ static void InitProbeAndPerfmon( filter_sys_t *p_sys, filter_t *p_filter,
      * For opaque/packed/RGB chromas the probe stays disabled — those
      * are either GPU-managed (can't read) or have no luma plane.
      * The accumulator is already zeroed by calloc(). */
-    p_sys->probe_enabled = var_InheritInteger( p_filter,
-                                               CFG_PREFIX "content-probe" )
+    p_sys->usm_sharp_threshold = var_InheritInteger( p_filter,
+        CFG_PREFIX "usm-sharp-threshold" );
+
+    /* Metric collection also runs with content-probe=0 when the USM
+     * sharpness gate needs it — that gate changes pixel output, so it
+     * must not silently die with the diagnostic-only probe option. */
+    p_sys->probe_advice  = var_InheritInteger( p_filter,
+                                               CFG_PREFIX "content-probe" ) != 0;
+    p_sys->probe_enabled = ( p_sys->probe_advice
+                          || ( p_sys->usm_sharp_threshold > 0 && usm_pct > 0 ) )
                        && ChromaHasYPlane( chroma );
     p_sys->probe_active  = p_sys->probe_enabled;
     p_sys->advice_logged = 0;
-
-    p_sys->usm_sharp_threshold = var_InheritInteger( p_filter,
-        CFG_PREFIX "usm-sharp-threshold" );
 }
 
 /* Wire fmt_out to the upscale target. Same chroma, new dimensions. CCN 1. */
@@ -683,6 +698,8 @@ static void EmitPerfAdvisory( filter_t *p_filter, filter_sys_t *p_sys )
  * Extracted from Filter() to keep its cyclomatic complexity under
  * the project's CCN-15 ceiling.
  */
+static void LogProbeVerdict( filter_t *p_filter, filter_sys_t *p_sys );
+
 static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
                       const picture_t *p_in )
 {
@@ -722,6 +739,15 @@ static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
                        / p_sys->probe_accum.lap_samples),
                   p_sys->usm_sharp_threshold );
     }
+    if( p_sys->probe_advice )
+        LogProbeVerdict( p_filter, p_sys );
+}
+
+/* Bypass-advisory verdict logging, split from RunProbe: it runs only
+ * when the content-probe option is on, while the metric collection
+ * above also serves the USM sharpness gate. */
+static void LogProbeVerdict( filter_t *p_filter, filter_sys_t *p_sys )
+{
     int recommend_bypass = up_should_bypass_for_content( &p_sys->probe_accum );
     uint64_t lap_mean  = p_sys->probe_accum.lap_samples
         ? p_sys->probe_accum.lap_sum  / p_sys->probe_accum.lap_samples : 0;

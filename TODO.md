@@ -155,7 +155,6 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| WIRE-3 | open | S | `--autoupscale-usm-sharp-threshold` is silently inert when `--autoupscale-content-probe=0` (or on non-planar chromas): `usm_skip_sharp` is set ONLY inside `RunProbe` (`autoupscale.c:716-719`), which runs only while `probe_active`, which is gated on the `content-probe` option (`:498-501`). Neither option's longtext (`:182-191`, `:193-205`) mentions the coupling — the sharp-threshold help even implies its own independent off-switch ("0 = feature off"). | A user who disables the probe (documented as a pure diagnostic: "DIAGNOSTIC only") also unknowingly disables the USM grain-skip feature, which is NOT diagnostic — it changes pixel output. Fix: document the dependency in both longtexts (cheapest), or decouple by letting the sharpness accumulation run independent of the advisory probe flag. |
 | — | | | WIRE-1 (flat-skip wired + exercised via `make bench-flatskip`, commit cc71221) and WIRE-2 (oracle documented, commit 0f92daa) resolved. | |
 
 ## unused functions/methods
