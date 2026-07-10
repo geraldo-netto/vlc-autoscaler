@@ -45,7 +45,6 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| PERF-7 | open | S | `RecordPerf` (`autoupscale.c:810-813`) calls `var_SetInteger` twice on EVERY frame ("autoupscale-ewma-us", "autoupscale-frames"). Each call takes the VLC object's variable lock and does a string-keyed variable lookup + callback scan — serial main-thread work on the per-frame hot path that no consumer reads at frame granularity. | Minor (sub-µs each vs a 16 ms budget) but pure waste: the stats are observability values, not per-frame contracts. Fix: move both `var_SetInteger` calls into the existing OBS-3 5-second tick (`MaybeLogStats`) so the hot path pays nothing between ticks; frame_count++ stays per-frame. |
 
 ## scalability
 

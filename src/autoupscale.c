@@ -816,6 +816,12 @@ static void MaybeLogStats( filter_t *p_filter, filter_sys_t *p_sys,
              (unsigned long long)p_sys->dropped_count,
              (long)up_perfmon_ewma_us( &p_sys->perfmon ),
              p_sys->usm_skip_sharp ? " usm=skipped(sharp)" : "" );
+
+    /* OBS-5: exported stat variables ride the same tick — string-keyed
+     * var_SetInteger takes the object var lock, too heavy per frame. */
+    var_SetInteger( p_filter, "autoupscale-ewma-us",
+                    (int64_t)up_perfmon_ewma_us( &p_sys->perfmon ) );
+    var_SetInteger( p_filter, "autoupscale-frames", p_sys->frame_count );
 }
 
 /* Record one frame's elapsed work into the perfmon and emit the one-time
@@ -827,12 +833,7 @@ static void RecordPerf( filter_t *p_filter, filter_sys_t *p_sys,
     if( up_perfmon_record_ns( &p_sys->perfmon, elapsed_ns ) )
         EmitPerfAdvisory( p_filter, p_sys );
 
-    /* OBS-5: Update observability variables */
     p_sys->frame_count++;
-    var_SetInteger( p_filter, "autoupscale-ewma-us",
-                    (int64_t)up_perfmon_ewma_us( &p_sys->perfmon ) );
-    var_SetInteger( p_filter, "autoupscale-frames", p_sys->frame_count );
-
     MaybeLogStats( p_filter, p_sys, t_end );
 }
 
