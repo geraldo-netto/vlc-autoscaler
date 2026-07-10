@@ -565,10 +565,9 @@ static void SetOutputFormat( filter_t *p_filter, vlc_fourcc_t chroma,
 static void ClampConfig( int *preset, int *algo, int *backend, int *usm, int *skip )
 {
     /* SEC-2: Clamp config inputs to prevent resource exhaustion or logic errors. */
-    if( *preset < 0 ) *preset = 0; else if( *preset > UP_TARGET_MAX ) *preset = UP_TARGET_MAX;
+    *preset = up_normalize_auto_enum( *preset, UP_TARGET_MAX );
     if( *algo < 0 ) *algo = 0; else if( *algo > UP_ALGO_MAX ) *algo = UP_ALGO_MAX;
-    if( *backend < 0 ) *backend = 0; 
-    else if( *backend > SCALER_BACKEND_MAX ) *backend = SCALER_BACKEND_MAX;
+    *backend = up_normalize_auto_enum( *backend, SCALER_BACKEND_MAX );
     if( *usm < 0 ) *usm = 0; else if( *usm > UP_USM_AMOUNT_MAX ) *usm = UP_USM_AMOUNT_MAX;
     if( *skip < 0 ) *skip = 0;
 }

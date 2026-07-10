@@ -769,6 +769,19 @@ static void test_plan_defensive_branches(void)
     END();
 }
 
+static void test_auto_enum_normalization(void)
+{
+    BEGIN("config enums: known values survive; unknown values become AUTO");
+    for (int value = UP_TARGET_AUTO; value <= UP_TARGET_MAX; ++value)
+        CHECK_EQ_INT(up_normalize_auto_enum(value, UP_TARGET_MAX), value);
+    CHECK_EQ_INT(up_normalize_auto_enum(-1, UP_TARGET_MAX), UP_TARGET_AUTO);
+    CHECK_EQ_INT(up_normalize_auto_enum(UP_TARGET_MAX + 1, UP_TARGET_MAX),
+                 UP_TARGET_AUTO);
+    CHECK_EQ_INT(up_normalize_auto_enum(INT_MIN, 2), 0);
+    CHECK_EQ_INT(up_normalize_auto_enum(INT_MAX, 2), 0);
+    END();
+}
+
 int main(void)
 {
     printf("Running upscale_logic tests...\n");
@@ -815,6 +828,7 @@ int main(void)
     test_plan_pathological_aspect_regression();
     test_aspect_invariant_smoke();
     test_plan_defensive_branches();
+    test_auto_enum_normalization();
 
     printf("\n%d tests run, %d failed\n", g_tests_run, g_tests_failed);
     return g_tests_failed == 0 ? 0 : 1;

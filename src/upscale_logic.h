@@ -84,6 +84,15 @@ static inline int up__auto_target_height(int src_h, int cores,
 
 /* ---------------------- Public API ---------------------- */
 
+/* Preserve known enum values and map every unknown value to its AUTO
+ * sentinel. Shared by production config ingestion and fuzzed decision logic. */
+static inline int up_normalize_auto_enum(int value, int max_value)
+{
+    if (value < 0 || value > max_value)
+        return 0;
+    return value;
+}
+
 /* Table mapping UP_TARGET_* preset → forced output height. Index 0 is the
  * AUTO sentinel (height resolved at runtime via up__auto_target_height); all
  * other indices encode the user-visible preset numbers. Keep in sync with

@@ -216,6 +216,18 @@ static void check_compute_target_dims(const fuzz_inputs_t *fi)
     }
 }
 
+static void check_auto_enum_normalization(const fuzz_inputs_t *fi)
+{
+    const int target = up_normalize_auto_enum(fi->preset, UP_TARGET_MAX);
+    const int expected_target = fi->preset >= 0 && fi->preset <= UP_TARGET_MAX
+                              ? fi->preset : UP_TARGET_AUTO;
+    if (target != expected_target) abort();
+
+    const int backend = up_normalize_auto_enum(fi->skip, 2);
+    const int expected_backend = fi->skip >= 0 && fi->skip <= 2 ? fi->skip : 0;
+    if (backend != expected_backend) abort();
+}
+
 /*
  * Single fuzz iteration. Reads up to 32 bytes from `data` and uses them to
  * synthesise inputs. Short inputs are zero-padded.
@@ -234,6 +246,7 @@ static void run_one(const uint8_t *data, size_t size)
 
     check_decide_target_height(&fi);
     check_compute_target_dims(&fi);
+    check_auto_enum_normalization(&fi);
 }
 
 /* ---------- libFuzzer entry point ---------- */
