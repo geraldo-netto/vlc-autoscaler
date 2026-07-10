@@ -39,7 +39,7 @@ typedef struct
 {
     int64_t budget_ns;       /* per-frame budget (e.g. 16,666,667 for 60fps) */
     int64_t ewma_ns;         /* EWMA of frame times, nanoseconds */
-    int     samples_seen;    /* total samples recorded */
+    int     samples_seen;    /* samples recorded, capped at trust threshold */
     int     has_warned;      /* latched once warning fires */
     int     enabled;         /* 0 if monitoring disabled (e.g. target_fps<=0) */
 } up_perfmon_t;
@@ -78,7 +78,8 @@ static inline int up_perfmon_record_ns(up_perfmon_t *pm, int64_t frame_ns)
     if (pm == NULL || !pm->enabled || pm->has_warned) return 0;
     if (frame_ns <= 0) return 0;
 
-    pm->samples_seen++;
+    if (pm->samples_seen < UP_PERFMON_MIN_FRAMES_FOR_WARN)
+        pm->samples_seen++;
 
     /* Drop warmup samples — initialise EWMA at the end of warmup. */
     if (pm->samples_seen <= UP_PERFMON_WARMUP_FRAMES) {

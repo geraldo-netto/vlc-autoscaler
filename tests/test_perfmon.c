@@ -157,6 +157,21 @@ static void test_no_warn_below_budget(void)
     }
     CHECK_EQ(warns, 0);
     CHECK_EQ(pm.has_warned, 0);
+    CHECK_EQ(pm.samples_seen, UP_PERFMON_MIN_FRAMES_FOR_WARN);
+    END();
+}
+
+static void test_samples_seen_saturates(void)
+{
+    BEGIN("record: samples_seen saturates at trust threshold");
+    up_perfmon_t pm;
+    up_perfmon_init(&pm, 60);
+
+    for (int i = 0; i < UP_PERFMON_MIN_FRAMES_FOR_WARN + 100; i++)
+        CHECK_EQ(up_perfmon_record_ns(&pm, 5000000LL), 0);
+
+    CHECK_EQ(pm.samples_seen, UP_PERFMON_MIN_FRAMES_FOR_WARN);
+    CHECK_EQ(pm.has_warned, 0);
     END();
 }
 
@@ -268,6 +283,7 @@ int main(void)
     test_warmup_drops_first_samples();
     test_warns_after_sustained_overrun();
     test_no_warn_below_budget();
+    test_samples_seen_saturates();
     test_no_warn_for_brief_spike();
     test_ignores_non_positive_samples();
     test_null_pm_safe();

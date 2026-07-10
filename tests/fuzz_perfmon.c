@@ -80,6 +80,12 @@ static int check_step(const up_perfmon_t *pm, int rc, int *warned_count,
         fprintf(stderr, "FAIL: budget changed after sample %d\n", n_samples);
         return 1;
     }
+    if (pm->samples_seen < 0 ||
+        pm->samples_seen > UP_PERFMON_MIN_FRAMES_FOR_WARN) {
+        fprintf(stderr, "FAIL: samples_seen=%d after sample %d\n",
+                pm->samples_seen, n_samples);
+        return 1;
+    }
     return 0;
 }
 
