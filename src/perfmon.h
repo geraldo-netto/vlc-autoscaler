@@ -17,7 +17,8 @@
  *     single-frame outliers.
  *   - We fire the warning only when at least MIN_FRAMES_FOR_WARN samples
  *     have been recorded AND the EWMA exceeds the budget. After that
- *     `has_warned` is latched; subsequent records return 0.
+ *     `has_warned` is latched; subsequent records return 0 while the
+ *     EWMA continues to track (OBS-9: stats stay live after the warn).
  *****************************************************************************/
 
 #ifndef AUTOUPSCALE_PERFMON_H
@@ -71,11 +72,13 @@ static inline void up_perfmon_init(up_perfmon_t *pm, int target_fps)
  * meaning the caller should emit a warning. Returns 0 otherwise.
  *
  * Negative or zero frame_ns are ignored (treat as "no measurement").
- * After the first 1 return the perfmon stays latched and always returns 0.
+ * After the first 1 return the warning stays latched (always returns 0),
+ * but the EWMA keeps tracking so the periodic stats line and the exported
+ * ewma variable stay live for the rest of playback (OBS-9).
  */
 static inline int up_perfmon_record_ns(up_perfmon_t *pm, int64_t frame_ns)
 {
-    if (pm == NULL || !pm->enabled || pm->has_warned) return 0;
+    if (pm == NULL || !pm->enabled) return 0;
     if (frame_ns <= 0) return 0;
 
     if (pm->samples_seen < UP_PERFMON_MIN_FRAMES_FOR_WARN)
@@ -95,6 +98,9 @@ static inline int up_perfmon_record_ns(up_perfmon_t *pm, int64_t frame_ns)
      * also take the difference into a wider type so it can't overflow. */
     int64_t diff = frame_ns - pm->ewma_ns;
     pm->ewma_ns += diff >> UP_PERFMON_ALPHA_SHIFT;
+
+    /* Warn-once latch suppresses only the return value, not tracking. */
+    if (pm->has_warned) return 0;
 
     /* Need a minimum number of samples before we trust the EWMA. */
     if (pm->samples_seen < UP_PERFMON_MIN_FRAMES_FOR_WARN) return 0;

@@ -192,6 +192,28 @@ static void test_no_warn_for_brief_spike(void)
     END();
 }
 
+static void test_ewma_tracks_after_warn(void)
+{
+    BEGIN("record: EWMA keeps tracking after the warn latch (OBS-9)");
+    up_perfmon_t pm;
+    up_perfmon_init(&pm, 60);
+
+    for (int i = 0; i < 100; i++)
+        (void)up_perfmon_record_ns(&pm, 50000000LL);
+    CHECK_EQ(pm.has_warned, 1);
+    int64_t at_warn_us = up_perfmon_ewma_us(&pm);
+
+    /* Load returns to normal: the exported EWMA must follow it down
+     * without ever re-warning. */
+    int warns = 0;
+    for (int i = 0; i < 200; i++)
+        if (up_perfmon_record_ns(&pm, 5000000LL)) warns++;
+    CHECK_EQ(warns, 0);
+    CHECK_EQ(pm.has_warned, 1);
+    CHECK(up_perfmon_ewma_us(&pm) < at_warn_us / 2);
+    END();
+}
+
 /* ---------- ignore garbage ---------- */
 
 static void test_ignores_non_positive_samples(void)
@@ -285,6 +307,7 @@ int main(void)
     test_no_warn_below_budget();
     test_samples_seen_saturates();
     test_no_warn_for_brief_spike();
+    test_ewma_tracks_after_warn();
     test_ignores_non_positive_samples();
     test_null_pm_safe();
     test_ewma_converges_to_constant();
