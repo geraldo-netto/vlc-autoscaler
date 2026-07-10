@@ -790,6 +790,20 @@ static void test_pin_cpus_matches(void)
     END();
 }
 
+static void test_picture_alloc_bounds(void)
+{
+    BEGIN("zimg test picture allocation rejects unsafe dimensions");
+    zt_pic_t pic = { 0 };
+    CHECK(zt_align_up(1) == ZT_ALIGN);
+    CHECK(zt_align_up(INT_MAX) == 0);
+    CHECK(zt_pic_alloc(NULL, VLC_CODEC_I420, 8, 8) == -1);
+    CHECK(zt_pic_alloc(&pic, VLC_CODEC_I420, 0, 8) == -1);
+    CHECK(zt_pic_alloc(&pic, VLC_CODEC_I420, 8, 0) == -1);
+    CHECK(zt_pic_alloc(&pic, VLC_CODEC_I420, UP_MAX_DIM + 1, 8) == -1);
+    CHECK(zt_pic_alloc(&pic, VLC_CODEC_I420, 8, UP_MAX_DIM + 1) == -1);
+    END();
+}
+
 int main(void)
 {
     printf("Running scaler_zimg invariant tests (%zu configs)...\n", NCFG);
@@ -809,6 +823,7 @@ int main(void)
     test_barrier_failure_drains_and_sticks();
     test_pin_cpus_matches();
     test_tiling_matches_untiled();
+    test_picture_alloc_bounds();
     printf("\n%d tests run, %d failed\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

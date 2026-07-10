@@ -17,6 +17,7 @@ THRESHOLD="${THRESHOLD:-80}"
 # headers below precisely so it CAN be unit-tested.
 TRACKED=(
     upscale_logic.h
+    cli_parse.h
     usm.h
     perfmon.h
     threading.h

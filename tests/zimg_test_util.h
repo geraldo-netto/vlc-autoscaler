@@ -19,6 +19,7 @@
 #include "../src/zimg_helpers.h"
 #include "../src/upscale_logic.h"
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,7 @@ typedef struct {
 
 static inline int zt_align_up(int v)
 {
+    if (v <= 0 || v > INT_MAX - (ZT_ALIGN - 1)) return 0;
     return (v + (ZT_ALIGN - 1)) & ~(ZT_ALIGN - 1);
 }
 
@@ -50,6 +52,9 @@ static inline int zt_pic_alloc(zt_pic_t *tp, uint32_t chroma, int w, int h)
 {
     unsigned sw, sh;
     int swap;
+    if (tp == NULL || w <= 0 || h <= 0
+            || w > UP_MAX_DIM || h > UP_MAX_DIM)
+        return -1;
     if (!up_chroma_to_zimg(chroma, &sw, &sh, &swap)) return -1;
 
     memset(tp, 0, sizeof *tp);

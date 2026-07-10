@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "../src/picture_view.h"
+#include "cli_parse.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -200,7 +201,12 @@ static uint8_t fuzz_random_byte(void)
 
 int main(int argc, char **argv)
 {
-    const long iterations = argc > 1 ? atol(argv[1]) : 50000;
+    long iterations = 50000;
+    if (argc > 2 || (argc == 2
+            && !up_cli_parse_long(argv[1], 1, LONG_MAX, &iterations))) {
+        fprintf(stderr, "usage: %s [positive-iterations]\n", argv[0]);
+        return 2;
+    }
     uint8_t data[32] = { 0 };
     LLVMFuzzerTestOneInput(data, 0);
     for (long i = 0; i < iterations; ++i)

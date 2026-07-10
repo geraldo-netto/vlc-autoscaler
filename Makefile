@@ -187,7 +187,7 @@ $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CC) $(PLUGIN_CFLAGS) -c -o $@ $<
 
 # --------- unit tests ---------
-test: complexity $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_threading $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants
+test: complexity $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/test_upscale_logic
@@ -200,6 +200,9 @@ test: complexity $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $
 	@echo
 	@echo "=== perfmon ==="
 	@$(BUILD)/test_perfmon
+	@echo
+	@echo "=== cli_parse ==="
+	@$(BUILD)/test_cli_parse
 	@echo
 	@echo "=== threading ==="
 	@$(BUILD)/test_threading
@@ -243,6 +246,9 @@ $(BUILD)/test_usm: tests/test_usm.c tests/usm_test_util.h src/usm.h src/perfmon.
 $(BUILD)/test_perfmon: tests/test_perfmon.c src/perfmon.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
+$(BUILD)/test_cli_parse: tests/test_cli_parse.c tests/cli_parse.h | $(BUILD)
+	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
+
 # --------- libFuzzer (clang) ---------
 fuzz: $(BUILD)/fuzz_upscale_logic $(BUILD)/fuzz_usm $(BUILD)/fuzz_perfmon $(BUILD)/fuzz_threading $(BUILD)/fuzz_copy_plane $(BUILD)/fuzz_stripe_bounds $(BUILD)/fuzz_decide_tile_grid $(BUILD)/fuzz_frame_shape $(BUILD)/fuzz_scaler_chroma $(BUILD)/fuzz_scaler_open $(BUILD)/fuzz_content_probe $(BUILD)/fuzz_picture_view $(BUILD)/fuzz_usm_variants
 	@echo "Built libFuzzer targets:"
@@ -274,16 +280,16 @@ $(BUILD)/fuzz_upscale_logic: tests/fuzz_upscale_logic.c src/upscale_logic.h | $(
 $(BUILD)/fuzz_usm: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h src/perfmon.h src/threading.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
-$(BUILD)/fuzz_perfmon: tests/fuzz_perfmon.c src/perfmon.h | $(BUILD)
+$(BUILD)/fuzz_perfmon: tests/fuzz_perfmon.c tests/cli_parse.h src/perfmon.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
-$(BUILD)/fuzz_threading: tests/fuzz_threading.c src/threading.h | $(BUILD)
+$(BUILD)/fuzz_threading: tests/fuzz_threading.c tests/cli_parse.h src/threading.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
-$(BUILD)/fuzz_copy_plane: tests/fuzz_copy_plane.c src/zimg_helpers.h | $(BUILD)
+$(BUILD)/fuzz_copy_plane: tests/fuzz_copy_plane.c tests/cli_parse.h src/zimg_helpers.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
-$(BUILD)/fuzz_stripe_bounds: tests/fuzz_stripe_bounds.c src/zimg_helpers.h | $(BUILD)
+$(BUILD)/fuzz_stripe_bounds: tests/fuzz_stripe_bounds.c tests/cli_parse.h src/zimg_helpers.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
 $(BUILD)/fuzz_decide_tile_grid: tests/fuzz_decide_tile_grid.c src/zimg_helpers.h | $(BUILD)
@@ -301,7 +307,7 @@ $(BUILD)/fuzz_scaler_open: tests/fuzz_scaler_open.c src/scaler_pick_logic.h | $(
 $(BUILD)/fuzz_content_probe: tests/fuzz_content_probe.c src/content_probe.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
-$(BUILD)/fuzz_picture_view: tests/fuzz_picture_view.c src/picture_view.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h | $(BUILD)
+$(BUILD)/fuzz_picture_view: tests/fuzz_picture_view.c tests/cli_parse.h src/picture_view.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -Itests/stubs -o $@ $<
 
 # libFuzzer variant fuzzer: needs the three SIMD .o files compiled with the
@@ -371,16 +377,16 @@ $(BUILD)/fuzz_smoke: tests/fuzz_upscale_logic.c src/upscale_logic.h | $(BUILD)
 $(BUILD)/fuzz_usm_smoke: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h src/perfmon.h src/threading.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
-$(BUILD)/fuzz_perfmon_smoke: tests/fuzz_perfmon.c src/perfmon.h | $(BUILD)
+$(BUILD)/fuzz_perfmon_smoke: tests/fuzz_perfmon.c tests/cli_parse.h src/perfmon.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
-$(BUILD)/fuzz_threading_smoke: tests/fuzz_threading.c src/threading.h | $(BUILD)
+$(BUILD)/fuzz_threading_smoke: tests/fuzz_threading.c tests/cli_parse.h src/threading.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
-$(BUILD)/fuzz_copy_plane_smoke: tests/fuzz_copy_plane.c src/zimg_helpers.h | $(BUILD)
+$(BUILD)/fuzz_copy_plane_smoke: tests/fuzz_copy_plane.c tests/cli_parse.h src/zimg_helpers.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
-$(BUILD)/fuzz_stripe_bounds_smoke: tests/fuzz_stripe_bounds.c src/zimg_helpers.h | $(BUILD)
+$(BUILD)/fuzz_stripe_bounds_smoke: tests/fuzz_stripe_bounds.c tests/cli_parse.h src/zimg_helpers.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
 $(BUILD)/fuzz_decide_tile_grid_smoke: tests/fuzz_decide_tile_grid.c src/zimg_helpers.h | $(BUILD)
@@ -398,7 +404,7 @@ $(BUILD)/fuzz_scaler_open_smoke: tests/fuzz_scaler_open.c src/scaler_pick_logic.
 $(BUILD)/fuzz_content_probe_smoke: tests/fuzz_content_probe.c src/content_probe.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
-$(BUILD)/fuzz_picture_view_smoke: tests/fuzz_picture_view.c src/picture_view.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h | $(BUILD)
+$(BUILD)/fuzz_picture_view_smoke: tests/fuzz_picture_view.c tests/cli_parse.h src/picture_view.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -Itests/stubs -o $@ $< $(SMOKE_LDFLAGS)
 
 # Cross-variant smoke fuzzer: needs the same three SIMD .o files as the
@@ -475,7 +481,7 @@ $(BUILD)/test_scaler_zimg_tsan: tests/test_scaler_zimg.c $(ZIMG_H_DEPS) | $(BUIL
 	    $< src/scaler_zimg.c -fsanitize=thread \
 	    $(BARRIER_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
 
-$(BUILD)/bench_scaler_zimg: tests/bench_scaler_zimg.c $(ZIMG_H_DEPS) | $(BUILD)
+$(BUILD)/bench_scaler_zimg: tests/bench_scaler_zimg.c tests/cli_parse.h $(ZIMG_H_DEPS) | $(BUILD)
 	$(CC) -O2 $(ZIMG_H_CFLAGS) -o $@ $< src/scaler_zimg.c $(ZIMG_H_LIBS)
 
 # SCAL-3 seam fuzzer: randomized geometry/chroma/thread-count, asserts the
@@ -556,9 +562,9 @@ BENCH_CFLAGS := -O3 $(MARCH_FLAG) $(WARN)
 
 build-bench: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip $(if $(HAVE_ZIMG),$(BUILD)/bench_scaler_zimg)
 
-$(BUILD)/bench_usm_pool: tests/bench_usm_pool.c src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
+$(BUILD)/bench_usm_pool: tests/bench_usm_pool.c tests/cli_parse.h src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) -o $@ $< src/usm_pool.c -lpthread
-$(BUILD)/bench_usm_pool_flatskip: tests/bench_usm_pool.c src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
+$(BUILD)/bench_usm_pool_flatskip: tests/bench_usm_pool.c tests/cli_parse.h src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) -DUSM_POOL_FLAT_SKIP=1 -o $@ $< src/usm_pool.c -lpthread
 
 bench: $(BUILD)/bench_usm_pool
@@ -601,6 +607,7 @@ COV_TESTS := \
     $(COV_BUILD)/test_upscale_logic \
     $(COV_BUILD)/test_usm \
     $(COV_BUILD)/test_perfmon \
+    $(COV_BUILD)/test_cli_parse \
     $(COV_BUILD)/test_threading \
     $(COV_BUILD)/test_zimg_helpers \
     $(COV_BUILD)/test_chroma_classify \
@@ -636,6 +643,8 @@ $(COV_BUILD)/test_usm: tests/test_usm.c tests/usm_test_util.h src/usm.h | $(COV_
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_perfmon: tests/test_perfmon.c src/perfmon.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/test_cli_parse: tests/test_cli_parse.c tests/cli_parse.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_threading: tests/test_threading.c src/threading.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $(COV_BUILD)
@@ -660,13 +669,13 @@ $(COV_BUILD)/fuzz_upscale_logic: tests/fuzz_upscale_logic.c src/upscale_logic.h 
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/fuzz_usm: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/fuzz_perfmon: tests/fuzz_perfmon.c src/perfmon.h | $(COV_BUILD)
+$(COV_BUILD)/fuzz_perfmon: tests/fuzz_perfmon.c tests/cli_parse.h src/perfmon.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/fuzz_threading: tests/fuzz_threading.c src/threading.h | $(COV_BUILD)
+$(COV_BUILD)/fuzz_threading: tests/fuzz_threading.c tests/cli_parse.h src/threading.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/fuzz_copy_plane: tests/fuzz_copy_plane.c src/zimg_helpers.h | $(COV_BUILD)
+$(COV_BUILD)/fuzz_copy_plane: tests/fuzz_copy_plane.c tests/cli_parse.h src/zimg_helpers.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/fuzz_stripe_bounds: tests/fuzz_stripe_bounds.c src/zimg_helpers.h | $(COV_BUILD)
+$(COV_BUILD)/fuzz_stripe_bounds: tests/fuzz_stripe_bounds.c tests/cli_parse.h src/zimg_helpers.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/fuzz_decide_tile_grid: tests/fuzz_decide_tile_grid.c src/zimg_helpers.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
@@ -678,7 +687,7 @@ $(COV_BUILD)/fuzz_scaler_open: tests/fuzz_scaler_open.c src/scaler_pick_logic.h 
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/fuzz_content_probe: tests/fuzz_content_probe.c src/content_probe.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/fuzz_picture_view: tests/fuzz_picture_view.c src/picture_view.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h | $(COV_BUILD)
+$(COV_BUILD)/fuzz_picture_view: tests/fuzz_picture_view.c tests/cli_parse.h src/picture_view.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -Itests/stubs -o $@ $< $(COV_LDFLAGS)
 
 .PHONY: coverage coverage-summary

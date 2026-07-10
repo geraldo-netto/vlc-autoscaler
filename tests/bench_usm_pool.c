@@ -11,6 +11,7 @@
  */
 #include "../src/usm_pool.h"
 #include "../src/usm.h"
+#include "cli_parse.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -47,27 +48,38 @@ static int parse_fill_mode(const char *fill)
     return -1;
 }
 
-static int args_in_range(const struct bench_args *a)
-{
-    return a->n_threads >= 1 && a->width >= 8
-        && a->height >= 8 && a->frames >= 1;
-}
-
 static int parse_args(int argc, char **argv, struct bench_args *a)
 {
     if (argc < 4) {
         fprintf(stderr, "usage: %s <threads> <width> <height> [frames] [amount]\n", argv[0]);
         return 2;
     }
-    a->n_threads  = atoi(argv[1]);
-    a->width      = atoi(argv[2]);
-    a->height     = atoi(argv[3]);
-    a->frames     = (argc >= 5) ? atoi(argv[4]) : 100;
-    a->amount_pct = (argc >= 6) ? atoi(argv[5]) : 20;
+    a->frames = 100;
+    a->amount_pct = 20;
     a->fill       = (argc >= 7) ? argv[6] : "rand";
 
-    if (!args_in_range(a)) {
-        fprintf(stderr, "bad args\n"); return 2;
+    const struct {
+        int position;
+        long minimum;
+        long maximum;
+        int *destination;
+    } numeric[] = {
+        { 1, 1, INT_MAX, &a->n_threads },
+        { 2, 8, 16384, &a->width },
+        { 3, 8, 16384, &a->height },
+        { 4, 1, INT_MAX, &a->frames },
+        { 5, INT_MIN, INT_MAX, &a->amount_pct },
+    };
+    for (size_t i = 0; i < sizeof numeric / sizeof *numeric; i++) {
+        if (numeric[i].position >= argc) continue;
+        long value;
+        if (!up_cli_parse_long(argv[numeric[i].position], numeric[i].minimum,
+                               numeric[i].maximum, &value)) {
+            fprintf(stderr, "bad numeric argument '%s'\n",
+                    argv[numeric[i].position]);
+            return 2;
+        }
+        *numeric[i].destination = (int)value;
     }
     a->mode = parse_fill_mode(a->fill);
     if (a->mode < 0) {

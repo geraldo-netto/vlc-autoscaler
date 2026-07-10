@@ -13,6 +13,7 @@
  */
 #define ZIMG_TEST_DEFINE_MODULE_NAME
 #include "zimg_test_util.h"
+#include "cli_parse.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -33,12 +34,6 @@ struct bargs {
     const char *chroma_name;
 };
 
-static int bargs_valid(const struct bargs *a)
-{
-    return a->chroma && a->threads >= 1 && a->sw >= 8 && a->sh >= 8
-        && a->dw >= 8 && a->dh >= 8 && a->frames >= 1;
-}
-
 static int parse(int argc, char **argv, struct bargs *a)
 {
     if (argc < 7) {
@@ -46,15 +41,38 @@ static int parse(int argc, char **argv, struct bargs *a)
                         "[frames] [zc]\n", argv[0]);
         return 2;
     }
-    a->threads = atoi(argv[1]);
     a->chroma_name = argv[2];
     a->chroma  = chroma_of(argv[2]);
-    a->sw = atoi(argv[3]); a->sh = atoi(argv[4]);
-    a->dw = atoi(argv[5]); a->dh = atoi(argv[6]);
-    a->frames = (argc >= 8) ? atoi(argv[7]) : 200;
-    a->zc     = (argc >= 9) ? atoi(argv[8]) : 1;
-    if (!bargs_valid(a)) {
-        fprintf(stderr, "bad args (chroma i420|yv12|i422|i444; dims >= 8)\n");
+    a->frames = 200;
+    a->zc = 1;
+
+    const struct {
+        int position;
+        long minimum;
+        long maximum;
+        int *destination;
+    } numeric[] = {
+        { 1, 1, INT_MAX, &a->threads },
+        { 3, 8, UP_MAX_DIM, &a->sw },
+        { 4, 8, UP_MAX_DIM, &a->sh },
+        { 5, 8, UP_MAX_DIM, &a->dw },
+        { 6, 8, UP_MAX_DIM, &a->dh },
+        { 7, 1, INT_MAX, &a->frames },
+        { 8, 0, 1, &a->zc },
+    };
+    for (size_t i = 0; i < sizeof numeric / sizeof *numeric; i++) {
+        if (numeric[i].position >= argc) continue;
+        long value;
+        if (!up_cli_parse_long(argv[numeric[i].position], numeric[i].minimum,
+                               numeric[i].maximum, &value)) {
+            fprintf(stderr, "bad numeric argument '%s'\n",
+                    argv[numeric[i].position]);
+            return 2;
+        }
+        *numeric[i].destination = (int)value;
+    }
+    if (!a->chroma) {
+        fprintf(stderr, "bad chroma (expected i420|yv12|i422|i444)\n");
         return 2;
     }
     return 0;

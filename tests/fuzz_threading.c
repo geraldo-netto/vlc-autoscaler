@@ -18,6 +18,7 @@
  *****************************************************************************/
 
 #include "../src/threading.h"
+#include "cli_parse.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -211,7 +212,12 @@ static uint64_t xs(void)
 
 int main(int argc, char **argv)
 {
-    long iters = (argc > 1) ? atol(argv[1]) : 100000;
+    long iters = 100000;
+    if (argc > 2 || (argc == 2
+            && !up_cli_parse_long(argv[1], 1, LONG_MAX, &iters))) {
+        fprintf(stderr, "usage: %s [positive-iterations]\n", argv[0]);
+        return 2;
+    }
     uint8_t buf[256];
     long n_fail = 0;
     for (long i = 0; i < iters; i++) {
