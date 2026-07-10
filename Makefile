@@ -90,15 +90,15 @@ ifdef HAVE_ZIMG
   PLUGIN_LIBS   += $(ZIMG_LIBS)
 endif
 
-TEST_CFLAGS  := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefined
+TEST_CFLAGS  := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefined $(EXTRA_CFLAGS)
 TEST_LDFLAGS := -fsanitize=address,undefined
 BARRIER_WRAP_LDFLAGS := -Wl,--wrap=sem_wait -Wl,--wrap=pthread_cond_broadcast
 USM_POOL_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc
 
 FUZZ_SAN     := -fsanitize=fuzzer,address,undefined
-FUZZ_CFLAGS  := -O1 -g $(MARCH_FLAG) $(WARN) -MMD -MP $(FUZZ_SAN)
+FUZZ_CFLAGS  := -O1 -g $(MARCH_FLAG) $(WARN) -MMD -MP $(FUZZ_SAN) $(EXTRA_CFLAGS)
 
-SMOKE_CFLAGS := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefined -DFUZZ_MAIN
+SMOKE_CFLAGS := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefined -DFUZZ_MAIN $(EXTRA_CFLAGS)
 SMOKE_LDFLAGS := -fsanitize=address,undefined
 
 PLUGIN_SRCS := src/autoupscale.c src/scaler.c src/scaler_swscale.c
@@ -455,9 +455,9 @@ $(BUILD)/fuzz_usm_variants_smoke: tests/fuzz_usm_variants.c \
 # repeated frames at unusual (n_threads, w, h) combinations, including worker
 # clamping and the single-worker path.
 
-STRESS_CFLAGS_ASAN := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefined
+STRESS_CFLAGS_ASAN := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefined $(EXTRA_CFLAGS)
 STRESS_LDFLAGS_ASAN := -fsanitize=address,undefined -lpthread
-STRESS_CFLAGS_TSAN := -O1 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=thread
+STRESS_CFLAGS_TSAN := -O1 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=thread $(EXTRA_CFLAGS)
 STRESS_LDFLAGS_TSAN := -fsanitize=thread -lpthread
 
 $(BUILD)/usm_pool_stress_asan.o: src/usm_pool.c | $(BUILD)
@@ -487,7 +487,7 @@ stress: $(BUILD)/stress_usm_pool $(BUILD)/stress_usm_pool_tsan
 # tests/zimg_test_util.h). Kept OUT of `make test` (which stays VLC-free);
 # run explicitly. Built only when libzimg was detected.
 ifdef HAVE_ZIMG
-ZIMG_H_CFLAGS  := -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS)
+ZIMG_H_CFLAGS  := -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS) $(EXTRA_CFLAGS)
 ZIMG_H_LIBS    := $(VLC_LIBS) $(ZIMG_LIBS) -lpthread
 
 # scaler_zimg.c compiled once per sanitizer/optimization mode; header
@@ -598,7 +598,7 @@ endif
 # flat-detection path is actually compiled and exercised — the call
 # site that opt-in feature exists for — and prints a rand-vs-flat
 # comparison so the skip's payoff is visible.
-BENCH_CFLAGS := -O3 $(MARCH_FLAG) $(WARN) -MMD -MP
+BENCH_CFLAGS := -O3 $(MARCH_FLAG) $(WARN) -MMD -MP $(EXTRA_CFLAGS)
 
 build-bench: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip $(if $(HAVE_ZIMG),$(BUILD)/bench_scaler_zimg)
 
@@ -644,7 +644,7 @@ COV_BUILD := $(BUILD)/cov
 # Coverage profiles are compiler-specific; override these as a matched GCC pair.
 COV_CC      ?= gcc
 GCOV        ?= gcov
-COV_CFLAGS  := -O0 -g $(MARCH_FLAG) $(WARN) -MMD -MP --coverage -fprofile-arcs -ftest-coverage
+COV_CFLAGS  := -O0 -g $(MARCH_FLAG) $(WARN) -MMD -MP --coverage -fprofile-arcs -ftest-coverage $(EXTRA_CFLAGS)
 COV_LDFLAGS := --coverage
 
 COV_TESTS := \

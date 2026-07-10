@@ -53,23 +53,28 @@ jobs:
             EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
           make clean
 
+      # BUILD-8: the test/fuzz/stress/coverage TUs build under -Werror too,
+      # so new warnings in harness code fail CI, not just plugin code. The
+      # -Wno-unreachable-code-generic-assoc suppresses a clang false
+      # positive inside VLC's own _Generic headers (gcc ignores the
+      # unknown -Wno- flag as long as no other diagnostic fires).
       - name: Unit tests (ASan + UBSan) + complexity gate
-        run: make check
+        run: make check EXTRA_CFLAGS=-Werror
 
       - name: zimg backend invariants (ASan + UBSan)
-        run: make test-zimg
+        run: make test-zimg EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
 
       - name: Smoke fuzz (ASan + UBSan)
-        run: make fuzz-smoke
+        run: make fuzz-smoke EXTRA_CFLAGS=-Werror
 
       - name: Concurrency stress (usm_pool, ASan + TSan)
-        run: make stress
+        run: make stress EXTRA_CFLAGS=-Werror
 
       - name: zimg backend stress (ASan + UBSan + TSan)
-        run: make stress-zimg
+        run: make stress-zimg EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
 
       - name: Per-file and per-function coverage gates (minimum 80%)
-        run: make coverage
+        run: make coverage EXTRA_CFLAGS=-Werror
 
       - name: Static analysis (cppcheck)
         run: make analyze
