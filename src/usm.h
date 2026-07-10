@@ -188,10 +188,16 @@ static inline void up_usm__pass1_hblur(
  * up_usm__hblur_row above, it relies on the production TU (usm_pool.c)
  * being compiled at -O3 for gcc's vectorizer rather than a per-function
  * pragma (PERF-4); gcc -O3 and clang -O2 both emit 16-byte SIMD here.
+ *
+ * dst_row and src_row may ALIAS (in-place USM: production sharpens the
+ * VLC luma plane in place) — each x is read before it is written and
+ * never re-read, so element-wise aliasing is safe, but they must NOT
+ * carry `restrict`. The three blur rows are private scratch and never
+ * alias dst/src; their `restrict` is what the vectorizer needs.
  */
 static inline void up_usm__combine_row(
-    uint8_t       *restrict dst_row,
-    const uint8_t *restrict src_row,
+    uint8_t       *dst_row,
+    const uint8_t *src_row,
     const uint8_t *restrict up_row,
     const uint8_t *restrict mid,
     const uint8_t *restrict dn_row,

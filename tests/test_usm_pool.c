@@ -118,6 +118,43 @@ static size_t run_compare(int n_threads, int width, int height,
     return diff;
 }
 
+/*
+ * In-place variant (SYS-4): the pool runs with dst == src (production's
+ * call shape in ApplyUsmIfEnabled) and must still match the oracle run
+ * on separate buffers. Returns differing-byte count, SIZE_MAX on setup
+ * failure.
+ */
+static size_t run_compare_inplace(int n_threads, int width, int height,
+                                  int amount_q8, uint64_t seed)
+{
+    size_t plane_bytes = (size_t)width * (size_t)height;
+    uint8_t *src       = malloc(plane_bytes);
+    uint8_t *dst_st    = calloc(plane_bytes, 1);
+    uint8_t *inplace   = malloc(plane_bytes);
+    uint8_t *workspace = malloc(plane_bytes);
+    size_t diff = SIZE_MAX;
+
+    if (src && dst_st && inplace && workspace) {
+        fill_pseudorandom(src, plane_bytes, seed);
+        up_usm_apply_plane(dst_st, width, src, width,
+                           width, height, amount_q8, workspace);
+
+        memcpy(inplace, src, plane_bytes);
+        usm_pool_t *pool = up_usm_pool_create(n_threads, width, height, 0);
+        if (pool &&
+            up_usm_pool_apply(pool, inplace, width, inplace, width,
+                              amount_q8) == 0) {
+            diff = 0;
+            for (size_t i = 0; i < plane_bytes; i++)
+                if (dst_st[i] != inplace[i]) diff++;
+        }
+        up_usm_pool_destroy(pool);
+    }
+
+    free(src); free(dst_st); free(inplace); free(workspace);
+    return diff;
+}
+
 /* --------------- core byte-identity tests --------------- */
 
 static void test_identity_amount_zero(void)
@@ -185,6 +222,38 @@ static void test_typical_30pct(void)
     CHECK(run_compare(3, 1920, 1080, amount, 0xc) == 0);
     CHECK(run_compare(4, 1920, 1080, amount, 0xd) == 0);
     CHECK(run_compare(8, 1920, 1080, amount, 0xe) == 0);
+    END();
+}
+
+static void test_inplace_matches_oracle(void)
+{
+    BEGIN("in-place (dst==src): matches separate-buffer oracle at all counts");
+    int amount = up_usm_amount_pct_to_q8(30);
+    CHECK(run_compare_inplace(1, 1920, 1080, amount, 0x30) == 0);
+    CHECK(run_compare_inplace(2, 1920, 1080, amount, 0x31) == 0);
+    CHECK(run_compare_inplace(4,  854,  480, amount, 0x32) == 0);
+    CHECK(run_compare_inplace(8,  854,  480, amount, 0x33) == 0);
+    CHECK(run_compare_inplace(16, 854,  480, amount, 0x34) == 0);
+    /* Uneven stripes + max amount: hardest halo case. */
+    CHECK(run_compare_inplace(4, 213, 137,
+                              up_usm_amount_pct_to_q8(200), 0x35) == 0);
+    /* Identity in-place stays a no-op fast path. */
+    CHECK(run_compare_inplace(4, 854, 480, 0, 0x36) == 0);
+    END();
+}
+
+static void test_inplace_stride_mismatch_rejected(void)
+{
+    BEGIN("in-place with mismatched strides is rejected");
+    enum { W = 64, H = 64, STRIDE = 80 };
+    static uint8_t buf[STRIDE * H];
+    usm_pool_t *p = up_usm_pool_create(2, W, H, 0);
+    CHECK(p != NULL);
+    if (p) {
+        CHECK(up_usm_pool_apply(p, buf, STRIDE, buf, W,
+                                up_usm_amount_pct_to_q8(30)) == -1);
+        up_usm_pool_destroy(p);
+    }
     END();
 }
 
@@ -513,6 +582,8 @@ int main(void)
     test_identity_amount_zero();
     test_identity_pool_strided_slow_path();
     test_typical_30pct();
+    test_inplace_matches_oracle();
+    test_inplace_stride_mismatch_rejected();
     test_aggressive_100pct();
 
     /* Boundary cases */

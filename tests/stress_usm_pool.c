@@ -78,6 +78,8 @@ typedef struct {
     int  frames;
     int  amount_pct;   /* USM strength */
     const char *name;
+    int  in_place;     /* 1 = pool runs dst==src (production mode, SYS-4);
+                        * trailing so older configs default to 0 */
 } stress_config_t;
 
 typedef struct {
@@ -119,11 +121,20 @@ static size_t run_one_frame(const stress_config_t *cfg, stress_bufs_t *b,
     up_usm_apply_plane(b->dst_st, cfg->width, b->src, cfg->width,
                        cfg->width, cfg->height, amount, b->ws);
 
-    /* Multi-threaded: same input, must produce identical output. */
-    memset(b->dst_mt, 0xAA, plane_size);  /* poison: catch unwritten regions */
-    if (up_usm_pool_apply(pool, b->dst_mt, cfg->width, b->src, cfg->width,
-                          amount) != 0) {
-        return (size_t)-1;
+    /* Multi-threaded: same input, must produce identical output. The
+     * in-place mode mirrors production (Filter() sharpens the VLC luma
+     * plane with dst == src): seed dst_mt with the source and hand the
+     * pool the same pointer for both sides. */
+    if (cfg->in_place) {
+        memcpy(b->dst_mt, b->src, plane_size);
+        if (up_usm_pool_apply(pool, b->dst_mt, cfg->width, b->dst_mt,
+                              cfg->width, amount) != 0)
+            return (size_t)-1;
+    } else {
+        memset(b->dst_mt, 0xAA, plane_size);  /* poison: catch unwritten regions */
+        if (up_usm_pool_apply(pool, b->dst_mt, cfg->width, b->src, cfg->width,
+                              amount) != 0)
+            return (size_t)-1;
     }
 
     return byte_diff(b->dst_st, b->dst_mt, plane_size);
@@ -272,6 +283,19 @@ int main(int argc, char **argv)
 
         /* Big frame, single thread - tests workspace alloc at scale */
         {  1, 4096, 2160,     5,  30, "1thr  4096x2160"         },
+
+        /* IN-PLACE (dst == src), the production call shape (SYS-4).
+         * Multi-thread configs hammer the halo-row snapshots: every
+         * stripe boundary is a potential neighbour read/write race that
+         * TSan would flag and byte-diff would surface. */
+        {  1,  854,  480,    50,  30, "1thr  854x480 IN-PLACE",   1 },
+        {  4,  854,  480,    50,  30, "4thr  854x480 IN-PLACE",   1 },
+        { 16,  854,  480,    50,  30, "16thr 854x480 IN-PLACE",   1 },
+        { 64,  854,  480,    50,  30, "64thr 854x480 IN-PLACE",   1 },
+        { 16, 1920, 1080,    20,  30, "16thr 1920x1080 IN-PLACE", 1 },
+        { 16, 1920, 1080,    20, 200, "16thr 1080p a=200 IN-PLACE", 1 },
+        { 16,  853,  479,    50,  30, "16thr 853x479 odd IN-PLACE", 1 },
+        { 64,  128,   64,   100,  30, "64thr 128x64 clamp IN-PLACE", 1 },
     };
 
     int n_configs = (int)(sizeof configs / sizeof *configs);

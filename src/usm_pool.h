@@ -64,10 +64,14 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
                                int stripe_min_rows);
 
 /*
- * Apply USM to one frame. dst and src may alias if dst_stride ==
- * src_stride (the identity/amount=0 case). Returns 0 on success,
- * -1 if the pool is NULL, the strides are too small, or lazy thread
- * spawn fails.
+ * Apply USM to one frame. IN-PLACE IS SUPPORTED for any amount: dst may
+ * equal src exactly (same base pointer, same stride) — the pool
+ * snapshots each stripe's two boundary halo rows before dispatch so
+ * neighbouring workers never read a row another worker is writing
+ * (SYS-4). Partial overlap (dst != src but ranges overlapping, or same
+ * base with different strides) is rejected/undefined. Returns 0 on
+ * success, -1 if the pool is NULL, the strides are too small or
+ * mismatched while aliased, or lazy thread spawn fails.
  *
  * (Convention matches the rest of the project: 0 = success, negative
  * = failure. Was inverted in earlier versions; flipped 2026-05.)

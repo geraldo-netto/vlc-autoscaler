@@ -81,8 +81,10 @@
 /* Workspace alignment - matches the rest of the plugin. */
 #define USM_POOL_ALIGN 64
 
-/* Each worker keeps this many rolling hblur row buffers (y-1, y, y+1). */
-#define USM_POOL_SCRATCH_ROWS 3
+/* Per-worker scratch rows: three rolling hblur buffers (y-1, y, y+1)
+ * plus two halo snapshots (rows y_start-1 and y_end) used only for
+ * in-place frames — see usm_pool_set_per_frame (SYS-4). */
+#define USM_POOL_SCRATCH_ROWS 5
 
 /*
  * Cache-line-aligned to prevent false sharing between adjacent workers.
@@ -137,6 +139,14 @@ typedef struct usm_worker_s {
     int             src_stride;
     int             dst_stride;
     int             amount_q8;
+
+    /* In-place support (SYS-4): when dst aliases src, a neighbour worker
+     * concurrently OVERWRITES the two src rows this worker's boundary
+     * hblurs need (y_start-1 and y_end). The main thread snapshots those
+     * rows into per-worker scratch before the dispatch; NULL when the
+     * frame is not in-place or the row doesn't exist. */
+    const uint8_t  *halo_top;   /* pre-frame copy of src row y_start-1 */
+    const uint8_t  *halo_bot;   /* pre-frame copy of src row y_end */
 } usm_worker_t;
 
 /*
@@ -232,6 +242,16 @@ struct usm_pool_s {
  * clamp (y-1 -> 0 at the top, y+1 -> height-1 at the bottom), matching
  * up_usm__pass2_combine exactly. CCN 4.
  */
+/* Source row for the hblur reads: the two rows a neighbour stripe may
+ * be overwriting concurrently (in-place frames) come from the pre-frame
+ * halo snapshots; everything else reads the plane directly. CCN 3. */
+static const uint8_t *usm_worker_src_row(const usm_worker_t *w, int y)
+{
+    if (w->halo_top && y == w->y_start - 1) return w->halo_top;
+    if (w->halo_bot && y == w->y_end)       return w->halo_bot;
+    return w->src + (size_t)y * (size_t)w->src_stride;
+}
+
 static void usm_worker_sweep(usm_worker_t *w)
 {
     const int W = w->width;
@@ -242,12 +262,12 @@ static void usm_worker_sweep(usm_worker_t *w)
 
     int y = w->y_start;
     int y_up = (y > 0) ? (y - 1) : 0;
-    up_usm__hblur_row(up,  w->src + (size_t)y_up * (size_t)w->src_stride, W);
-    up_usm__hblur_row(mid, w->src + (size_t)y    * (size_t)w->src_stride, W);
+    up_usm__hblur_row(up,  usm_worker_src_row(w, y_up), W);
+    up_usm__hblur_row(mid, usm_worker_src_row(w, y),    W);
 
     for (; y < w->y_end; y++) {
         int y_dn = (y < H - 1) ? (y + 1) : (H - 1);
-        up_usm__hblur_row(dn, w->src + (size_t)y_dn * (size_t)w->src_stride, W);
+        up_usm__hblur_row(dn, usm_worker_src_row(w, y_dn), W);
         up_usm__combine_row(
             w->dst + (size_t)y * (size_t)w->dst_stride,
             w->src + (size_t)y * (size_t)w->src_stride,
@@ -455,6 +475,27 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
     return p;
 }
 
+/* In-place frames only (SYS-4): snapshot the two src rows this worker's
+ * boundary hblurs need but a neighbour worker concurrently overwrites
+ * (y_start-1 belongs to worker i-1's stripe, y_end to worker i+1's).
+ * Serial main-thread work, two rows per worker, before dispatch. CCN 3. */
+static void usm_worker_snapshot_halo(usm_worker_t *w, const uint8_t *src,
+                                     int src_stride, int height)
+{
+    uint8_t *top = w->scratch + (size_t)3 * (size_t)w->width;
+    uint8_t *bot = w->scratch + (size_t)4 * (size_t)w->width;
+    if (w->y_start > 0) {
+        memcpy(top, src + (size_t)(w->y_start - 1) * (size_t)src_stride,
+               (size_t)w->width);
+        w->halo_top = top;
+    }
+    if (w->y_end < height) {
+        memcpy(bot, src + (size_t)w->y_end * (size_t)src_stride,
+               (size_t)w->width);
+        w->halo_bot = bot;
+    }
+}
+
 /*
  * Update each worker's per-frame state to point at the current src/dst
  * buffers and amount. Called by the main thread while workers are
@@ -473,6 +514,10 @@ static void usm_pool_set_per_frame(usm_pool_t *p,
         w->dst        = dst;
         w->dst_stride = dst_stride;
         w->amount_q8  = amount_q8;
+        w->halo_top   = NULL;
+        w->halo_bot   = NULL;
+        if (dst == src)
+            usm_worker_snapshot_halo(w, src, src_stride, p->height);
     }
 }
 
@@ -501,6 +546,10 @@ static int usm_pool_validate_args(const usm_pool_t *p,
     if (!p) return -1;
     if (!dst || !src) return -1;
     if (dst_stride < p->width || src_stride < p->width) return -1;
+    /* In-place means EXACT aliasing: same base, same stride. A stride
+     * mismatch on the same base would interleave reads and writes of
+     * different rows — reject rather than corrupt. */
+    if (dst == src && dst_stride != src_stride) return -1;
     return 0;
 }
 
