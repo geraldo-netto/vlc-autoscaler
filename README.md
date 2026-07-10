@@ -20,20 +20,23 @@ and still fast enough for real-time playback on modest hardware.
 > the soft, slightly-smeared look you get from VLC's default output-stage
 > scaler. See [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md) for why.
 
-## Status
+## Verification
 
-| Check                                  | Result                                  |
-|----------------------------------------|-----------------------------------------|
-| Unit tests (ASan + UBSan)              | 14 `make test` executables pass          |
-| Smoke fuzz (ASan + UBSan)              | 13 fuzzers, more than 3.0M cases/run     |
-| libFuzzer                              | 13 build targets; 5 run for 60s each in CI, 3 with curated seeds |
-| Concurrency stress (ASan + TSan)       | 27 configs, 1325 frames per sanitizer, 0 races |
-| `cppcheck` (warning + style)           | current known gate failure tracked as `BUILD-14` in `TODO.md` |
-| Cyclomatic complexity (lizard)         | all src + tests ≤ 10                    |
-| Line coverage (`make coverage`, CI-gated) | 99.8% tracked lines; all 98 tracked functions and every tracked file ≥ 80% |
-| Plugin compiles against VLC 3.0.20     | clean, no warnings                      |
-| Live transcode (zimg + swscale)        | verified end-to-end up to 8K            |
-| GitHub Actions CI                      | runs on push/PR to `main` and `develop` |
+| Check | Source of truth |
+|-------|-----------------|
+| Unit and sanitizer tests | `make test` |
+| Deterministic smoke fuzzing | `make fuzz-smoke` |
+| Coverage-guided fuzzing | `make fuzz` and the CI workflow |
+| Concurrency stress | `make stress` and `make stress-zimg` |
+| Static analysis | `make analyze` |
+| Cyclomatic complexity | `make complexity` enforces CCN ≤ 10 |
+| Per-file and per-function coverage | `make coverage` enforces ≥ 80% |
+| Plugin build | `make plugin EXTRA_CFLAGS=-Werror` |
+| zimg integration | `make test-zimg` |
+
+These commands calculate their own scope and thresholds. Their live output is
+authoritative; this document intentionally does not duplicate totals or
+percentages that can drift as the project changes.
 
 ## Quick start
 
@@ -75,7 +78,7 @@ vlc --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=
 ```
 
 > **Want command-line recipes for specific situations?**
-> [`docs/USAGE.md`](docs/USAGE.md) has 9 recipes covering: minimal use,
+> [`docs/USAGE.md`](docs/USAGE.md) has recipes covering minimal use,
 > bypassing the recursion limit, recommended-default (no postproc),
 > hardware-decode-safe playback, quality-first, low-latency, and
 > file output — plus a step-by-step **diagnostic ladder** for tracking
@@ -110,9 +113,9 @@ rules still apply.
 | `--autoupscale-target-fps`          | 0–240  | 60      | Per-frame work over `1 / target_fps` triggers a one-time tuning hint. 0 disables monitoring. |
 | `--autoupscale-threads`             | 0–64   | 0       | Worker preference shared by zimg and USM. zimg normally uses row stripes and may add column cells on wide/short frames; each pool can clamp lower for frame geometry. 0 = auto (`cores/2 − 2`); 1..64 = explicit preference, capped by CPUs allowed through taskset/cgroup affinity. swscale remains single-threaded. |
 | `--autoupscale-pin-threads`         | 0–1    | 0       | 1 = pin each zimg worker round-robin across the exact CPU IDs allowed by the process affinity mask (Linux, best-effort). Off by default — pinning can hurt on a typical desktop by fighting the scheduler; enable only on a dedicated high-core/NUMA transcode box where you measured a gain. Does not affect the USM pool. |
-| `--autoupscale-zerocopy-dst`        | 0–1    | **1**   | 1 = aligned row-only graphs write directly into VLC's destination picture (default); column cells still copy tile scratch out. Saves ~125 µs/frame at 1080p in the recorded row-only benchmark. Set to 0 to force copy-out. |
+| `--autoupscale-zerocopy-dst`        | 0–1    | **1**   | 1 = aligned row-only graphs write directly into VLC's destination picture (default); column cells still copy tile scratch out. Avoids a frame-sized copy on the row-only path. Set to 0 to force copy-out. |
 | `--autoupscale-zerocopy-src`        | 0–1    | **1**   | 1 = worker graphs read VLC's source picture directly (default; no copy-in). Set to 0 to copy each source stripe into scratch first if a particular VLC build misbehaves on the source-pool buffers. |
-| `--autoupscale-content-probe`       | 0–1    | **1**   | 1 = log a diagnostic advisory after the first ~60 valid luma observations when a source is both soft and blocky. Observe-only — never modifies output. 0 = suppress the advisory; metrics still run when nonzero USM and `--autoupscale-usm-sharp-threshold` need them. |
+| `--autoupscale-content-probe`       | 0–1    | **1**   | 1 = log a diagnostic advisory after the fixed initial observation window when a source is both soft and blocky. Observe-only — never modifies output. 0 = suppress the advisory; metrics still run when nonzero USM and `--autoupscale-usm-sharp-threshold` need them. |
 | `--autoupscale-usm-stripe-min-rows` | 0–256  | 0       | Minimum rows per USM worker stripe (0 = compile-time default 8). Smaller values let more workers fit on low-res frames at the cost of dispatch overhead. |
 | `--autoupscale-zimg-stripe-lines`   | 0–128  | 0       | Minimum dst lines per zimg worker stripe (0 = compile-time default 16). Same trade-off as above for the scaler backend. |
 | `--autoupscale-usm-sharp-threshold` | 0–20000 | **3500** | Mean squared Laplacian-response cutoff above which the source is considered heavily textured/grainy and the USM post-pass is skipped for the rest of playback (USM amplifies grain without adding sharpness on such content). `0` disables the feature (USM always runs); higher values trip rarely; lower values trip aggressively. |
@@ -132,7 +135,7 @@ The plugin has two interchangeable scaler backends. **zimg** is preferred
 when available — it has Spline36 (sharper than Lanczos for upscaling
 with less ringing), separately tuned luma and chroma filters, and
 slightly tighter rounding by default. **swscale** is the broad-coverage
-fallback for the nine supported CPU-readable chromas, used automatically
+fallback for supported CPU-readable chromas, used automatically
 when zimg isn't compiled in, misses support, fails to open, or reports a
 fatal processing failure.
 
@@ -156,31 +159,29 @@ exponentially-weighted average of frame work exceeds your target
 hint with concrete tuning suggestions:
 
 ```
-autoupscale filter: AutoUpscale engaged: 854x480 -> 1920x1080 (backend=zimg algo=3 ...)
-autoupscale filter: Performance warning: avg frame work is 22341 us, exceeding the
-                    60 FPS budget of 16666 us (backend=zimg algo=3 usm=20).
+autoupscale filter: AutoUpscale engaged: <source> -> <target> (backend=... algo=...)
+autoupscale filter: Performance warning: avg frame work is <measured> us,
+                    exceeding the configured frame budget.
 autoupscale filter:   To tune down, try (in order of decreasing quality cost):
 autoupscale filter:     --autoupscale-algo=2   (lanczos: similar quality, faster)
 autoupscale filter:     --autoupscale-algo=1   (bicubic: noticeably faster, slight quality drop)
 autoupscale filter:     --autoupscale-usm=0    (disable post-sharpening)
 autoupscale filter:     --autoupscale-backend=2 (force swscale: faster scaler)
-autoupscale filter:     --autoupscale-target=1 (force 720p instead of 1080p: 2.25x less work)
+autoupscale filter:     --autoupscale-target=1 (force 720p instead of 1080p)
 autoupscale filter:   Or set --autoupscale-target-fps=0 to silence this warning.
 ```
 
-The hint fires once per stream after a 10-frame warmup window plus 30
-sample-frame minimum, so brief codec-startup spikes don't trigger false
+The hint fires once per stream after the fixed warmup and sample windows
+defined in `src/perfmon.h`, so brief codec-startup spikes don't trigger false
 alarms. Set `--autoupscale-target-fps=0` to disable monitoring entirely.
 
 ### Threading
 
 The plugin grid-threads zimg, normally as horizontal stripes and with optional
 column cells on wide/short frames. The default preference is `cores/2 − 2`,
-capped at `[1, 64]`; on an unrestricted 32-core box that is 14, on a 16-core
-box 6, and on an 8-core box 2. Geometry may reduce the effective count. The
-"/ 2" reserves
-half the machine for the rest of VLC (decoder, encoder, audio, vout) plus
-other libraries; the "− 2" is an extra absolute reserve. Override with
+capped by the supported range and the process affinity mask. Geometry may
+reduce the effective count. The formula reserves capacity for VLC's decoder,
+encoder, audio, vout, and other libraries. Override with
 `--autoupscale-threads=N`; the explicit preference is still capped by the
 process affinity mask and each pool's geometry minimum.
 
@@ -224,8 +225,8 @@ look, 200% is aggressive. Only applied to YUV chromas — sharpening
 packed RGB or chroma planes causes visible colour fringing on edges.
 Set to `0` to disable.
 
-The plugin also detects heavily textured/grainy sources after the first
-~60 valid luma observations (via the content probe's squared-Laplacian
+The plugin also detects heavily textured/grainy sources after the configured
+observation window (via the content probe's squared-Laplacian
 energy metric) and
 auto-skips the USM post-pass for those, since USM on grainy content
 amplifies noise without adding perceived sharpness. Tunable through
@@ -247,10 +248,8 @@ not create or call the pool, so disabling USM has no pool activity. Each
 `usm_worker_t` is `alignas(64)` and the worker array is
 `aligned_alloc`'d so adjacent workers don't share a cache line — without
 this padding, two workers touching their per-frame fields and embedded
-dispatch state on every frame would invalidate each other's lines. At 1080p
-luma on a modern x86 with AVX-512 this brings USM down to ~1.17 ms
-single-threaded and ~0.23 ms with 8 stripes — roughly 1.4% of a 60
-fps budget at 8 stripes. Output is bit-identical to the single-threaded
+dispatch state on every frame would invalidate each other's lines. Output is
+bit-identical to the single-threaded
 path; that's verified end-to-end by the unit tests (`test_usm_pool.c`
 runs both implementations on synthetic data and asserts byte-for-byte
 match).
@@ -274,10 +273,9 @@ every frame.
 
 **Lazy worker init.** Open() is intentionally cheap: it validates
 chroma compatibility, computes geometry, allocates a small priv struct,
-and returns. The worker pool (default `cores/2 − 2`, e.g. 14 workers
-on a 32-core box, 30 on a 64-core box) and several MB of scratch are
+and returns. The worker pool and its scratch storage are
 allocated on the first valid `Filter()` picture. This way, when VLC's chain
-solver instantiates us 3-4 times during chain probing (which happens
+solver instantiates the filter speculatively during chain probing (which happens
 when combined with other filters that reject hardware chromas), the
 probes that don't produce a frame cost essentially nothing.
 
@@ -365,9 +363,9 @@ quality.** The workaround below addresses both problems.
    (your HDMI sink name from `pactl list short sinks`), or pick the
    right device in VLC: Audio → Audio Device.
 
-   **If frames still drop at startup**, it's the vout module probing
+   **If frames still drop at startup**, vout module probing
    (gl/glx/egl_x11 switches, font database build, hw-decode probes)
-   eating ~500 ms before the first frame can display. Add caching and
+   may delay the first displayable frame. Add caching and
    relax the late-frame heuristic:
 
    ```bash
@@ -414,14 +412,9 @@ quality.** The workaround below addresses both problems.
    unless you also use option 1. Send the patch upstream while you're
    at it.
 
-**What we did fix from the plugin side:** lazy worker init means each
-of those 3-4 chain-solver probes used to cost N thread spawns and
-several MB of scratch allocations (e.g. on a 64-core box: 30 thread
-spawns × 4 probes = 120 wasted threads + tens of MB of churn per
-playback start). With lazy init the failed probes spawn nothing —
-verified end-to-end in user logs: 4 `AutoUpscale engaged` messages but
-only 1 `zimg: N worker threads` message, meaning only the chain that
-actually plays paid for the worker pool.
+**What we did fix from the plugin side:** lazy worker init prevents speculative
+chain-solver probes from spawning workers or allocating frame scratch. Only
+the chain that receives a valid picture pays for the worker pool.
 
 ## Better quality: chain with VLC's postproc filter
 
@@ -494,10 +487,10 @@ tests/
   fuzz_*.c                libFuzzer + deterministic smoke targets (one source each)
   stress_usm_pool.c       concurrency stress, runs under ASan and TSan
   bench_usm_pool.c        standalone perf bench (no verification)
-  corpus/                 binary seeds for fuzz_upscale_logic (16 files, 32 bytes each)
-  corpus_frame_shape/     binary seeds for fuzz_frame_shape (22 files, 24 bytes each)
-  corpus_scaler_chroma/   binary seeds for fuzz_scaler_chroma (21 files, 8 bytes each)
-  corpus_usm_variants/    binary seeds for fuzz_usm_variants (15 files, 8 bytes each)
+  corpus/                 binary seeds for fuzz_upscale_logic
+  corpus_frame_shape/     binary seeds for fuzz_frame_shape
+  corpus_scaler_chroma/   binary seeds for fuzz_scaler_chroma
+  corpus_usm_variants/    binary seeds for fuzz_usm_variants
 
 scripts/
   bench_matrix.sh         run bench_usm_pool across (threads × resolution × fill)
@@ -505,7 +498,7 @@ scripts/
 
 docs/HOW_IT_WORKS.md      design notes
 docs/USAGE.md             command-line recipes + diagnostic ladder
-docs/PERFORMANCE.md       expected µs/frame at common configs
+docs/PERFORMANCE.md       reproducible performance-measurement guidance
 patches/                  optional VLC patches (workaround for chain depth limit)
 .github/workflows/ci.yml  build, test, smoke fuzz, stress, libFuzzer, cppcheck
 Makefile                  build, test, fuzz, stress, coverage, and analysis targets
@@ -521,11 +514,11 @@ header — there's no shadow re-implementation in the tests.
 ```sh
 make             # build the VLC plugin (libautoupscale_plugin.so)
 make plugin      # same
-make test        # 14 unit/contract executables under ASan + UBSan
-make fuzz-smoke  # 13 deterministic fuzzers, >3.0M cases/run under ASan + UBSan
+make test        # unit/contract suite under ASan + UBSan
+make fuzz-smoke  # deterministic fuzz suite under ASan + UBSan
 make fuzz        # libFuzzer build (clang); run e.g. build/fuzz_upscale_logic tests/corpus/
 make stress      # usm_pool concurrency stress, ASan + TSan
-make coverage    # gcov gate; every tracked file and function must reach 80%
+make coverage    # gcov gates configured in the coverage scripts
 make analyze     # cppcheck across the source
 make install     # install plugin into VLC's plugins dir
 make uninstall
@@ -540,8 +533,8 @@ baseline supported by Linux:
 
 | Variable | Default | Why |
 |---|---|---|
-| `MARCH` | `native` | Tunes for the local CPU (znver4 / Skylake-X scheduling + extra ISA: VBMI2, BF16, GFNI, VAES). 5–20 % faster than `x86-64-v4` on the per-frame hot path. |
-| `MULTIVERSION` | `0` | With `MARCH=native` the runtime SIMD dispatcher and the two unselected variants (SSE2 / AVX2) would just be dead code. Disabling it shaves ~30 KB and removes one indirect call per frame. |
+| `MARCH` | `native` | Tunes for the local CPU and may enable additional ISA features. |
+| `MULTIVERSION` | `0` | Avoids shipping runtime variants that a build-host-tuned binary does not need. |
 
 The chosen SIMD level is logged in VLC at engagement time. Default
 build on a Zen 4 box prints `simd=default` (single-baseline, the
@@ -550,7 +543,7 @@ build prints `simd=avx512` / `avx2` / `sse2` to identify which runtime
 variant was picked:
 
 ```
-AutoUpscale engaged: 854x480 -> 1920x1080 (… simd=default)
+AutoUpscale engaged: <source> -> <target> (… simd=default)
 ```
 
 **Build presets.** Pick whichever fits your distribution model:
@@ -566,27 +559,26 @@ make MARCH=x86-64-v4
 # SIMD variant selection.
 make MARCH=x86-64-v3 MULTIVERSION=1
 
-# Linux x86-64/SSE2 baseline build with three USM variants.
-# ~30 KB larger than the single-baseline build.
+# Linux x86-64/SSE2 baseline build with runtime USM variants.
 make MARCH=x86-64 MULTIVERSION=1
 ```
 
 When `MULTIVERSION=1` the plugin links three copies of `usm_pool.c`
 compiled at SSE2 / AVX2 / AVX-512 baselines, plus a thin runtime
 dispatcher (`usm_pool_dispatch.c`) that selects one at `.so` load time via
-`__builtin_cpu_supports()`. The current probes check AVX2 or AVX-512F+BW,
-not every feature implied by the objects' full x86-64-v3/v4 compile levels;
-deploy only to CPUs satisfying the selected level until `PORT-6` is resolved.
-Per-frame overhead after selection is one indirect call (~1 ns).
+`up_cpu_supports_v3()` / `up_cpu_supports_v4()`. Supported compilers probe the
+complete levels directly. The compatibility fallback for older compilers does
+not enumerate every inherited feature, so deploy those builds only to CPUs
+known to satisfy the selected level. Per-frame overhead after selection is an
+indirect call.
 
 The decoded output is **byte-identical** across all SIMD widths and
 across `MULTIVERSION=0` / `=1` (verified by reproducible MD5 and the
 cross-variant byte-equivalence test) — wider vectors run the same
 arithmetic in more lanes, not different arithmetic.
 
-**Compiler choice:** Both gcc and clang produce competitive SIMD with
-the AVX2/AVX-512 variants. `CC=clang make plugin` is still slightly
-faster on some kernels but the gap is now small. Either works.
+**Compiler choice:** Both gcc and clang are supported for the SIMD variants.
+Measure on the deployment host if compiler choice matters for throughput.
 
 `make test`, `make fuzz-smoke`, `make stress`, and `make analyze` do not need
 VLC headers. The plugin needs VLC and FFmpeg development packages (zimg is

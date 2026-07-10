@@ -59,7 +59,7 @@ jobs:
       - name: zimg backend invariants (ASan + UBSan)
         run: make test-zimg
 
-      - name: Smoke fuzz (13 fuzzers, >3.0M cases under ASan + UBSan)
+      - name: Smoke fuzz (ASan + UBSan)
         run: make fuzz-smoke
 
       - name: Concurrency stress (usm_pool, ASan + TSan)
@@ -68,14 +68,14 @@ jobs:
       - name: zimg backend stress (ASan + UBSan + TSan)
         run: make stress-zimg
 
-      - name: Line coverage (gcov, fails any tracked file or function < 80%)
+      - name: Per-file and per-function coverage gates (minimum 80%)
         run: make coverage
 
       - name: Static analysis (cppcheck)
         run: make analyze
 
   libfuzzer:
-    name: libFuzzer (60s each)
+    name: libFuzzer
     runs-on: ubuntu-latest
     env:
       MARCH: x86-64-v3
@@ -91,30 +91,30 @@ jobs:
       - name: Build fuzzers
         run: make fuzz
 
-      - name: Run libFuzzer (upscale_logic) for 60 seconds
+      - name: Run libFuzzer (upscale_logic)
         run: |
           mkdir -p corpus_logic
           if [ -d tests/corpus ]; then cp tests/corpus/* corpus_logic/ 2>/dev/null || true; fi
           build/fuzz_upscale_logic corpus_logic -max_total_time=60 -print_final_stats=1
 
-      - name: Run libFuzzer (usm) for 60 seconds
+      - name: Run libFuzzer (usm)
         run: |
           mkdir -p corpus_usm
           build/fuzz_usm corpus_usm -max_total_time=60 -max_len=64 -print_final_stats=1
 
-      - name: Run libFuzzer (frame_shape) for 60 seconds
+      - name: Run libFuzzer (frame_shape)
         run: |
           mkdir -p corpus_frame_shape
           if [ -d tests/corpus_frame_shape ]; then cp tests/corpus_frame_shape/* corpus_frame_shape/ 2>/dev/null || true; fi
           build/fuzz_frame_shape corpus_frame_shape -max_total_time=60 -max_len=24 -print_final_stats=1
 
-      - name: Run libFuzzer (scaler_chroma) for 60 seconds
+      - name: Run libFuzzer (scaler_chroma)
         run: |
           mkdir -p corpus_scaler_chroma
           if [ -d tests/corpus_scaler_chroma ]; then cp tests/corpus_scaler_chroma/* corpus_scaler_chroma/ 2>/dev/null || true; fi
           build/fuzz_scaler_chroma corpus_scaler_chroma -max_total_time=60 -max_len=8 -print_final_stats=1
 
-      - name: Run libFuzzer (content_probe) for 60 seconds
+      - name: Run libFuzzer (content_probe)
         run: |
           mkdir -p corpus_content_probe
           build/fuzz_content_probe corpus_content_probe -max_total_time=60 -max_len=64 -print_final_stats=1

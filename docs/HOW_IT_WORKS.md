@@ -87,11 +87,8 @@ Even with the opaque-chroma reject in place, VLC's filter-chain solver
 may still instantiate us multiple times during chain setup when other
 filters in the chain (notably `postproc`) also reject the hardware
 chroma. Each instantiation is a complete `Open()` / `Close()` round
-trip. If `Open()` were to spawn the full worker pool and allocate
-several MB of scratch on every call, four chain-solver probes would
-cost N×4 wasted thread spawns and tens of MB of churned allocations
-(N is `cores/2 − 2` from `threading.h`, e.g. 14 on a 32-core box, 30
-on a 64-core box).
+trip. Spawning the full worker pool and allocating frame scratch in every
+speculative `Open()` would waste threads and memory.
 
 To avoid this, `zimg_open()` does only the cheap work — chroma
 validation, geometry computation, thread-count decision, priv struct
@@ -245,14 +242,10 @@ aliasing is supported; same-base/different-stride calls are rejected, while
 other partial overlap is outside the API contract. Pool output is checked
 byte-for-byte against the reference path.
 
-**Performance.** One fused memory-bound worker sweep over the Y plane. On a modern
-x86 core with the AVX-512 multi-versioned variant, the kernel runs
-about 0.6 ns/pixel scalar-equivalent; a 1080p Y plane (≈ 2.07 MP)
-costs ~1.17 ms per frame single-threaded through `up_usm_pool_apply`
-(median of 5 trials, 800 iters each). The threaded pool brings this
-down to ~0.23 ms with 8 stripes — about 1.4 % of a 60 fps budget.
-Numbers are for amount=51 (the default 20 % USM); identity
-(`amount==0`) takes a memcpy fast path with no thread activity.
+**Performance.** Production uses one fused, memory-bound worker sweep over the
+Y plane. Throughput depends on frame geometry, compiler, CPU, worker count, and
+system load, so it is measured locally rather than duplicated here. An
+identity amount takes the copy fast path with no worker activity.
 
 **Per-deployment tunables.** `up_usm_pool_create()` takes a
 `stripe_min_rows` argument (`0` = compile-time default `8`) wired to
@@ -327,11 +320,9 @@ fade-to-black dominate.
 output equals single-threaded output bit-for-bit. This is enforced by
 `tests/test_usm_pool.c`, which runs `up_usm_apply_plane` and
 `up_usm_pool_apply` on synthetic data and compares every byte. The
-test exercises N = 1, 2, 3, 4, 8 workers across odd dimensions
-(213×137), tall narrow (32×2000), short wide (4096×32), and the
-height-clamp case (requesting 64 workers on h=16). It also runs the
-same pool across 5 different frames to verify lazy init caches
-correctly. End-to-end live VLC byte-identity (decoded video MD5
+test exercises different worker counts, unusual aspect ratios, odd dimensions,
+geometry clamps, and repeated frames that verify lazy initialization.
+End-to-end live VLC byte-identity (decoded video MD5
 matches the pre-threaded-USM build) is the integration check.
 
 **Why bit-identity rather than approximate.** The math is fully
@@ -447,10 +438,9 @@ realistic ceiling for this plugin's architecture.
 
 ## Content-aware quality probe
 
-Not every source benefits from upscaling. A 480p stream that's been
-encoded at 200 kbps will have visible 8×8 blocking artifacts; running
-Spline36 on it produces a 1080p picture where those blocks are 2.25×
-larger and 2.25× more annoying. For these "lost cause" sources, the
+Not every source benefits from upscaling. A heavily compressed stream can
+contain visible block artifacts that become larger and more distracting after
+resampling. For these "lost cause" sources, the
 honest answer is "don't upscale" — but how do we detect them
 automatically?
 
@@ -509,23 +499,22 @@ contract it made when the chain was built.
   squared Laplacian responses.
 
 - `up_block_edge_strength(plane, stride, w, h, *n_out)` — measures
-  absolute pixel differences across 8-pixel grid boundaries. Same
-  4-pixel sub-sample step.
+  absolute pixel differences across `UP_PROBE_BLOCK_SIZE` boundaries using
+  the `UP_PROBE_GRID_STEP` sampling step.
 
 - `up_probe_observe(*accum, ...)` — accumulates a valid picture view's
   metrics. A zero metric still advances the observation count.
 
-- `up_should_bypass_for_content(*accum)` — computes the advisory verdict.
-  It returns 1 when both `lap_mean < 400` and `edge_mean > 6`, after the
-  minimum frame and sample counts are satisfied.
+- `up_should_bypass_for_content(*accum)` — computes the advisory verdict from
+  the configured detail, block-edge, frame, and sample thresholds.
 
 - `up_should_skip_usm_for_sharpness(*accum, threshold)` — independently
   gates the USM post-pass when the mean squared response is above the
   configured threshold.
 
-The probe closes after 60 successfully validated luma-picture observations.
-Invalid views are skipped rather than consuming the window. The fixed
-four-pixel sample step spans the full visible plane, so cost scales with
+The probe closes after the fixed `UP_PROBE_WINDOW_FRAMES` successfully
+validated luma-picture observations. Invalid views are skipped rather than
+consuming the window. The fixed sample step spans the full visible plane, so cost scales with
 source dimensions and is paid only during that startup window.
 
 ### Honest scope
@@ -537,18 +526,12 @@ strictly hurts — and lets everything else through. Real-world
 user's display" depends on display size, viewing distance, and
 personal preference; no in-filter algorithm can answer that.
 
-The thresholds (`UP_PROBE_THRESH_SOFT_LAP_MEAN=400`,
-`UP_PROBE_THRESH_BLOCKY_EDGE_MEAN=6`) are deliberately conservative.
-On clean grainy 480p content the metrics typically read lap-mean
-800–2000 and edge-mean 1–4, so the advisory doesn't fire. On heavily
-artifact-ridden web-rips the metrics shift toward lap-mean 200–400
-and edge-mean 8–15, where the advisory IS appropriate.
+The named thresholds in `src/content_probe.h` are deliberately conservative:
+the advisory requires both low detail energy and elevated block-edge
+intensity, so either condition alone is insufficient.
 
-The same accumulator drives a second decision: when `lap_mean`
-exceeds `p_sys->usm_sharp_threshold` (default `3500`, above the
-clean-grainy 800–2000 band so it triggers only on actively
-over-detailed sources — film grain, high-noise sensors, etc.). When
-that fires the plugin sets `filter_sys_t.usm_skip_sharp`, and every
+The same accumulator drives a second decision. When `lap_mean` exceeds
+`p_sys->usm_sharp_threshold`, the plugin sets `filter_sys_t.usm_skip_sharp`, and every
 subsequent `ApplyUsmIfEnabled()` returns early. The cutoff and the
 master switch are merged into a single VLC option,
 `--autoupscale-usm-sharp-threshold`: any positive value enables the
@@ -557,9 +540,9 @@ feature with that cutoff; `0` disables it.
 ### Verification
 
 The diagnostic verdict is observe-only: metric helpers accept `const` input
-and the advisory never changes scaling. The 19 unit tests in
-`test_content_probe.c` exercise flat, checkerboard, gradient, and block-grid
-planes; invalid geometry; accumulation; advisory boundaries; and the
+and the advisory never changes scaling. `test_content_probe.c` exercises flat,
+checkerboard, gradient, and block-grid planes; invalid geometry; accumulation;
+advisory boundaries; and the
 independent USM threshold. `fuzz_content_probe.c` drives the pointer arithmetic
 under ASan/UBSan and checks that the input remains unchanged. Disabling
 `content-probe` suppresses only the advisory; collection can continue when the
@@ -570,41 +553,16 @@ USM sharpness gate needs the same metric.
 ### Compiler choice and SIMD
 
 The USM kernels (`up_usm__hblur_row`, `up_usm__combine_row` in
-`src/usm.h`) are autovectorization-friendly inner loops, annotated
-with `restrict` on every pointer to tell the compiler the buffers
-don't alias. There are two orthogonal levers that control how well
-they actually vectorize.
+`src/usm.h`) are autovectorization-friendly inner loops. Non-aliasing scratch
+relationships use `restrict`; source and destination rows retain the aliasing
+contract required for in-place operation. Production compiles the whole
+`usm_pool.c` translation unit with the optimization level selected in the
+Makefile, without per-function optimization pragmas.
 
-**Lever 1: gcc cost-model pragmas.** clang -O2 vectorizes both with
-width=16 out of the box. gcc -O2 alone declines on cost-model grounds
-("Loop costings not worthwhile") — a known long-standing gap in gcc's
-vectorizer cost model. The fix is targeted: each hot kernel is wrapped
-in `#pragma GCC optimize("O3")` push/pop blocks (guarded with
-`#if defined(__GNUC__) && !defined(__clang__)` so clang -Wall stays
-silent on unknown pragmas). This pins -O3 to just those two functions
-while everything else compiles at -O2.
-
-Why pragma push/pop and not `__attribute__((optimize))`? The function
-attribute on gcc disables `always_inline` for the attributed function,
-which would defeat `static inline` and force a real call per row.
-The pragma form leaves inlining decisions intact.
-
-**Lever 2: SIMD width via `-march`.** With pragmas applied at the
-`-march=x86-64` baseline, both gcc and clang emit 16-byte
-(SSE2) SIMD — the lowest-common-denominator x86_64 instruction set,
-which dates to 2003. Modern CPUs support 32-byte (AVX2, 2013) and
-many support 64-byte (AVX-512, 2017). Going wider doubles or
-quadruples the lanes processed per instruction:
-
-| -march level | SIMD width | 1080p USM time | Speedup vs baseline |
-|---|---|---|---|
-| `x86-64` (baseline) | 16 byte (SSE2) | 1709 µs | 1.0× |
-| `x86-64-v3` | 32 byte (AVX2) | 892 µs | **1.92×** |
-| `x86-64-v4` | 64 byte (AVX-512) | 632 µs | **2.70×** |
-
-Numbers are median-of-5 trials of `up_usm_apply_plane` at 1080p
-single-threaded. The win is consistent across all output resolutions
-(480p through 4K all see 1.8–2.0× from AVX2, 2.4–2.9× from AVX-512).
+SIMD width is controlled by `MARCH`. Wider variants process more lanes per
+instruction, but real throughput remains CPU-, compiler-, and
+memory-bandwidth-specific. Use the benchmark tooling for same-host comparison;
+checked-in timing tables are intentionally avoided.
 
 **Default build: single-baseline at `-march=native`.** The plugin
 ships as a source distribution — every user builds it on the same
@@ -617,7 +575,7 @@ The engagement log prints `simd=default` to indicate the
 single-baseline build:
 
 ```
-AutoUpscale engaged: 854x480 -> 1920x1080 (... simd=default)
+AutoUpscale engaged: <source> -> <target> (... simd=default)
 ```
 
 **Multi-ISA build: `make MULTIVERSION=1`.** When you need one Linux x86-64
@@ -642,27 +600,23 @@ Combine `MULTIVERSION=1` with an appropriate Linux x86-64 ISA baseline
 (for example `x86-64-v3` for AVX2 or `x86-64` for SSE2) so the rest of
 the plugin (autoupscale.c, scaler*.c) uses a deployment-compatible baseline.
 The dispatch happens **once** at `dlopen`
-(before VLC's plugin scanner or `vlc-cache-gen` calls into the .so),
-so per-frame overhead is just one indirect call — about 1 ns on modern
-x86, negligible against the millisecond-scale work it dispatches. The
-chosen variant name is exported as `up_usm_pool_variant_name` and
+(before VLC's plugin scanner or `vlc-cache-gen` calls into the .so), so
+per-frame forwarding is just one indirect call. The chosen variant name is
+exported as `up_usm_pool_variant_name` and
 printed in the engagement log: `AutoUpscale engaged: ... simd=avx512`.
 
 **Why three .o files instead of `__attribute__((target_clones))`?**
 `target_clones` requires non-static linkage on the cloned function,
 which would defeat the `static inline` of the hot kernels in `usm.h`.
 By compiling the entire usm_pool.c TU at three -march levels, each
-variant gets to inline its kernels at its own SIMD width — strictly
-better codegen than per-function multi-versioning. The cost is binary
-size (~30 KB more for the extra two variants) and one extra .c file
-in the build.
+variant gets to inline its kernels at its own SIMD width. The tradeoff is
+additional binary size and build complexity.
 
-**ISA guard limitation:** the AVX2 and AVX-512 objects are compiled at the full
-x86-64-v3 and x86-64-v4 levels, while the current selector checks only AVX2 or
-AVX-512F+BW. Those checks do not prove every feature the compiler may emit
-(notably the rest of the v3/v4 level). Until `PORT-6` is resolved, deploy a
-multi-versioned build only where the chosen variant's full ISA level is known
-to be available.
+**ISA guard limitation:** the dispatcher uses `up_cpu_supports_v3()` and
+`up_cpu_supports_v4()`. Supported compilers probe the complete levels directly.
+The compatibility fallback for older compilers checks a feature conjunction
+that does not enumerate every inherited feature, so deploy those builds only
+where the chosen variant's full ISA level is known to be available.
 
 Decoded MD5 is **byte-identical** across SSE2, AVX2, AVX-512 builds
 AND across MULTIVERSION=0/1 — the kernels do bytewise saturating
@@ -686,9 +640,9 @@ into `up_perfmon_record_ns()` from `src/perfmon.h`.
 
 ### EWMA, not raw samples
 
-Per-frame timings on a real machine are noisy: a single frame can spike
-from 5 ms to 50 ms because of a context switch or a cache miss. Reacting
-to a single sample would produce false alarms on every busy machine.
+Per-frame timings on a real machine are noisy: a context switch or cache miss
+can make an isolated sample unrepresentative. Reacting to one sample would
+produce false alarms on busy machines.
 
 Instead, perfmon keeps an exponentially-weighted moving average:
 
@@ -703,14 +657,10 @@ behavior is one of the unit tests.
 
 ### Warmup and minimum-samples
 
-Two thresholds suppress noisy early measurements:
-
-- **Warmup (10 frames)**: dropped entirely. Cold caches, codec startup,
-  and `sws_scale` / zimg internal-table construction all show up here.
-- **Minimum samples (30 total)**: the EWMA is computed but not checked
-  against the budget until at least 30 samples have arrived. This
-  prevents the alert firing during the first second of playback while
-  the EWMA is still settling.
+The warmup and minimum-sample thresholds in `src/perfmon.h` suppress noisy
+early measurements. Warmup samples are discarded because they include cold
+caches, codec startup, and scaler table construction. The EWMA is then allowed
+to settle before it is compared with the frame budget.
 
 After both thresholds are satisfied, the EWMA is checked once per frame
 against `1 / target_fps`. The first time it exceeds the budget,
@@ -740,7 +690,7 @@ quality cost:
 3. Disable USM (usm=0). Tiny CPU savings, slightly softer output.
 4. Force swscale (backend=2). Different scaler entirely; faster
    single-threaded path.
-5. Force 720p (target=1). 2.25× less pixel work than 1080p.
+5. Force a lower target. Fewer output pixels reduce scaler and USM work.
 
 Plus the escape hatch: `--autoupscale-target-fps=0` to silence the hint.
 
@@ -754,9 +704,8 @@ Plus the escape hatch: `--autoupscale-target-fps=0` to silence the hint.
 - **Does not measure decode/encode cost.** Only the plugin's own
   `process` + `usm` work. If your CPU is saturated by the decoder, this
   hint won't fire and the suggested changes won't help.
-- **Does not measure across runs.** Each new stream gets a fresh
-  perfmon. Watching twenty 480p clips in a row produces at most twenty
-  hints, one per clip.
+- **Does not measure across runs.** Each new stream gets a fresh perfmon and
+  can emit its own hint.
 
 ## Threading
 
@@ -767,9 +716,8 @@ budget is not capped by output height. Default worker preference =
 calling thread's Linux affinity mask, so taskset and cgroup/cpuset limits
 are honored. The "/ 2" reserves half the available CPUs for VLC's main
 thread, decoder, encoder, audio, vout, and other libraries VLC pulls in;
-the "− 2" is an extra absolute reserve.
-On a 32-core box this gives 14 workers; on 16 cores, 6; on 8 cores, 2.
-Users on small machines or who measured differently can override with
+the "− 2" is an extra absolute reserve. Users whose workload needs a
+different balance can override with
 `--autoupscale-threads=N`. The topology and decision logic live in
 `src/threading.h` and are exercised by `tests/test_threading.c`; the same
 topology snapshot supplies exact sparse CPU IDs when worker pinning is on.
@@ -835,23 +783,22 @@ directly to per-stripe zimg graphs from worker threads — is unreliable.
 We isolated the failure with a layered diagnostic:
 
 - A **standalone reproducer** (`tools/zimg_stripe_repro_threaded.c` in
-  the v1 lineage) does exactly the per-stripe + threading pattern with
-  fresh `aligned_alloc`'d buffers. It works at N=2, 4, 8 with Spline36,
-  verified clean under valgrind and ASan.
+  the earlier lineage) exercises the per-stripe threading pattern with fresh
+  `aligned_alloc`'d buffers and passes under valgrind and ASan.
 - An **in-VLC self-test** (running the same logic from the plugin's
   Open() at startup) also works perfectly inside VLC's process address
   space.
 - The same pattern using **VLC's `picture_t->p[i].p_pixels` pointers**
-  segfaults inside `zimg_filter_graph_process` on the very first
-  worker call, even with a mutex serializing the calls (so it's not a
+  segfaults inside `zimg_filter_graph_process` on a worker call, even with a
+  mutex serializing the calls (so it is not a
   threading-safety issue between the workers — it's something specific
   to those buffers).
 
 We didn't fully isolate the root cause inside VLC's picture allocator
 (the segfault was downstream of any logging we could add, and valgrind
 couldn't reach it inside VLC's process before timing out on its own
-overhead). So the original design copied **both** sides through scratch
-and paid a few hundred MB/s of memory bandwidth for guaranteed correctness.
+overhead). So the original design copied **both** sides through scratch and
+paid extra memory bandwidth for guaranteed correctness.
 That caution has since been relaxed on both sides — see below — behind shared
 picture-view validation and direct-I/O alignment checks, but either side can
 still be forced back to the copy path with its
@@ -866,8 +813,7 @@ non-recycled allocation:
 
 - Workers receive VLC's destination picture pointers (with VLC's pitch)
   per-frame instead of priv scratch pointers.
-- `alloc_scratch_buffers()` skips the dst allocation, dropping the scratch
-  footprint by ~3 MB at 1080p.
+- `alloc_scratch_buffers()` skips the destination-plane allocation.
 - Graphs don't bake in destination stride — it lives in the per-call
   `zimg_image_buffer` — so the stride can vary per frame without rebuilding.
 
@@ -881,13 +827,14 @@ column tile, which
 always copies its result out of a private tile scratch into the destination
 sub-rectangle.
 
-`tests/test_scaler_zimg.c` holds the four src×dst modes byte-identical when
-they retain the same row-only topology, including at N=1. On a wide/short
-frame, source copy-in disables column tiling and therefore changes the graph
+`tests/test_scaler_zimg.c` holds the source/destination I/O mode combinations
+byte-identical when they retain the same row-only topology, including the
+single-worker path. On a wide/short frame, source copy-in disables column
+tiling and therefore changes the graph
 partition; any difference is governed by the seam bound below rather than by
-the copy itself. Skipping copy-out saves ~125 µs per 1080p frame in the
-recorded benchmark, and copy-in is a comparable frame-sized transfer. The
-validator prevents malformed geometry and unaligned direct I/O; it cannot
+the copy itself. Skipping copy-out avoids a frame-sized transfer, and copy-in
+is a comparable transfer. The validator prevents malformed geometry and
+unaligned direct I/O; it cannot
 prove every VLC pool-lifetime property. If a VLC build still misbehaves, set
 the offending side back to the copy path with
 `--autoupscale-zerocopy-src=0` / `--autoupscale-zerocopy-dst=0`
@@ -897,11 +844,10 @@ the offending side back to the copy path with
 
 Each independent row or column graph can restart resize phase and introduce a
 sub-pixel seam delta. Column `active_region` supplies cross-boundary source
-context but does not make separate graphs phase-identical. Measured against a
-single graph (`threads=1`), the standard zimg integration suite enforces a ≤6
-bound on its fixed cases. Synthetic high-frequency inputs make the effect more
-visible; the wider randomized seam harness has a known outlier tracked as
-`REL-9` in `TODO.md`. A user sensitive to these seams can set
+context but does not make separate graphs phase-identical. The standard zimg
+integration suite and randomized seam harness enforce the configured seam
+contract. Synthetic high-frequency inputs make the effect more visible. A
+user sensitive to these seams can set
 `--autoupscale-threads=1`.
 
 ## Why decision logic is in a header
@@ -911,7 +857,7 @@ VLC nor FFmpeg. The plugin includes it; the tests include it; the fuzzer
 includes it. The same code runs in all three places, which means:
 
 - Tests catch logic bugs without needing VLC installed.
-- The fuzzer can hammer the decision functions at ~140k execs/sec.
+- The fuzzer exercises the decision functions without VLC dependencies.
 - Distro packagers can run `make test` in their build sandbox without
   pulling in `vlc-devel` for tests.
 
@@ -925,28 +871,13 @@ different class of bug:
 
 ### Unit tests — exact-value assertions
 
-`make test` runs 14 executables under AddressSanitizer +
-UndefinedBehaviorSanitizer. Twelve reporting harnesses contain 221 named
-cases; the geometry-edge and picture-view executables add invariant sweeps
-that do not print case totals. Memory errors and signed-overflow bugs are
-caught even when the asserted output happens to be correct.
-
-| Suite                  | Count | Covers                                      |
-|------------------------|-------|---------------------------------------------|
-| `upscale_logic`        | 39    | preset dispatch (incl. all of 720p..8K), aspect math, ratio cap, AUTO ceiling, skip-above gating + boundary cases |
-| `usm`                  | 17    | unsharp-mask single-thread reference        |
-| `perfmon`              | 13    | EWMA performance monitor + saturating sample count + target_fps OOB |
-| `threading`            | 15    | allowed-CPU topology + thread-count decision |
-| `zimg_helpers`         | 28    | stripe/tile bounds, copy-plane, stripe-min sentinel |
-| `chroma_classify`      | 14    | opaque chroma list + cross-predicate invariant |
-| `usm_pool`             | 21    | threaded USM byte-identity, alias rules, stripe minimum, fatal drain, lazy-init OOM |
-| `content_probe`        | 19    | source-content metrics + advisory and sharp-threshold boundaries |
-| `scaler_pick`          | 24    | backend selection, enum normalization, open fallback + pref OOB |
-| `scaler_swscale`       | 6     | status mapping, crop-aware physical-plane descriptors |
-| `lifetime`             | 10    | resource lifetime / use-after-free          |
-| `usm_pool_variants`    | 15    | cross-SIMD-variant byte-equivalence (SSE2/AVX2/AVX-512) |
-| `geometry_edge`        | invariant | extreme-dimension overflow guards       |
-| `picture_view`         | invariant | crop/layout/extent validation across supported chromas |
+`make test` runs the unit and contract executables under AddressSanitizer and
+UndefinedBehaviorSanitizer. The target itself is the source of truth for the
+active executable and case set. It covers resolution planning, USM and its
+worker pool, performance monitoring, topology decisions, picture geometry,
+chroma classification, backend selection, scaler contracts, variant
+equivalence, and resource lifetime. Memory errors and signed-overflow bugs are
+caught even when asserted output happens to be correct.
 
 The `upscale_logic` suite includes targeted regression tests for design
 rules that aren't otherwise verifiable from output alone:
@@ -969,86 +900,43 @@ rules that aren't otherwise verifiable from output alone:
 
 ### Smoke fuzzers — deterministic mass testing
 
-`make fuzz-smoke` runs 13 standalone harnesses (`tests/fuzz_*.c` with
-`-DFUZZ_MAIN`) under ASan + UBSan. They execute 1,155,000 randomized
-iterations plus 1,889,568 exhaustive tile-grid boundary combinations — more
-than 3.044 million cases per run. Each
-fuzzer drives a single function (or a small combination of helpers)
-with deterministic xorshift32 random input and verifies a set of
-post-conditions (the "invariant checker").
+`make fuzz-smoke` runs the standalone `tests/fuzz_*.c` harnesses under ASan
+and UBSan. The Makefile and each harness define their live iteration and
+boundary-sweep budgets. Every harness drives a function or small helper group
+with deterministic random input and verifies explicit post-conditions.
 
-| Fuzzer            | Iters/run | Targets                                     |
-|-------------------|-----------|---------------------------------------------|
-| `upscale_logic`   | 100k      | preset dispatch, aspect math, ratio cap     |
-| `usm`             | 100k      | unsharp-mask convolution                    |
-| `perfmon`         |  50k      | EWMA tracker                                |
-| `threading`       | 100k      | thread-count decision                       |
-| `copy_plane`      |  50k      | stride-aware plane copy (memory-safety)     |
-| `stripe_bounds`   | 100k      | stripe partition math                       |
-| `decide_tile_grid`| 200k + 18⁵ exhaustive | row×column grid coverage and worker caps |
-| `frame_shape`     | 100k      | chroma classification + plane geometry + stripe partition together |
-| `scaler_chroma`   | 100k      | chroma fourcc → zimg backend mapping (the VLC-touching boundary) |
-| `scaler_open`     | 100k      | AUTO enum normalization + open fallback    |
-| `content_probe`   | 100k      | source-content metric reads (pointer arithmetic on bytes) — ASan |
-| `picture_view`    |  50k      | crop-aware plane offsets and storage bounds |
-| `usm_variants`    |   5k      | cross-SIMD-variant byte-equivalence (3 pools per iter under ASan) |
+The suite covers resolution planning, USM, performance monitoring, topology,
+plane copying, stripe and tile geometry, chroma mapping, scaler opening,
+content probing, picture views, and cross-SIMD byte equivalence.
 
 `fuzz_upscale_logic` and `fuzz_frame_shape` use **biased input
-selection** in their smoke mains. Without bias, raw int32 values
-almost never hit valid presets (0–6), realistic source heights, or
-real chroma fourccs — so the structured branches would go essentially
-untested by random bytes. The biased mode picks valid values every
-3rd–5th iteration to guarantee meaningful coverage; raw random bytes
-fill the remaining iterations to keep the chaos.
+selection** in their smoke mains. Without bias, raw values almost never hit
+valid presets, realistic source heights, or real chroma fourccs, so structured
+branches would go essentially untested. Biased cases guarantee meaningful
+coverage while raw random bytes retain unstructured exploration.
 
 ### libFuzzer — coverage-guided exploration
 
-`make fuzz` builds 13 clang-libFuzzer targets that explore the input
-space using coverage-guided mutation. CI runs five targets for 60
-seconds each on pushes and pull requests targeting `main`/`develop`
-(5 minutes total libFuzzer time):
-`fuzz_upscale_logic`, `fuzz_usm`, `fuzz_frame_shape`,
-`fuzz_scaler_chroma`, and `fuzz_content_probe`. The harnesses share
+`make fuzz` builds the clang-libFuzzer targets that explore the input space
+using coverage-guided mutation. The CI workflow is the source of truth for
+which targets run and for how long. The harnesses share
 their invariant checker with the smoke fuzzers, so any bug found by
 libFuzzer is also a violation of an explicit, named property — not
 just a crash.
 
-**Corpora.** Four structured corpora ship with the repo. Three feed CI
-directly (`upscale_logic`, `frame_shape`, and `scaler_chroma`); the USM
-variant corpus is for manual libFuzzer runs:
+**Corpora.** Structured seed corpora live under `tests/corpus*`. Directory
+contents and harness parsers are the source of truth for seed counts, binary
+formats, and supported boundary cases. Seeds give libFuzzer a foothold in the
+structured input space so mutations can cross over real chroma values,
+resolutions, API boundaries, and prior regressions.
 
-- `tests/corpus/` — 16 seeds for `fuzz_upscale_logic`, 32 bytes each
-  in the format `<iiiiII>` (src_w, src_h, skip_above, preset, cores,
-  mem_mb). Covers every preset value (0..6), ratio-cap boundaries,
-  pathological aspects, and the historical 3×1024 regression.
-
-- `tests/corpus_frame_shape/` — 22 seeds for `fuzz_frame_shape`, 24
-  bytes each in the format `<IIiiii>` (cls_byte, garbage_fourcc, w,
-  h, n_stripes, dst_h). Covers all four chroma classes (opaque,
-  has-y-plane, packed, garbage), geometry boundaries, pathological
-  aspects, and 8 invalid-input cases.
-
-- `tests/corpus_scaler_chroma/` — 21 seeds for `fuzz_scaler_chroma`,
-  8 bytes each in the format `<4s B 3x>` (4-byte fourcc + 1-byte
-  null-pointer mask + 3 bytes pad). Covers the 4 supported chromas
-  (I420/YV12/I422/I444), 9 known-rejected chromas (NV12, NV21, YUY2,
-  UYVY, RV32, BGRA, VAOP, VDV0, DX11), 4 NULL-pointer combinations,
-  and 3 garbage/edge fourccs (zero, all-FF, lowercase).
-
-- `tests/corpus_usm_variants/` — 15 seeds for `fuzz_usm_variants`,
-  8 bytes each in the format `<HHhBB>` (width, height, amount,
-  workers, seed). Targets the cross-SIMD-variant byte-equivalence
-  invariant: SIMD width boundaries (widths around 64 / 128), small
-  frames, amount extremes (negative, zero, max), and worker-count
-  edge cases. CI runs the smoke build (5k iters); manual libFuzzer
-  runs use this corpus as the seed.
-
-Empirically, the seeded corpora accelerate discovery roughly 2×: in
-30-second runs, libFuzzer adds ~120 new corpus entries from seeds vs
-~55 cold. The seeds give libFuzzer a foothold in the structured
-input space — its mutations crossing-over real chroma fourccs and
-real resolution heights produce more interesting inputs than blind
-exploration of 32-bit space.
+- `tests/corpus/` feeds `fuzz_upscale_logic` values parsed as `<iiiiII>`.
+- `tests/corpus_frame_shape/` feeds `fuzz_frame_shape` values parsed as
+  `<IIiiii>`.
+- `tests/corpus_scaler_chroma/` feeds `fuzz_scaler_chroma` values parsed as
+  `<4s B 3x>`.
+- `tests/corpus_usm_variants/` feeds `fuzz_usm_variants` values parsed as
+  `<HHhBB>`.
 
 ### Concurrency stress — TSan-instrumented worker dispatch
 
@@ -1059,22 +947,9 @@ passes unit tests, and *occasionally* produces wrong output — exactly
 the kind of bug TSan catches even when the pixels happen to match on
 this run.
 
-`tests/stress_usm_pool.c` drives 27 configurations spanning the
-interesting axes:
-
-- **Thread count saturation**: 64 workers on 32-line frames (which
-  the pool clamps internally to height/8). Triggers the clamp logic.
-- **Common video paths**: 854×480 at 1, 2, 4, 8, 16, 32, 64 threads,
-  plus 1920×1080 at 16 threads (the realistic end-user config).
-- **USM amounts**: 0 (identity fast path, no thread spawn), 30
-  (representative nonzero), 100, and 200 (max). The production default is 20;
-  unit/fuzz tests cover it separately.
-- **Pathological aspects**: 8×1080 (tall narrow), 4096×8 (short wide
-  — also triggers the height/8 clamp), odd dimensions like 853×479
-  to flush odd-row handling.
-- **Single-worker large frame**: 1 worker on 4096×2160 — exercises the
-  five-row scratch allocation at scale and confirms the single-worker
-  dispatch still produces identical output.
+`tests/stress_usm_pool.c` defines the live stress matrix. It spans worker-count
+clamping, common video shapes, identity and nonzero USM amounts, unusual aspect
+ratios, odd dimensions, large frames, and the single-worker path.
 
 Every frame's output is byte-compared against the single-threaded
 reference `up_usm_apply_plane`. **Bit-perfect match is required** —
@@ -1086,8 +961,7 @@ would surface as "first frame matches, subsequent frames diverge."
 ThreadSanitizer instrumentation tracks every memory access and
 synchronization event. A race in halo publication, per-frame pointers,
 completion state, or worker results is reported even when the output happens
-to match. **Total: 1,325 frames across 27 configurations
-(`frame_mult=1`) per sanitizer run, zero TSan reports, zero divergence.**
+to match. Any TSan report or output divergence fails the run.
 
 The CI job runs both ASan+UBSan and TSan builds on pushes and pull requests
 targeting `main`/`develop`.
@@ -1162,9 +1036,8 @@ every frame to decide whether and how to consume it. The invariants:
 
 Both fuzzers print the violated invariant with full input context to
 stderr, flush, then `abort()`. libFuzzer reports the abort as a
-finding and minimizes the input. During development of
-`fuzz_frame_shape`, this loop caught two real bugs in the test
-harness itself — proving that the invariants are tight enough to
+finding and minimizes the input. During development this loop caught bugs in
+the test harness itself, showing that the invariants are tight enough to
 distinguish "wrong test" from "correct code".
 
 ### Bench tooling
@@ -1173,35 +1046,32 @@ distinguish "wrong test" from "correct code".
 correctness tests. It accepts `<threads> <width> <height> [frames]
 [amount] [fill]` and prints one CSV line of µs/frame, with
 warmup-and-discard handling so worker-spawn and first-touch page
-faults don't pollute the timed loop. Three fill modes (`rand` /
-`flat` / `mixed`) drive different content patterns through the
-kernels — useful when measuring the effect of compile-time toggles
+faults don't pollute the timed loop. The supported fill modes drive different
+content patterns through the kernels, which is useful when measuring the
+effect of compile-time toggles
 like `USM_POOL_FLAT_SKIP`.
 
-`scripts/bench_matrix.sh` sweeps a `(threads × resolution)` grid
-(threads ∈ {1, 4, 8, 12, 16, 20}; resolution ∈ {720p, 1080p, 1440p})
-and emits a CSV row per cell with the median of 3 runs. Used to A/B
-the pool against itself across configurations during development.
+`scripts/bench_matrix.sh` defines the current `(threads × resolution)` grid
+and aggregation policy. It is used to compare the pool against itself across
+configurations during development.
 
 ### Coverage
 
 `make coverage` builds a separate `build/cov/` test binary set with
 `--coverage -fprofile-arcs -ftest-coverage`, runs them, then prints
 per-file summaries via `scripts/coverage_report.sh` and per-function summaries
-via `scripts/coverage_per_function.sh`.
-The script fails the build if any tracked file or function falls below 80%
-line coverage, or if gcov data is missing or malformed. The current gate
-covers 840 of 842 tracked lines (99.8%) across 13 files; all 98 tracked
-functions meet the 80% minimum.
+via `scripts/coverage_per_function.sh`. The scripts fail the build when a
+tracked file or function falls below 80% coverage, or when gcov data is
+missing or malformed. Their generated output is the source of truth for
+tracked totals and percentages.
 
 The `make coverage` step is wired into the GitHub Actions CI job
-(`.github/workflows/ci.yml`) so a tracked file or function below the 80%
-threshold fails on pushes and pull requests targeting `main`/`develop`.
+(`.github/workflows/ci.yml`) so a coverage-gate failure rejects the CI job.
 
 ### Cyclomatic complexity
 
 `lizard` is the standard tool. `make complexity` and `make analyze`
-enforce the project rule that every function in `src/` and `tests/`
-has CCN ≤ 10. The gate runs `lizard -C 10 src/ tests/`. Helpers
+enforce CCN ≤ 10 for every function in `src/` and `tests/`. The Makefile
+invocation is the source of truth. Helpers
 extracted for complexity stay `static` (or `static inline` for
 header-only modules) and live in the same file as their caller.

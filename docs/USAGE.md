@@ -90,16 +90,18 @@ vlc --autoupscale-threads=16 \
   output, including occasional black or near-black frames during scene changes.
   → Drop `postproc:` (see [Recipe 4](#recipe-4-without-postproc-recommended-default)).
 - **`picture is too late to be displayed (missing N ms)`** in the log means
-  the pipeline can't keep up. At 50 fps source upscaled to 1080p, your
-  budget is 20 ms/frame. If the upscale + USM exceeds that, frames drop;
+  the pipeline can't keep up. If the combined work exceeds the source's frame
+  budget, frames drop;
   in worst cases the vout shows the previous buffer (often black).
   → Use [Recipe 7](#recipe-7-low-latency) or lower target resolution.
-- **CPU usage is high.** This recipe re-encodes to H.264, which costs ~5-8 ms
-  per frame on top of the upscale. If you don't need a re-encoded stream
+- **CPU usage is high.** This recipe adds host-dependent H.264 encoding work
+  on top of the upscale. If you don't need a re-encoded stream
   (e.g. you're not network-streaming this), use [Recipe 1](#recipe-1-minimal) instead.
 
 **Tunable parameters:**
-- `--autoupscale-threads=N` — workers for the upscaler. Default: cores/2 − 2 (so on a 32-core box you get 14 workers, leaving 18 cores for VLC, decoder, encoder, audio, and other libraries). Set lower if you want headroom for the rest of the system, or higher if you measured the upscaler being CPU-starved.
+- `--autoupscale-threads=N` — workers for the upscaler. The automatic policy
+  reserves capacity for VLC and other libraries. Set lower for more headroom,
+  or higher only after measuring the deployment workload.
 - `vb=10000` — video bitrate in kbps. Higher = better quality, more CPU.
 - `preset=ultrafast` — x264 speed/quality tradeoff. `ultrafast` is fastest
   but lowest quality; `medium` is balanced; `slow` is high-quality but may
@@ -198,8 +200,8 @@ vlc --avcodec-hw=none \
   converter ahead of autoupscale
 
 **Cost:**
-- Software H.264 decode at 1080p uses ~10-15% of one core
-- For 4K+ sources, software decode can be CPU-bound; use a smaller target
+- Software decode adds host- and codec-dependent CPU work
+- High-resolution sources can become CPU-bound; use a smaller target
 - AutoUpscale's own multi-threading is unaffected
 
 **Alternative: patch VLC.** The repo ships
@@ -322,8 +324,8 @@ vlc -I dummy --no-audio \
 
 **When it works:**
 - Any input file that VLC can play
-- Encoding speed is determined by `preset=`. `medium` runs at ~30-50 fps
-  on a 16-core machine for 1080p output.
+- Encoding speed is determined by `preset=` and must be measured on the target
+  machine with representative content.
 
 **Verifying output:**
 ```sh
@@ -511,18 +513,18 @@ that lets you set the per-device volume directly.
 If you see message floods like these in your VLC log:
 
 ```
-pulse audio output warning: starting late (-111651650002536464 us)
+pulse audio output warning: starting late (<invalid timestamp>)
 main audio output warning: playback way too late (...): flushing buffers
 vlcpulse audio output debug: write index corrupt
 pulse audio output debug: cannot synchronize start
-pulse audio output debug: deferring start (1365156 us)
+pulse audio output debug: deferring start (<invalid timestamp>)
 pulse audio output debug: underflow
-main audio output warning: playback way too early (-1160971): playing silence
-avcodec decoder warning: More than 11 late frames, dropping frame
+main audio output warning: playback way too early (<invalid timestamp>): playing silence
+avcodec decoder warning: late frames, dropping frame
 ```
 
-…the negative trillion-microsecond values (~3540 years) are not real
-timing measurements — they're symptoms of a **broken audio clock**.
+…the extreme timestamp values are not real timing measurements — they are
+symptoms of a **broken audio clock**.
 VLC computes "lateness = expected − now" and gets nonsense, retries,
 underflows, recovers, and the video decoder drops frames trying to
 keep up with the wandering audio clock.
@@ -671,9 +673,9 @@ vlc \
 | `--no-stats` | Suppresses end-of-playback statistics dump. |
 | `--verbose=0` | Only show actual errors; hide warnings and debug. |
 | `--autoupscale-target=0` | AUTO mode — picks 720p or 1080p based on source. Never goes above 1080p in AUTO. |
-| `--autoupscale-threads=0` | Auto: `cores/2 − 2` workers, counting only CPUs allowed by the process's taskset/cgroup affinity. On an unrestricted 32-core box that's 14 — leaves 18 cores for decoder, encoder, audio, OS. |
+| `--autoupscale-threads=0` | Auto policy, counting only CPUs allowed by the process's taskset/cgroup affinity and reserving capacity for the rest of the media pipeline. |
 | `--autoupscale-pin-threads=0` | Off by default. `1` pins scaler workers across the exact allowed CPU IDs (Linux, best-effort) — only worth it on a dedicated high-core/NUMA transcode box where you measured a gain; can hurt on a shared desktop. |
-| `--autoupscale-content-probe=1` | Enables the observe-only advisory after 60 valid luma observations. Setting it to 0 suppresses the advisory; metrics still run when the USM sharpness threshold needs them. |
+| `--autoupscale-content-probe=1` | Enables the observe-only advisory after the fixed initial observation window. Setting it to 0 suppresses the advisory; metrics still run when the USM sharpness threshold needs them. |
 | `#transcode{...}:display` | Re-encode in a single pipeline, then display. Avoids the recursion mode that `vfilter=` directly into display sometimes hits. |
 | `vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast}` | Encode video with x264 ultrafast and keep audio in the same pipeline via AAC. Actual frame cost is host- and content-dependent. |
 
@@ -695,9 +697,8 @@ vlc \
 | `6` | force 8K |
 
 Note that targets above 1080p require source ≥ 1/4 the target height
-(the ratio cap) and significant CPU; on a 32-core machine 4K is
-usually sustainable, but verify with the engagement log and frame-drop
-count at the end of playback.
+(the ratio cap) and significant CPU. Verify the chosen target with the
+engagement log and end-of-playback frame-drop count.
 
 **If you need the chain-recursion fix**, apply
 `patches/vlc-3.0-raise-chain-level.patch` to your VLC source and
@@ -712,11 +713,11 @@ for context on when this is needed.
 vlc --verbose=2 [rest of args] 2>&1 | grep "AutoUpscale engaged"
 ```
 
-Expected output on a zimg-enabled build with sufficient CPU/RAM:
+Expected output includes the negotiated geometry and live configuration:
 
 ```
-AutoUpscale engaged: 854x480 -> 1920x1080 (backend=zimg preset=0 algo=3 \
-  usm=20 fps_target=60 threads=14 cores=32 mem=...MB simd=default)
+AutoUpscale engaged: <source> -> <target> (backend=... preset=... algo=... \
+  usm=... fps_target=... threads=... cores=... mem=... simd=...)
 ```
 
 `simd=default` is expected for the default single-baseline
