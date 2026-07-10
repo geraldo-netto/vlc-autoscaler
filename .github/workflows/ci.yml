@@ -58,6 +58,16 @@ jobs:
       # -Wno-unreachable-code-generic-assoc suppresses a clang false
       # positive inside VLC's own _Generic headers (gcc ignores the
       # unknown -Wno- flag as long as no other diagnostic fires).
+      # BUILD-3: link the production runtime-dispatch configuration too.
+      # This is the exact unresolved-symbol hazard usm_pool.h warns about
+      # (un-suffixed API resolved against usm_pool_dispatch.o under -O3
+      # -flto); a prototype/symbol drift fails this link.
+      - name: Build the VLC plugin (MULTIVERSION=1 runtime dispatch, -Werror)
+        run: |
+          make clean
+          make plugin MULTIVERSION=1 EXTRA_CFLAGS=-Werror
+          make clean
+
       - name: Unit tests (ASan + UBSan) + complexity gate
         run: make check EXTRA_CFLAGS=-Werror
 
