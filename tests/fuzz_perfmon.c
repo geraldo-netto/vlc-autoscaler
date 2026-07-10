@@ -25,6 +25,7 @@
 
 #include "../src/perfmon.h"
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,7 +42,8 @@ static int parse_target_fps(const uint8_t **data, size_t *size, int *target_fps)
     /* Constrain to a sane range so the budget arithmetic doesn't overflow.
      * The plugin enforces 0..240 anyway; fuzz a slightly wider band to
      * exercise edge cases. */
-    if (*target_fps < 0)    *target_fps = -(*target_fps);  /* abs */
+    if (*target_fps == INT_MIN) *target_fps = INT_MAX;
+    else if (*target_fps < 0)   *target_fps = -(*target_fps);
     if (*target_fps > 1000) *target_fps = *target_fps % 1001;
     return 0;
 }
@@ -134,6 +136,13 @@ int main(int argc, char **argv)
     long iters = (argc > 1) ? atol(argv[1]) : 50000;
     uint8_t buf[4096];
     long n_fail = 0;
+
+    int edge_fps = INT_MIN;
+    int64_t edge_sample = 1;
+    memcpy(buf, &edge_fps, sizeof edge_fps);
+    memcpy(buf + sizeof edge_fps, &edge_sample, sizeof edge_sample);
+    if (run_one(buf, sizeof edge_fps + sizeof edge_sample)) n_fail++;
+
     for (long i = 0; i < iters; i++) {
         size_t n = (size_t)(xs() % sizeof(buf));
         for (size_t j = 0; j < n; j++) buf[j] = (uint8_t)xs();

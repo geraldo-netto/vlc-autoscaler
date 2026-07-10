@@ -392,7 +392,7 @@ static void run_one(const uint8_t *data, size_t size)
     int trial_indices[] = {
         -1,                  /* canonical "below range" */
         i_n_stripes,         /* exactly at the upper edge */
-        i_n_stripes + 1,     /* one past upper */
+        i_n_stripes == INT_MAX ? INT_MAX : i_n_stripes + 1,
         (int)(cls_byte >> 16),   /* random bits from fuzz input */
         i_w,                 /* could be anything including INT_MIN */
     };
@@ -427,6 +427,11 @@ int main(int argc, char **argv)
     /* deterministic xorshift32 */
     uint32_t s = 0xC0FFEE17u;
     uint8_t buf[24];
+
+    memset(buf, 0, sizeof buf);
+    int max_stripes = INT_MAX;
+    memcpy(buf + 16, &max_stripes, sizeof max_stripes);
+    run_one(buf, sizeof buf);
 
     for (long i = 0; i < n; i++) {
         for (size_t j = 0; j < sizeof buf; j += 4) {
