@@ -83,6 +83,11 @@ jobs:
       - name: zimg backend stress (ASan + UBSan + TSan)
         run: make stress-zimg EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
 
+      # BUILD-5: the USM_POOL_FLAT_SKIP=1 code path only compiles in the
+      # bench binaries; build (not run) them so that opt-in path can't rot.
+      - name: Compile benches incl. flat-skip kernel (build only)
+        run: make build-bench EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
+
       - name: Per-file and per-function coverage gates (minimum 80%)
         run: make coverage EXTRA_CFLAGS=-Werror
 
