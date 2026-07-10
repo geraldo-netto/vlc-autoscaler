@@ -8,7 +8,7 @@ review categories. One table per category. Format: `id | status | effort | descr
 
 2026-07-10 post-fix rescan: full repository, every category, four parallel
 audit tracks covering production code, tests/fuzzers/benches, build/CI/scripts,
-and documentation. New or reopened: SCAL-5..6, CON-4, COMP-1,
+and documentation. New or reopened: SCAL-5..6, CON-4,
 ARCH-10, REL-6..8, ERR-3, PORT-6..8, ABI-3,
 BUILD-2, BUILD-11..12, BUILD-14..15,
 OBS-6..8, WIRE-4..5, DEAD-9; DG-1, DUP-9, PORT-3, and BUILD-10 were
@@ -72,7 +72,6 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| COMP-1 | open | S | Comments in `autoupscale.c:728-729`, `upscale_logic.h:66-67`, and `chroma_classify.h:85-87` still advertise an obsolete CCN-15 ceiling, contradicting AGENTS.md and the Makefile's enforced maximum of 10. | Update the policy references. The actual lizard run is clean: 537 functions, none above CCN 10. |
 
 ## code duplication
 

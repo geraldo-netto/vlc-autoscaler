@@ -725,8 +725,8 @@ static void EmitPerfAdvisory( filter_t *p_filter, filter_sys_t *p_sys )
  * one plane (planar chromas only; the probe_enabled gate in Open()
  * already filtered out opaque/packed sources).
  *
- * Extracted from Filter() to keep its cyclomatic complexity under
- * the project's CCN-15 ceiling.
+ * Extracted from Filter() to keep its cyclomatic complexity within
+ * the project's CCN-10 ceiling.
  */
 static void LogProbeVerdict( filter_t *p_filter, filter_sys_t *p_sys );
 

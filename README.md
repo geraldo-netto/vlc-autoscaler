@@ -25,7 +25,7 @@ and still fast enough for real-time playback on modest hardware.
 | libFuzzer (60s × 5 in CI, seeded)      | 0 crashes; corpora accelerate discovery ~2× |
 | Concurrency stress (ASan + TSan)       | 19 configs, ~935 frames, 0 races        |
 | `cppcheck` (warning + style)           | clean                                   |
-| Cyclomatic complexity (lizard)         | all src + tests ≤ 10; tests ≤ 9         |
+| Cyclomatic complexity (lizard)         | all src + tests ≤ 10                    |
 | Line coverage (`make coverage`, CI-gated) | 94.6% total, every tracked file ≥ 80% |
 | Plugin compiles against VLC 3.0.20     | clean, no warnings                      |
 | Live transcode (zimg + swscale)        | verified end-to-end up to 8K            |

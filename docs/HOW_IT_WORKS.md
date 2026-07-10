@@ -1179,10 +1179,8 @@ below the 80 % threshold fails before merge.
 
 ### Cyclomatic complexity
 
-`lizard` is the standard tool. `make analyze` runs cppcheck only;
-complexity is enforced manually as a project rule: every function in
-`src/` must have CCN ≤ 10, and every function in `tests/` must have
-CCN ≤ 9. Verified by `lizard -C 11 src` (warns at 11+) and
-`lizard -C 10 tests` (warns at 10+). Helpers extracted for
-complexity stay `static` (or `static inline` for header-only modules)
-and live in the same file as their caller.
+`lizard` is the standard tool. `make complexity` and `make analyze`
+enforce the project rule that every function in `src/` and `tests/`
+has CCN ≤ 10. The gate runs `lizard -C 10 src/ tests/`. Helpers
+extracted for complexity stay `static` (or `static inline` for
+header-only modules) and live in the same file as their caller.

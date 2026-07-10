@@ -64,7 +64,7 @@ static inline int up__clamp_even(int v)
  * exceeds 1080p — going higher must be explicit (target=3..6).
  *
  * Extracted from up_decide_target_height to keep its cyclomatic
- * complexity under the 15 ceiling.
+ * complexity within the CCN-10 ceiling.
  */
 static inline int up__auto_target_height(int src_h, int cores,
                                          unsigned long mem_mb)
