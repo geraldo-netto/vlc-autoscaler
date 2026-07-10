@@ -32,6 +32,9 @@ typedef struct scaler_ctx_s
     const scaler_backend_t *backend;
     void                   *priv;       /* backend-private state */
     int                     src_w, src_h;
+    /* VLC 3 pictures do not reliably retain the negotiated crop metadata. */
+    unsigned                src_coded_w, src_coded_h;
+    unsigned                src_x_offset, src_y_offset;
     int                     dst_w, dst_h;
     int                     algo;       /* UP_ALGO_* */
     int                     threads_pref; /* 0 = auto; >0 = explicit */

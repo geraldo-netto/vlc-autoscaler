@@ -68,6 +68,7 @@ static scaler_ctx_t make_ctx(vlc_fourcc_t chroma, int algo)
 {
     scaler_ctx_t ctx = {0};
     ctx.src_w = 320; ctx.src_h = 180;
+    ctx.src_coded_w = 320; ctx.src_coded_h = 180;
     ctx.dst_w = 640; ctx.dst_h = 360;
     ctx.chroma = chroma; ctx.algo = algo;
     return ctx;
@@ -111,13 +112,23 @@ static void test_open_close_algorithms(void)
     END();
 }
 
-static void init_picture(picture_t *pic, uint8_t data[4], int pitch_base)
+static void init_picture(picture_t *pic, uint8_t data[4], int pitch_base,
+                         vlc_fourcc_t chroma, int width, int height)
 {
     memset(pic, 0, sizeof *pic);
     pic->i_planes = 4;
+    pic->format.i_chroma = chroma;
+    pic->format.i_width = (unsigned)width;
+    pic->format.i_height = (unsigned)height;
+    pic->format.i_visible_width = (unsigned)width;
+    pic->format.i_visible_height = (unsigned)height;
     for (int i = 0; i < 4; i++) {
         pic->p[i].p_pixels = &data[i];
         pic->p[i].i_pitch = pitch_base + i;
+        pic->p[i].i_lines = 400;
+        pic->p[i].i_pixel_pitch = 1;
+        pic->p[i].i_visible_pitch = pitch_base + i;
+        pic->p[i].i_visible_lines = 400;
     }
 }
 
@@ -127,8 +138,8 @@ static void test_process_status_and_forwarding(void)
     scaler_ctx_t ctx = make_ctx(VLC_CODEC_I420, UP_ALGO_LANCZOS);
     picture_t src, dst;
     uint8_t src_data[4] = {0}, dst_data[4] = {0};
-    init_picture(&src, src_data, 100);
-    init_picture(&dst, dst_data, 200);
+    init_picture(&src, src_data, 400, ctx.chroma, ctx.src_w, ctx.src_h);
+    init_picture(&dst, dst_data, 700, ctx.chroma, ctx.dst_w, ctx.dst_h);
     CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_FATAL);
 
     sws_priv_t priv = { .ctx = &g_sws_ctx, .av_fmt = AV_PIX_FMT_YUV420P };
@@ -136,14 +147,139 @@ static void test_process_status_and_forwarding(void)
     g_scale_result = ctx.dst_h;
     CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_OK);
     CHECK(g_slice_y == 0 && g_slice_h == ctx.src_h);
-    for (int i = 0; i < 4; i++) {
-        CHECK(g_src[i] == &src_data[i] && g_src_stride[i] == 100 + i);
-        CHECK(g_dst[i] == &dst_data[i] && g_dst_stride[i] == 200 + i);
+    for (int i = 0; i < 3; i++) {
+        CHECK(g_src[i] == &src_data[i] && g_src_stride[i] == 400 + i);
+        CHECK(g_dst[i] == &dst_data[i] && g_dst_stride[i] == 700 + i);
     }
+    CHECK(g_src[3] == NULL && g_dst[3] == NULL);
     g_scale_result = ctx.dst_h - 1;
     CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_TRANSIENT);
     g_scale_result = -1;
     CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_TRANSIENT);
+    END();
+}
+
+static void test_geometry_rejection_recovers(void)
+{
+    BEGIN("malformed geometry is transient and the next frame recovers");
+    scaler_ctx_t ctx = make_ctx(VLC_CODEC_I420, UP_ALGO_LANCZOS);
+    sws_priv_t priv = { .ctx = &g_sws_ctx, .av_fmt = AV_PIX_FMT_YUV420P };
+    picture_t src, dst;
+    uint8_t src_data[4] = {0}, dst_data[4] = {0};
+    init_picture(&src, src_data, 400, ctx.chroma, ctx.src_w, ctx.src_h);
+    init_picture(&dst, dst_data, 700, ctx.chroma, ctx.dst_w, ctx.dst_h);
+    ctx.priv = &priv;
+    g_scale_result = ctx.dst_h;
+
+    uint8_t *src_u = src.p[1].p_pixels;
+    src.p[1].p_pixels = NULL;
+    CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_TRANSIENT);
+    src.p[1].p_pixels = src_u;
+
+    int dst_lines = dst.p[0].i_lines;
+    dst.p[0].i_lines = ctx.dst_h - 1;
+    CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_TRANSIENT);
+    dst.p[0].i_lines = dst_lines;
+
+    int src_pitch = src.p[0].i_pitch;
+    src.p[0].i_pitch = ctx.src_w - 1;
+    CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_TRANSIENT);
+    src.p[0].i_pitch = src_pitch;
+    CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_OK);
+    END();
+}
+
+#define CROP_STORAGE_BYTES 16384
+
+typedef struct {
+    vlc_fourcc_t chroma;
+    int planes;
+    int pixel_pitch[3];
+    int x_group_pixels[3];
+    int x_group_bytes[3];
+    int logical_to_physical[3];
+    int y_group_pixels[3];
+} crop_case_t;
+
+static void init_crop_picture(picture_t *pic,
+                              uint8_t storage[4][CROP_STORAGE_BYTES],
+                              const crop_case_t *c, int width, int height,
+                              int x_offset, int y_offset)
+{
+    memset(pic, 0, sizeof *pic);
+    pic->i_planes = c->planes;
+    pic->format.i_chroma = c->chroma;
+    pic->format.i_width = (unsigned)(width + x_offset + 4);
+    pic->format.i_height = (unsigned)(height + y_offset + 4);
+    pic->format.i_visible_width = (unsigned)width;
+    pic->format.i_visible_height = (unsigned)height;
+    for (int i = 0; i < c->planes; i++) {
+        pic->p[i].p_pixels = storage[i];
+        pic->p[i].i_pitch = 160 + i * 8;
+        pic->p[i].i_lines = 64;
+        pic->p[i].i_pixel_pitch = c->pixel_pitch[i];
+        pic->p[i].i_visible_pitch = pic->p[i].i_pitch;
+        pic->p[i].i_visible_lines = pic->p[i].i_lines;
+    }
+}
+
+static uint8_t *crop_expected_pointer(
+    picture_t *pic, const crop_case_t *c, int logical_plane,
+    int x_offset, int y_offset)
+{
+    const int physical = c->logical_to_physical[logical_plane];
+    plane_t *plane = &pic->p[physical];
+    const int x = x_offset / c->x_group_pixels[logical_plane];
+    const int y = y_offset / c->y_group_pixels[logical_plane];
+    return plane->p_pixels + (size_t)y * (size_t)plane->i_pitch
+         + (size_t)x * (size_t)c->x_group_bytes[logical_plane];
+}
+
+static void test_cropped_plane_forwarding(void)
+{
+    BEGIN("I420/YV12/NV12/RGB crops forward offset physical planes");
+    static uint8_t src_storage[4][CROP_STORAGE_BYTES];
+    static uint8_t dst_storage[4][CROP_STORAGE_BYTES];
+    static const crop_case_t cases[] = {
+        { VLC_CODEC_I420, 3, {1, 1, 1}, {1, 2, 2}, {1, 1, 1},
+          {0, 1, 2}, {1, 2, 2} },
+        { VLC_CODEC_YV12, 3, {1, 1, 1}, {1, 2, 2}, {1, 1, 1},
+          {0, 2, 1}, {1, 2, 2} },
+        { VLC_CODEC_NV12, 2, {1, 1, 0}, {1, 2, 0}, {1, 2, 0},
+          {0, 1, 0}, {1, 2, 0} },
+        { VLC_CODEC_RGB24, 1, {3, 0, 0}, {1, 0, 0}, {3, 0, 0},
+          {0, 0, 0}, {1, 0, 0} },
+    };
+    const int x_offset = 3, y_offset = 1;
+    for (size_t n = 0; n < sizeof cases / sizeof cases[0]; n++) {
+        const crop_case_t *c = &cases[n];
+        scaler_ctx_t ctx = make_ctx(c->chroma, UP_ALGO_LANCZOS);
+        ctx.src_w = 16; ctx.src_h = 8;
+        ctx.dst_w = 32; ctx.dst_h = 16;
+        sws_priv_t priv = { .ctx = &g_sws_ctx,
+                            .av_fmt = ChromaToAVFmt(c->chroma) };
+        picture_t src, dst;
+        init_crop_picture(&src, src_storage, c, ctx.src_w, ctx.src_h,
+                          x_offset, y_offset);
+        init_crop_picture(&dst, dst_storage, c, ctx.dst_w, ctx.dst_h,
+                          0, 0);
+        ctx.src_coded_w = src.format.i_width;
+        ctx.src_coded_h = src.format.i_height;
+        ctx.src_x_offset = (unsigned)x_offset;
+        ctx.src_y_offset = (unsigned)y_offset;
+        ctx.priv = &priv;
+        g_scale_result = ctx.dst_h;
+        CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_OK);
+        for (int i = 0; i < c->planes; i++) {
+            const int physical = c->logical_to_physical[i];
+            CHECK(g_src[i] == crop_expected_pointer(
+                &src, c, i, x_offset, y_offset));
+            CHECK(g_dst[i] == crop_expected_pointer(
+                &dst, c, i, 0, 0));
+            CHECK(g_src_stride[i] == src.p[physical].i_pitch);
+            CHECK(g_dst_stride[i] == dst.p[physical].i_pitch);
+        }
+    }
     END();
 }
 
@@ -167,6 +303,8 @@ int main(void)
     test_supports();
     test_open_close_algorithms();
     test_process_status_and_forwarding();
+    test_geometry_rejection_recovers();
+    test_cropped_plane_forwarding();
     test_close_without_context();
     printf("\n%d tests run, %d failed\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;

@@ -24,7 +24,7 @@ fi
 # Tracked files - same set as the per-file gate (scripts/coverage_report.sh).
 TRACKED="upscale_logic.h usm.h perfmon.h threading.h zimg_helpers.h \
 chroma_classify.h scaler_zimg_chroma.h content_probe.h \
-scaler_pick_logic.h scaler_status.h scaler_swscale.c usm_pool.c"
+scaler_pick_logic.h scaler_status.h scaler_swscale.c picture_view.h usm_pool.c"
 
 python3 - "$INPUT" "$THRESHOLD" "$TRACKED" <<'PY'
 import glob

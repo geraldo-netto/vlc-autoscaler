@@ -186,7 +186,7 @@ $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CC) $(PLUGIN_CFLAGS) -c -o $@ $<
 
 # --------- unit tests ---------
-test: complexity $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_threading $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants
+test: complexity $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_threading $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/test_upscale_logic
@@ -221,6 +221,9 @@ test: complexity $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $
 	@echo "=== scaler_swscale ==="
 	@$(BUILD)/test_scaler_swscale
 	@echo
+	@echo "=== picture_view ==="
+	@$(BUILD)/test_picture_view
+	@echo
 	@echo "=== lifetime / UAF ==="
 	@$(BUILD)/test_lifetime
 	@echo
@@ -240,7 +243,7 @@ $(BUILD)/test_perfmon: tests/test_perfmon.c src/perfmon.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
 # --------- libFuzzer (clang) ---------
-fuzz: $(BUILD)/fuzz_upscale_logic $(BUILD)/fuzz_usm $(BUILD)/fuzz_perfmon $(BUILD)/fuzz_threading $(BUILD)/fuzz_copy_plane $(BUILD)/fuzz_stripe_bounds $(BUILD)/fuzz_decide_tile_grid $(BUILD)/fuzz_frame_shape $(BUILD)/fuzz_scaler_chroma $(BUILD)/fuzz_content_probe $(BUILD)/fuzz_usm_variants
+fuzz: $(BUILD)/fuzz_upscale_logic $(BUILD)/fuzz_usm $(BUILD)/fuzz_perfmon $(BUILD)/fuzz_threading $(BUILD)/fuzz_copy_plane $(BUILD)/fuzz_stripe_bounds $(BUILD)/fuzz_decide_tile_grid $(BUILD)/fuzz_frame_shape $(BUILD)/fuzz_scaler_chroma $(BUILD)/fuzz_content_probe $(BUILD)/fuzz_picture_view $(BUILD)/fuzz_usm_variants
 	@echo "Built libFuzzer targets:"
 	@echo "  $(BUILD)/fuzz_upscale_logic"
 	@echo "  $(BUILD)/fuzz_usm"
@@ -251,6 +254,7 @@ fuzz: $(BUILD)/fuzz_upscale_logic $(BUILD)/fuzz_usm $(BUILD)/fuzz_perfmon $(BUIL
 	@echo "  $(BUILD)/fuzz_frame_shape"
 	@echo "  $(BUILD)/fuzz_scaler_chroma"
 	@echo "  $(BUILD)/fuzz_content_probe"
+	@echo "  $(BUILD)/fuzz_picture_view"
 	@echo "  $(BUILD)/fuzz_usm_variants"
 	@echo ""
 	@echo "Run from random bytes:    $(BUILD)/fuzz_upscale_logic -max_total_time=60"
@@ -291,6 +295,9 @@ $(BUILD)/fuzz_scaler_chroma: tests/fuzz_scaler_chroma.c src/scaler_zimg_chroma.h
 $(BUILD)/fuzz_content_probe: tests/fuzz_content_probe.c src/content_probe.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
+$(BUILD)/fuzz_picture_view: tests/fuzz_picture_view.c src/picture_view.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h | $(BUILD)
+	$(CLANG) $(FUZZ_CFLAGS) -Itests/stubs -o $@ $<
+
 # libFuzzer variant fuzzer: needs the three SIMD .o files compiled with the
 # same FUZZ_CFLAGS (libFuzzer + ASan + UBSan). Each variant TU is at its
 # own -march level via -DUSM_VARIANT=<name>.
@@ -311,7 +318,7 @@ $(BUILD)/fuzz_usm_variants: tests/fuzz_usm_variants.c \
 	    -lpthread
 
 # --------- smoke fuzz (no libFuzzer needed) ---------
-fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_perfmon_smoke $(BUILD)/fuzz_threading_smoke $(BUILD)/fuzz_copy_plane_smoke $(BUILD)/fuzz_stripe_bounds_smoke $(BUILD)/fuzz_decide_tile_grid_smoke $(BUILD)/fuzz_frame_shape_smoke $(BUILD)/fuzz_scaler_chroma_smoke $(BUILD)/fuzz_content_probe_smoke $(BUILD)/fuzz_usm_variants_smoke
+fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_perfmon_smoke $(BUILD)/fuzz_threading_smoke $(BUILD)/fuzz_copy_plane_smoke $(BUILD)/fuzz_stripe_bounds_smoke $(BUILD)/fuzz_decide_tile_grid_smoke $(BUILD)/fuzz_frame_shape_smoke $(BUILD)/fuzz_scaler_chroma_smoke $(BUILD)/fuzz_content_probe_smoke $(BUILD)/fuzz_picture_view_smoke $(BUILD)/fuzz_usm_variants_smoke
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/fuzz_smoke
@@ -342,6 +349,9 @@ fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_perfmon_sm
 	@echo
 	@echo "=== content_probe ==="
 	@$(BUILD)/fuzz_content_probe_smoke
+	@echo
+	@echo "=== picture_view ==="
+	@$(BUILD)/fuzz_picture_view_smoke
 	@echo
 	@echo "=== usm_variants (cross-SIMD byte-equivalence) ==="
 	@$(BUILD)/fuzz_usm_variants_smoke
@@ -375,6 +385,9 @@ $(BUILD)/fuzz_scaler_chroma_smoke: tests/fuzz_scaler_chroma.c src/scaler_zimg_ch
 
 $(BUILD)/fuzz_content_probe_smoke: tests/fuzz_content_probe.c src/content_probe.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
+
+$(BUILD)/fuzz_picture_view_smoke: tests/fuzz_picture_view.c src/picture_view.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h | $(BUILD)
+	$(CLANG) $(SMOKE_CFLAGS) -Itests/stubs -o $@ $< $(SMOKE_LDFLAGS)
 
 # Cross-variant smoke fuzzer: needs the same three SIMD .o files as the
 # variant-equivalence test. Built with clang because the smoke fuzzer
@@ -435,6 +448,7 @@ ZIMG_H_CFLAGS  := -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS)
 ZIMG_H_LIBS    := $(VLC_LIBS) $(ZIMG_LIBS) -lpthread
 ZIMG_H_DEPS    := tests/zimg_test_util.h src/scaler_zimg.c src/scaler.h \
                   src/scaler_status.h \
+                  src/picture_view.h \
                   tests/barrier_fault_inject.h \
                   src/zimg_helpers.h src/scaler_zimg_chroma.h \
                   src/upscale_logic.h src/threading.h
@@ -581,6 +595,7 @@ COV_TESTS := \
     $(COV_BUILD)/test_content_probe \
     $(COV_BUILD)/test_scaler_pick \
     $(COV_BUILD)/test_scaler_swscale \
+    $(COV_BUILD)/test_picture_view \
     $(COV_BUILD)/test_lifetime
 
 COV_FUZZERS := \
@@ -593,7 +608,8 @@ COV_FUZZERS := \
     $(COV_BUILD)/fuzz_decide_tile_grid \
     $(COV_BUILD)/fuzz_frame_shape \
     $(COV_BUILD)/fuzz_scaler_chroma \
-    $(COV_BUILD)/fuzz_content_probe
+    $(COV_BUILD)/fuzz_content_probe \
+    $(COV_BUILD)/fuzz_picture_view
 
 COV_BINS := $(COV_TESTS) $(COV_FUZZERS)
 
@@ -619,7 +635,9 @@ $(COV_BUILD)/test_content_probe: tests/test_content_probe.c src/content_probe.h 
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h src/scaler_status.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/test_scaler_swscale: tests/test_scaler_swscale.c src/scaler_swscale.c src/scaler.h src/scaler_status.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h tests/stubs/libswscale/swscale.h tests/stubs/libavutil/pixfmt.h | $(COV_BUILD)
+$(COV_BUILD)/test_scaler_swscale: tests/test_scaler_swscale.c src/scaler_swscale.c src/scaler.h src/scaler_status.h src/picture_view.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h tests/stubs/libswscale/swscale.h tests/stubs/libavutil/pixfmt.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -Itests/stubs -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/test_picture_view: tests/test_picture_view.c src/picture_view.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -Itests/stubs -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_lifetime: tests/test_lifetime.c src/usm_pool.c src/usm_pool.h src/usm.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< src/usm_pool.c $(COV_LDFLAGS) -lpthread
@@ -644,6 +662,8 @@ $(COV_BUILD)/fuzz_scaler_chroma: tests/fuzz_scaler_chroma.c src/scaler_zimg_chro
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/fuzz_content_probe: tests/fuzz_content_probe.c src/content_probe.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/fuzz_picture_view: tests/fuzz_picture_view.c src/picture_view.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -Itests/stubs -o $@ $< $(COV_LDFLAGS)
 
 .PHONY: coverage coverage-summary
 coverage: $(COV_BINS)
@@ -773,7 +793,10 @@ $(BUILD)/test_content_probe: tests/test_content_probe.c src/content_probe.h | $(
 $(BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h src/scaler_status.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
-$(BUILD)/test_scaler_swscale: tests/test_scaler_swscale.c src/scaler_swscale.c src/scaler.h src/scaler_status.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h tests/stubs/libswscale/swscale.h tests/stubs/libavutil/pixfmt.h | $(BUILD)
+$(BUILD)/test_scaler_swscale: tests/test_scaler_swscale.c src/scaler_swscale.c src/scaler.h src/scaler_status.h src/picture_view.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h tests/stubs/libswscale/swscale.h tests/stubs/libavutil/pixfmt.h | $(BUILD)
+	$(CC) $(TEST_CFLAGS) -Itests/stubs -o $@ $< $(TEST_LDFLAGS)
+
+$(BUILD)/test_picture_view: tests/test_picture_view.c src/picture_view.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -Itests/stubs -o $@ $< $(TEST_LDFLAGS)
 
 $(BUILD)/test_lifetime: tests/test_lifetime.c src/usm_pool.c src/usm_pool.h src/usm.h | $(BUILD)

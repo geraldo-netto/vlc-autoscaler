@@ -12,6 +12,7 @@
 #endif
 
 #include "scaler.h"
+#include "picture_view.h"
 #include "upscale_logic.h"
 
 #include <libswscale/swscale.h>
@@ -91,6 +92,15 @@ static int sws_open( scaler_ctx_t *ctx )
     return 0;
 }
 
+/* libswscale's YUV420P descriptor expects semantic Y/U/V, while VLC stores
+ * YV12 physically as Y/V/U. Other formats keep their physical plane order.
+ * CCN 3. */
+static int sws_plane_index( vlc_fourcc_t chroma, int plane )
+{
+    if( chroma != VLC_CODEC_YV12 || plane == 0 ) return plane;
+    return plane == 1 ? 2 : 1;
+}
+
 static scaler_process_status_t sws_process( scaler_ctx_t *ctx,
                                             const picture_t *src,
                                             picture_t *dst )
@@ -98,20 +108,41 @@ static scaler_process_status_t sws_process( scaler_ctx_t *ctx,
     sws_priv_t *p = ctx->priv;
     if( !p ) return SCALER_PROCESS_FATAL;
 
+    const up_picture_region_t src_region = {
+        .coded_width = ctx->src_coded_w,
+        .coded_height = ctx->src_coded_h,
+        .x_offset = ctx->src_x_offset,
+        .y_offset = ctx->src_y_offset,
+        .width = ctx->src_w,
+        .height = ctx->src_h,
+    };
+    const up_picture_region_t dst_region = {
+        .coded_width = ctx->dst_w,
+        .coded_height = ctx->dst_h,
+        .width = ctx->dst_w,
+        .height = ctx->dst_h,
+    };
+    up_picture_view_t src_view, dst_view;
+    if( !up_picture_view_init( &src_view, src, ctx->chroma, &src_region )
+     || !up_picture_view_init( &dst_view, dst, ctx->chroma, &dst_region ) )
+        return SCALER_PROCESS_TRANSIENT;
+
     const uint8_t *src_data[4]   = { NULL };
     int            src_stride[4] = { 0 };
     uint8_t       *dst_data[4]   = { NULL };
     int            dst_stride[4] = { 0 };
 
-    for( int i = 0; i < src->i_planes && i < 4; i++ )
+    for( int i = 0; i < src_view.plane_count && i < 4; i++ )
     {
-        src_data[i]   = src->p[i].p_pixels;
-        src_stride[i] = src->p[i].i_pitch;
+        const int plane = sws_plane_index( ctx->chroma, i );
+        src_data[i]   = src_view.plane[plane].pixels;
+        src_stride[i] = src_view.plane[plane].pitch;
     }
-    for( int i = 0; i < dst->i_planes && i < 4; i++ )
+    for( int i = 0; i < dst_view.plane_count && i < 4; i++ )
     {
-        dst_data[i]   = dst->p[i].p_pixels;
-        dst_stride[i] = dst->p[i].i_pitch;
+        const int plane = sws_plane_index( ctx->chroma, i );
+        dst_data[i]   = dst_view.plane[plane].pixels;
+        dst_stride[i] = dst_view.plane[plane].pitch;
     }
 
     int rc = sws_scale( p->ctx, src_data, src_stride, 0, ctx->src_h,

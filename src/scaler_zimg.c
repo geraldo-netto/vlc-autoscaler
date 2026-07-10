@@ -24,8 +24,9 @@
  * — worker graphs read and write VLC's pictures directly. Pointing graphs at
  * VLC's pool-managed buffers from worker threads was historically unreliable;
  * the dest zero-copy default proved the pattern works, source zero-copy is the
- * symmetric twin, and a per-frame pre-flight check (zimg_pic_ok) drops a frame
- * rather than read/write a malformed picture out of bounds. Either side can be
+ * symmetric twin, and a shared per-frame picture view rejects malformed
+ * geometry before dispatch. A crop that breaks zimg's 32-byte direct-buffer
+ * alignment automatically uses aligned scratch I/O. Either side can also be
  * set back to copy via its option if a particular VLC build misbehaves. The
  * four src×dst copy/zero-copy combinations are held byte-identical by the test
  * harness (tests/test_scaler_zimg.c).
@@ -70,6 +71,7 @@
 #endif
 
 #include "scaler.h"
+#include "picture_view.h"
 #include "upscale_logic.h"
 #include "threading.h"
 #include "zimg_helpers.h"
@@ -93,6 +95,7 @@
 
 /* SCAL-3: a column tile narrower than this isn't worth its own zimg graph. */
 #define ZIMG_COL_MIN_WIDTH 64
+#define ZIMG_BUFFER_ALIGN 32
 
 _Static_assert(UP_TILE_THREADS_MAX == UP_THREADS_MAX,
                "tile-grid and worker caps must match");
@@ -1144,7 +1147,8 @@ static int zimg_open(scaler_ctx_t *ctx)
  * Workers are blocked on `go` while this runs, so the writes need no
  * synchronization. YV12 U/V are swapped via the plane-index map. CCN 2.
  */
-static void point_workers_planes(zimg_priv_t *p, const picture_t *pic,
+static void point_workers_planes(zimg_priv_t *p,
+                                  const up_picture_view_t *pic,
                                   size_t member_off)
 {
     const int swap = p->yv12_swap_uv;
@@ -1154,12 +1158,12 @@ static void point_workers_planes(zimg_priv_t *p, const picture_t *pic,
     for (int i = 0; i < p->n_threads; i++) {
         plane_view_t *view =
             (plane_view_t *)((char *)&p->workers[i] + member_off);
-        view->data[PLANE_Y] = pic->p[iy].p_pixels;
-        view->data[PLANE_U] = pic->p[iu].p_pixels;
-        view->data[PLANE_V] = pic->p[iv].p_pixels;
-        view->pitch[PLANE_Y] = pic->p[iy].i_pitch;
-        view->pitch[PLANE_U] = pic->p[iu].i_pitch;
-        view->pitch[PLANE_V] = pic->p[iv].i_pitch;
+        view->data[PLANE_Y] = pic->plane[iy].pixels;
+        view->data[PLANE_U] = pic->plane[iu].pixels;
+        view->data[PLANE_V] = pic->plane[iv].pixels;
+        view->pitch[PLANE_Y] = pic->plane[iy].pitch;
+        view->pitch[PLANE_U] = pic->plane[iu].pitch;
+        view->pitch[PLANE_V] = pic->plane[iv].pitch;
     }
 }
 
@@ -1197,28 +1201,6 @@ static scaler_process_status_t zimg_dispatch_and_wait(zimg_priv_t *p)
     return SCALER_PROCESS_OK;
 }
 
-/*
- * Pre-flight: validate that a VLC picture we are about to read from / write to
- * is usable for luma width `w` — 3 planes present, plane pointers non-NULL,
- * and each pitch at least the visible width. Catches a malformed picture
- * (the zerocopy-dst "may not work everywhere" case) BEFORE the workers do an
- * out-of-bounds read/write. CCN 6.
- */
-static bool zimg_pic_ok(const zimg_priv_t *p, const picture_t *pic, int w)
-{
-    if (pic->i_planes < 3) return false;
-    const int swap = p->yv12_swap_uv;
-    const int iy = 0;
-    const int iu = up_zimg_plane_idx(1, swap);
-    const int iv = up_zimg_plane_idx(2, swap);
-    if (!pic->p[iy].p_pixels || !pic->p[iu].p_pixels || !pic->p[iv].p_pixels)
-        return false;
-    const int cw = up_chroma_dim(w, (int)p->sub_w);
-    return pic->p[iy].i_pitch >= w
-        && pic->p[iu].i_pitch >= cw
-        && pic->p[iv].i_pitch >= cw;
-}
-
 /* offsetof selectors for the per-frame plane-pointer targets. */
 #define WORKER_SRC_OFF      offsetof(stripe_worker_t, src)
 #define WORKER_DST_OFF      offsetof(stripe_worker_t, dst)
@@ -1250,6 +1232,87 @@ static int zimg_ensure_lazy_init(zimg_priv_t *p)
     return 0;
 }
 
+/* zimg requires every direct image address and stride to be 32-byte aligned.
+ * Cropping can move an otherwise aligned VLC allocation off that boundary.
+ * CCN 3. */
+static bool zimg_view_aligned(const up_picture_view_t *view)
+{
+    for (int i = 0; i < view->plane_count; i++)
+        if ((uintptr_t)view->plane[i].pixels % ZIMG_BUFFER_ALIGN != 0
+                || view->plane[i].pitch % ZIMG_BUFFER_ALIGN != 0)
+            return false;
+    return true;
+}
+
+/* Lazy init lets the first real picture select the safe I/O mode. If a VLC
+ * crop breaks zimg's direct-buffer alignment contract, use the aligned copy
+ * buffers. Source copy-in cannot use column graphs, so fall back to the same
+ * rows-only grid used by the explicit zerocopy-src=0 option. CCN 5. */
+static void zimg_prepare_first_frame_io(zimg_priv_t *p,
+                                        const scaler_ctx_t *ctx,
+                                        const up_picture_view_t *src,
+                                        const up_picture_view_t *dst)
+{
+    if (p->lazy_init_done || p->lazy_init_failed) return;
+    if (!zimg_view_aligned(src)) p->src_zerocopy = false;
+    if (!zimg_view_aligned(dst)) p->dst_zerocopy = false;
+    if (!p->col_tiled || p->src_zerocopy) return;
+
+    int rows, cols;
+    const int stripe_min = up_zimg_stripe_min_lines(
+        ctx->zimg.min_stripe_lines);
+    up_decide_tile_grid(p->n_threads, p->dst_w, p->dst_h,
+                        stripe_min, 0, &rows, &cols);
+    p->n_rows = rows;
+    p->n_cols = cols;
+    p->n_threads = rows * cols;
+    p->col_tiled = false;
+}
+
+/* A later frame may drift to different storage. Copy paths accept arbitrary
+ * valid VLC alignment; an already-built zero-copy graph does not. CCN 3. */
+static bool zimg_frame_io_safe(const zimg_priv_t *p,
+                               const up_picture_view_t *src,
+                               const up_picture_view_t *dst)
+{
+    return (!p->src_zerocopy || zimg_view_aligned(src))
+        && (!p->dst_zerocopy || zimg_view_aligned(dst));
+}
+
+static bool zimg_frame_views_init(const scaler_ctx_t *ctx,
+                                  const zimg_priv_t *p,
+                                  const picture_t *src, picture_t *dst,
+                                  up_picture_view_t *src_view,
+                                  up_picture_view_t *dst_view)
+{
+    const up_picture_region_t src_region = {
+        .coded_width = ctx->src_coded_w,
+        .coded_height = ctx->src_coded_h,
+        .x_offset = ctx->src_x_offset,
+        .y_offset = ctx->src_y_offset,
+        .width = p->src_w,
+        .height = p->src_h,
+    };
+    const up_picture_region_t dst_region = {
+        .coded_width = p->dst_w,
+        .coded_height = p->dst_h,
+        .width = p->dst_w,
+        .height = p->dst_h,
+    };
+    return up_picture_view_init(src_view, src, ctx->chroma, &src_region)
+        && up_picture_view_init(dst_view, dst, ctx->chroma, &dst_region);
+}
+
+static void zimg_warn_bad_geometry(zimg_priv_t *p)
+{
+    if (p->preflight_warned) return;
+    p->preflight_warned = true;
+    if (p->log_obj_saved)
+        msg_Warn((vlc_object_t *)p->log_obj_saved,
+                 "zimg: source/destination picture geometry unusable "
+                 "(planes, extent, or crop); dropping frame(s)");
+}
+
 static scaler_process_status_t zimg_process(scaler_ctx_t *ctx,
                                             const picture_t *src,
                                             picture_t *dst)
@@ -1257,27 +1320,22 @@ static scaler_process_status_t zimg_process(scaler_ctx_t *ctx,
     zimg_priv_t *p = ctx->priv;
     if (!p) return SCALER_PROCESS_FATAL;
     if (p->pool_broken) return SCALER_PROCESS_FATAL;
-    if (zimg_ensure_lazy_init(p) != 0) return SCALER_PROCESS_FATAL;
 
-    /* Pre-flight guard: a malformed src/dst picture (null plane or pitch <
-     * width) would make the workers read/write out of bounds — drop the frame
-     * (warn once) instead. */
-    if (!zimg_pic_ok(p, src, p->src_w) || !zimg_pic_ok(p, dst, p->dst_w)) {
-        if (!p->preflight_warned) {
-            p->preflight_warned = true;
-            if (p->log_obj_saved)
-                msg_Warn((vlc_object_t *)p->log_obj_saved,
-                         "zimg: source/destination picture geometry unusable "
-                         "(null plane or pitch < width); dropping frame(s)");
-        }
+    up_picture_view_t src_view, dst_view;
+    if (!zimg_frame_views_init(ctx, p, src, dst, &src_view, &dst_view)) {
+        zimg_warn_bad_geometry(p);
         return SCALER_PROCESS_TRANSIENT;
     }
+    zimg_prepare_first_frame_io(p, ctx, &src_view, &dst_view);
+    if (!zimg_frame_io_safe(p, &src_view, &dst_view))
+        return SCALER_PROCESS_TRANSIENT;
+    if (zimg_ensure_lazy_init(p) != 0) return SCALER_PROCESS_FATAL;
 
     /* Per-frame plane pointers. On each side the graph touches the VLC
      * picture directly (zero-copy) or the workers copy via scratch. */
-    point_workers_planes(p, src,
+    point_workers_planes(p, &src_view,
         p->src_zerocopy ? WORKER_SRC_OFF : WORKER_VLC_SRC_OFF);
-    point_workers_planes(p, dst,
+    point_workers_planes(p, &dst_view,
         p->dst_zerocopy ? WORKER_DST_OFF : WORKER_VLC_DST_OFF);
 
     return zimg_dispatch_and_wait(p);

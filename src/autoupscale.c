@@ -36,6 +36,7 @@
 #include "threading.h"
 #include "chroma_classify.h"
 #include "content_probe.h"
+#include "picture_view.h"
 
 /* ARCH-2: chroma_classify.h spells its chroma fourccs as UP_FOURCC() literals
  * so the tests can include it without VLC headers. Guard against drift from
@@ -395,12 +396,14 @@ static void DetectHardware( int *cores, unsigned long *mem_mb )
 static void ResolveInputDims( const filter_t *p_filter,
                               int *src_w, int *src_h )
 {
-    *src_w = p_filter->fmt_in.video.i_visible_width
+    const unsigned width = p_filter->fmt_in.video.i_visible_width
                 ? p_filter->fmt_in.video.i_visible_width
                 : p_filter->fmt_in.video.i_width;
-    *src_h = p_filter->fmt_in.video.i_visible_height
+    const unsigned height = p_filter->fmt_in.video.i_visible_height
                 ? p_filter->fmt_in.video.i_visible_height
                 : p_filter->fmt_in.video.i_height;
+    *src_w = width <= INT_MAX ? (int)width : -1;
+    *src_h = height <= INT_MAX ? (int)height : -1;
 }
 
 /* REL-4: even-align src dims on subsampled axes. zimg rejects image
@@ -466,6 +469,10 @@ static void ConfigureScaler( scaler_ctx_t *sc,
     sc->backend      = be;
     sc->src_w        = src_w;
     sc->src_h        = src_h;
+    sc->src_coded_w  = p_filter->fmt_in.video.i_width;
+    sc->src_coded_h  = p_filter->fmt_in.video.i_height;
+    sc->src_x_offset = p_filter->fmt_in.video.i_x_offset;
+    sc->src_y_offset = p_filter->fmt_in.video.i_y_offset;
     sc->dst_w        = target.width;
     sc->dst_h        = target.height;
     sc->algo         = algo;
@@ -723,7 +730,8 @@ static void EmitPerfAdvisory( filter_t *p_filter, filter_sys_t *p_sys )
  * Observe-only — does not modify p_in or any output. Called from
  * Filter() while p_sys->probe_active is true and p_in has at least
  * one plane (planar chromas only; the probe_enabled gate in Open()
- * already filtered out opaque/packed sources).
+ * already filtered out opaque/packed sources). The shared picture view
+ * resolves VLC's visible-area crop and rejects malformed plane geometry.
  *
  * Extracted from Filter() to keep its cyclomatic complexity within
  * the project's CCN-10 ceiling.
@@ -733,22 +741,26 @@ static void LogProbeVerdict( filter_t *p_filter, filter_sys_t *p_sys );
 static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
                       const picture_t *p_in )
 {
-    const plane_t *y = &p_in->p[0];
-    /* Width must be the luma plane's visible width in PIXELS, not its
-     * byte pitch. They coincide for the 8-bit luma chromas the probe is
-     * gated to (1 byte == 1 px), but i_visible_pitch is bytes and would
-     * over-count on any >8-bit Y plane; take the pixel width from the
-     * frame format and clamp it to the plane's stride for safety. */
-    int w = p_in->format.i_visible_width
-                ? (int)p_in->format.i_visible_width
-                : (int)p_in->format.i_width;
-    int h = y->i_visible_lines ? y->i_visible_lines : y->i_lines;
-    if( w > y->i_pitch ) w = y->i_pitch;
+    const scaler_ctx_t *sc = &p_sys->scaler;
+    up_picture_view_t view;
+    const up_picture_region_t region = {
+        .coded_width = sc->src_coded_w,
+        .coded_height = sc->src_coded_h,
+        .x_offset = sc->src_x_offset,
+        .y_offset = sc->src_y_offset,
+        .width = sc->src_w,
+        .height = sc->src_h,
+    };
+    if( !up_picture_view_init( &view, p_in, sc->chroma, &region ) )
+        return;
+
+    const uint8_t *pixels = view.plane[0].pixels;
+    const int pitch = view.plane[0].pitch;
     uint64_t lap_n = 0, edge_n = 0;
-    uint64_t lap  = up_laplacian_variance(  y->p_pixels, y->i_pitch,
-                                            w, h, &lap_n );
-    uint64_t edge = up_block_edge_strength( y->p_pixels, y->i_pitch,
-                                            w, h, &edge_n );
+    uint64_t lap = up_laplacian_variance( pixels, pitch,
+                                          sc->src_w, sc->src_h, &lap_n );
+    uint64_t edge = up_block_edge_strength( pixels, pitch,
+                                            sc->src_w, sc->src_h, &edge_n );
     up_probe_observe( &p_sys->probe_accum, lap, lap_n, edge, edge_n );
 
     if( p_sys->probe_accum.frames < UP_PROBE_WINDOW_FRAMES )
@@ -810,11 +822,12 @@ static void LogProbeVerdict( filter_t *p_filter, filter_sys_t *p_sys )
     }
 }
 
-/* Apply the post-pass USM in-place on the luma plane, when enabled.
- * No-op when amount==0, no pool allocated, or no luma plane. A pool
- * failure (sticky lazy-init, OBS parity with the zimg pool's OBS-2)
+/* Apply the post-pass USM in-place on the cropped luma plane, when enabled.
+ * No-op when amount==0, no pool allocated, no luma plane, or invalid output
+ * geometry. A pool failure (sticky lazy-init, OBS parity with the zimg
+ * pool's OBS-2)
  * warns once and disables USM for the rest of playback so every later
- * frame skips the dead call. CCN 4. */
+ * frame skips the dead call. CCN 7. */
 static void ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
                                picture_t *p_out )
 {
@@ -822,11 +835,25 @@ static void ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
         || p_out->i_planes < 1 || p_sys->usm_skip_sharp )
         return;
 
-    plane_t *y = &p_out->p[0];
+    const scaler_ctx_t *sc = &p_sys->scaler;
+    up_picture_view_t view;
+    const up_picture_region_t region = {
+        .coded_width = sc->dst_w,
+        .coded_height = sc->dst_h,
+        .x_offset = 0,
+        .y_offset = 0,
+        .width = sc->dst_w,
+        .height = sc->dst_h,
+    };
+    if( !up_picture_view_init( &view, p_out, sc->chroma, &region ) )
+        return;
+
+    uint8_t *pixels = view.plane[0].pixels;
+    const int pitch = view.plane[0].pitch;
     if( up_usm_pool_apply(
             p_sys->usm_pool,
-            y->p_pixels, y->i_pitch,
-            y->p_pixels, y->i_pitch,        /* in-place */
+            pixels, pitch,
+            pixels, pitch,        /* in-place */
             p_sys->usm_amount_q8 ) != 0 )
     {
         msg_Warn( p_filter,

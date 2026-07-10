@@ -158,6 +158,85 @@ static int run_zimg_asymmetric_pitch(const struct zcfg *c, int src_zc,
     return rc;
 }
 
+static void set_normalized_crop_format(zt_pic_t *pic, uint32_t chroma,
+                                       int physical_w, int physical_h,
+                                       int visible_w, int visible_h)
+{
+    pic->pic.format.i_chroma = chroma;
+    pic->pic.format.i_width = (unsigned)physical_w;
+    pic->pic.format.i_height = (unsigned)physical_h;
+    pic->pic.format.i_x_offset = 0;
+    pic->pic.format.i_y_offset = 0;
+    pic->pic.format.i_visible_width = (unsigned)visible_w;
+    pic->pic.format.i_visible_height = (unsigned)visible_h;
+}
+
+static void copy_into_crop(zt_pic_t *dst, const zt_pic_t *src,
+                           int x_offset, int y_offset,
+                           unsigned sub_w, unsigned sub_h)
+{
+    for (int k = 0; k < src->pic.i_planes; k++) {
+        const unsigned x_shift = k == 0 ? 0 : sub_w;
+        const unsigned y_shift = k == 0 ? 0 : sub_h;
+        const int x = x_offset >> x_shift;
+        const int y = y_offset >> y_shift;
+        plane_t *dp = &dst->pic.p[k];
+        const plane_t *sp = &src->pic.p[k];
+        uint8_t *pixels = dp->p_pixels
+                        + (size_t)y * (size_t)dp->i_pitch + (size_t)x;
+        up_copy_plane(pixels, dp->i_pitch, sp->p_pixels, sp->i_pitch,
+                      sp->i_visible_pitch, sp->i_visible_lines);
+    }
+}
+
+/* Build physical pictures with poison margins around a visible crop. CCN 6. */
+static int run_zimg_cropped(const struct zcfg *c, int src_zc, int dst_zc,
+                            uint8_t poison, uint32_t seed, zt_pic_t *out)
+{
+    const int sx = 9, sy = 7;
+    zt_pic_t logical_src = {0}, src = {0};
+    memset(out, 0, sizeof *out);
+    if (zt_pic_alloc(&logical_src, c->chroma, c->sw, c->sh) != 0
+            || zt_pic_alloc(&src, c->chroma, c->sw + 2 * sx,
+                            c->sh + 2 * sy) != 0
+            || zt_pic_alloc(out, c->chroma, c->dw, c->dh) != 0) {
+        zt_pic_free(&logical_src);
+        zt_pic_free(&src);
+        return -2;
+    }
+
+    unsigned sub_w, sub_h;
+    int swap;
+    if (!up_chroma_to_zimg(c->chroma, &sub_w, &sub_h, &swap)) {
+        zt_pic_free(&logical_src);
+        zt_pic_free(&src);
+        return -2;
+    }
+    zt_pic_fill(&logical_src, seed);
+    zt_pic_memset(&src, poison);
+    copy_into_crop(&src, &logical_src, sx, sy, sub_w, sub_h);
+    set_normalized_crop_format(&src, c->chroma,
+                               c->sw + 2 * sx, c->sh + 2 * sy,
+                               c->sw, c->sh);
+
+    scaler_ctx_t ctx;
+    zt_ctx_init(&ctx, c->chroma, c->sw, c->sh, c->dw, c->dh,
+                c->threads, dst_zc);
+    ctx.zimg.src_zerocopy = src_zc;
+    ctx.src_coded_w = src.pic.format.i_width;
+    ctx.src_coded_h = src.pic.format.i_height;
+    ctx.src_x_offset = (unsigned)sx;
+    ctx.src_y_offset = (unsigned)sy;
+    int rc = -2;
+    if (ctx.backend->open(&ctx) == 0) {
+        rc = ctx.backend->process(&ctx, &src.pic, &out->pic);
+        ctx.backend->close(&ctx);
+    }
+    zt_pic_free(&logical_src);
+    zt_pic_free(&src);
+    return rc;
+}
+
 /* Count differing bytes in the visible region of two same-geometry pics. */
 static size_t cmp_visible(const zt_pic_t *a, const zt_pic_t *b)
 {
@@ -319,6 +398,46 @@ static void test_asymmetric_chroma_pitches(void)
     END();
 }
 
+static void test_cropped_origin_and_poison_margins(void)
+{
+    BEGIN("cropped I420/YV12 uses negotiated origin despite zero picture offsets");
+    const struct zcfg *configs[] = { &CFGS[1], &CFGS[4] };
+    const int modes[][2] = { { 0, 0 }, { 1, 1 } };
+    for (size_t c = 0; c < sizeof configs / sizeof configs[0]; c++) {
+        for (size_t m = 0; m < sizeof modes / sizeof modes[0]; m++) {
+            zt_pic_t expected = {0}, actual = {0};
+            int expected_rc = run_zimg(configs[c], modes[m][0], modes[m][1],
+                                       0x00, 0xC20F11u, &expected);
+            int actual_rc = run_zimg_cropped(
+                configs[c], modes[m][0], modes[m][1], 0xA5,
+                0xC20F11u, &actual);
+            CHECK(expected_rc == SCALER_PROCESS_OK
+                  && actual_rc == SCALER_PROCESS_OK);
+            if (expected_rc == SCALER_PROCESS_OK
+                    && actual_rc == SCALER_PROCESS_OK)
+                CHECK(cmp_visible(&expected, &actual) == 0);
+            zt_pic_free(&expected);
+            zt_pic_free(&actual);
+        }
+    }
+    END();
+}
+
+static void test_cropped_tiled_alignment_fallback(void)
+{
+    BEGIN("unaligned crop safely changes a tiled graph to aligned copy I/O");
+    const struct zcfg *c = &CFGS[13];
+    zt_pic_t expected = {0}, actual = {0};
+    int expected_rc = run_zimg(c, 0, 0, 0x00, 0xC20F12u, &expected);
+    int actual_rc = run_zimg_cropped(c, 1, 1, 0xA5, 0xC20F12u, &actual);
+    CHECK(expected_rc == SCALER_PROCESS_OK && actual_rc == SCALER_PROCESS_OK);
+    if (expected_rc == SCALER_PROCESS_OK && actual_rc == SCALER_PROCESS_OK)
+        CHECK(cmp_visible(&expected, &actual) == 0);
+    zt_pic_free(&expected);
+    zt_pic_free(&actual);
+    END();
+}
+
 /* supports(): planar YUV yes, packed/semiplanar no. Covers zimg_supports
  * (the backend never calls it directly in the other tests). */
 static void test_supports(void)
@@ -385,6 +504,18 @@ static void test_transient_preflight_recovers(void)
             CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
                   == SCALER_PROCESS_TRANSIENT);
             src.pic.p[1].p_pixels = src_u;
+
+            int src_lines = src.pic.p[0].i_lines;
+            src.pic.p[0].i_lines = ctx.src_h - 1;
+            CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+                  == SCALER_PROCESS_TRANSIENT);
+            src.pic.p[0].i_lines = src_lines;
+
+            unsigned src_width = src.pic.format.i_width;
+            src.pic.format.i_width = (unsigned)ctx.src_w - 1;
+            CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+                  == SCALER_PROCESS_TRANSIENT);
+            src.pic.format.i_width = src_width;
 
             int dst_v_pitch = dst.pic.p[2].i_pitch;
             dst.pic.p[2].i_pitch = 0;
@@ -658,6 +789,8 @@ int main(void)
     test_zerocopy_matches_copyout();
     test_src_zerocopy_matches_copy();
     test_asymmetric_chroma_pitches();
+    test_cropped_origin_and_poison_margins();
+    test_cropped_tiled_alignment_fallback();
     test_supports();
     test_all_algos();
     test_transient_preflight_recovers();

@@ -27,6 +27,7 @@ TRACKED=(
     scaler_pick_logic.h
     scaler_status.h
     scaler_swscale.c
+    picture_view.h
     usm_pool.c
 )
 

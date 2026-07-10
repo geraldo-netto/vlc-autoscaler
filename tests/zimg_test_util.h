@@ -54,6 +54,11 @@ static inline int zt_pic_alloc(zt_pic_t *tp, uint32_t chroma, int w, int h)
 
     memset(tp, 0, sizeof *tp);
     tp->pic.i_planes = 3;
+    tp->pic.format.i_chroma = chroma;
+    tp->pic.format.i_width = (unsigned)w;
+    tp->pic.format.i_height = (unsigned)h;
+    tp->pic.format.i_visible_width = (unsigned)w;
+    tp->pic.format.i_visible_height = (unsigned)h;
 
     const int cw = up_chroma_dim(w, (int)sw);
     const int ch = up_chroma_dim(h, (int)sh);
@@ -114,6 +119,8 @@ static inline void zt_ctx_init(scaler_ctx_t *ctx, uint32_t chroma,
     ctx->backend            = &scaler_backend_zimg_impl;
     ctx->src_w              = sw;
     ctx->src_h              = sh;
+    ctx->src_coded_w        = (unsigned)sw;
+    ctx->src_coded_h        = (unsigned)sh;
     ctx->dst_w              = dw;
     ctx->dst_h              = dh;
     ctx->algo               = UP_ALGO_LANCZOS;

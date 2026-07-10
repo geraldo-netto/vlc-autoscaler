@@ -4,13 +4,13 @@ Review findings from a full-project audit (2026-05-30) against the AGENTS.md
 review categories. One table per category. Format: `id | status | effort | description | notes`.
 
 2026-06-06 rescan: added two new review categories — **system design** and
-**data governance** — and scanned the whole project for them (SYS-1..3, DG-1..2).
+**data governance** — and scanned the whole project for them.
 
 2026-07-10 post-fix rescan: full repository, every category, four parallel
 audit tracks covering production code, tests/fuzzers/benches, build/CI/scripts,
-and documentation. New or reopened: ARCH-10, REL-6..9, ERR-3, PORT-6..8,
+and documentation. New or reopened: ARCH-10, REL-8..9, ERR-3, PORT-6..8,
 BUILD-2, BUILD-11..12, BUILD-14..15,
-OBS-6..8, WIRE-5, DEAD-9; DG-1, PORT-3, and BUILD-10 were
+OBS-6..8, WIRE-5, DEAD-9; PORT-3 and BUILD-10 were
 expanded with related evidence. ASan/UBSan unit tests and all deterministic
 smoke fuzzers pass; lizard is clean (538 functions, none above CCN 10).
 `make analyze` is currently red (BUILD-14).
@@ -24,15 +24,13 @@ under "Audit picks deliberately rejected".
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| (none new) | | | No new security-specific finding survived validation; buffer-geometry defense gaps remain tracked under DG-1/DG-3 and arithmetic/aliasing issues under UB. | |
+| (none new) | | | No new security-specific finding survived validation; arithmetic/aliasing issues remain tracked under UB. | |
 
 ## data governance
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| DG-1 | open | S | zimg's picture pre-flight checks minimum pitch but not `i_lines`/`i_visible_lines`; the USM apply path likewise validates stride but writes the configured height (`usm_pool.c:451-459`). | Defense-in-depth under VLC's negotiated-format contract: a short plane can drive an OOB read/write. Require sufficient rows for luma/chroma on both paths. ARCH-4 now carries and tests independent U/V pitches, resolving the distinct-chroma-stride half of the original finding. |
 | DG-2 | no-action | S | Plugin-owned scratch holding decoded frame pixels (`p->src`/`p->dst`/per-tile dst via `aligned_alloc`, `scaler_zimg.c:611-613`; USM scratch `usm_pool.c:521`) is `free()`d without zeroing on close (`zimg_close` ~1209), so the last frame's content lingers in freed heap until reuse. | DECIDED no-action (2026-06-06): matches VLC's own picture pools (no scrub); decoded video is not treated as a secret anywhere in VLC, buffers never leave the process, and no log/error path ever emits buffer contents or addresses. Scrubbing every freed block on close adds cost for no real threat. Recorded so a future pass doesn't re-raise. |
-| DG-3 | open | S | `sws_process` (`scaler_swscale.c:94-123`) has NO picture-geometry pre-flight — the swscale twin of zimg's `zimg_pic_ok` guard. It builds `src_data`/`dst_data` from however many planes the pictures claim (capped at 4 but not floored at the chroma's required count), never checks `p_pixels != NULL` or `i_pitch >=` visible width, and passes Open-time `ctx->src_h` as the row count regardless of the incoming picture. A malformed/drifted picture (`i_planes < 3` for YUV420P → `src_data[1]`/`[2]` stay NULL; pitch < width; fewer rows than `src_h`) drives a null-deref / OOB read-write INSIDE libswscale — the exact failure class DG-1 records for zimg, except swscale checks nothing at all and is the fallback used precisely when zimg is absent (NV12/NV21/RGB always route here). | Defense-in-depth gap under the same trust contract as DG-1, not a live exploit. Asymmetry: zimg drops a malformed frame with a one-shot warn; swscale marches into the library. Direction: add a small pre-flight (planes >= required-for-chroma, non-NULL `p_pixels`, `i_pitch >=` visible width, rows >= `src_h`/`dst_h`) on both pictures in `sws_process`, mirroring `zimg_pic_ok`. Related: the USM apply path shares DG-1's height-trust (validates stride but writes `p->height` rows unconditionally, `usm_pool.c:451-459`) — fold into the DG-1 fix rather than a separate item. 2026-07-10 audit. |
 
 ## undefined behavior
 
@@ -107,7 +105,6 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| REL-6 | open | M | Non-zero VLC visible-area crop offsets are ignored. `ResolveInputDims` uses visible width/height, but zimg, swscale, and the content probe all start at raw `p_pixels` (`autoupscale.c:395-404,733-751`, `scaler_zimg.c:1092-1107`, `scaler_swscale.c:94-117`), so they scale/probe the top-left physical rectangle rather than the declared visible rectangle. | Centralize an offset-aware picture-plane view that accounts for chroma subsampling, packed/interleaved formats, and pixel pitch; validate offset plus extent. Add cropped I420/NV12/RGB tests. Distinct from DG-1/DG-3, which cover allocation geometry rather than logical crop origin. |
 | REL-8 | open | S | AUTO mode does not try swscale when the preferred zimg backend fails during `open`; `Open()` logs and aborts immediately (`autoupscale.c:617-634`). This includes the zimg runtime ABI-major rejection, even though swscale is the documented universal fallback. | In AUTO only, select/open swscale after zimg open failure; forced-zimg must still fail. The previously rejected Open candidate covered cleanup ownership, not fallback behavior. |
 | REL-9 | open | S | The deterministic zimg seam fuzzer exceeds its documented smooth-content bound during an extended run: `480x16 -> 1166x42`, 6 workers, I420 reaches max delta 18 versus `SEAM_MAX_DELTA=16`. | Reproduces before the SCAL-6 selector change because both selectors choose the same 2x3 grid. The standard 400-iteration gate passes, but the comment's claimed 4000+ empirical envelope is stale. Preserve the failing seed, then decide whether the quality bound, minimum cell geometry, or independent-graph tiling needs adjustment. |
 | — | | | REL-3 (runtime zimg API major-version probe) remains implemented; REL-8 tracks the missing AUTO fallback around that probe. | |
@@ -235,7 +232,7 @@ theoretical UB recorded above (UB-OVF1); the rest were false positives:
 
 ### UB/memory/security/data-governance rescan 2026-07-10 — rejected
 
-One new finding recorded (DG-3); these candidates were traced and rejected:
+These candidates were traced and rejected:
 
 | candidate | why rejected |
 |----|--------------|
