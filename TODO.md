@@ -44,7 +44,6 @@ cannot double-book a core, no O(n²) growth in the dispatch path.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| CON-2 | open | S | `src/usm_pool.c:316-317` and `src/scaler_zimg.c:529-530` — `sem_post(all_done)` return unchecked in the last-finisher path; a failed post would hang the main thread in `up_sem_wait_nointr` forever. Wait-side failure is handled (pool poison + drain + join) but the post side is not symmetric. | `sem_post` on a valid unnamed semaphore can only fail with EOVERFLOW (needs SEM_VALUE_MAX posts) — protocol-symmetry nit, low severity. |
 
 Verified sound (checked explicitly): per-frame state publication ordered by go-lock;
 acq_rel `fetch_sub` + release-sequence + sem completion barrier publishes worker writes

@@ -419,6 +419,27 @@ static void test_pool_gate_exit_completes_unseen(void)
     END();
 }
 
+/* CON-2 plumbing: a recorded post failure breaks exactly one dispatch.
+ * (sem_post's only real failure is EOVERFLOW, where the count is already
+ * positive — the wake still happens, emulated here by posting first.) */
+static void test_pool_gate_post_failure_reported(void)
+{
+    BEGIN("pool gate: recorded post failure breaks the dispatch (CON-2)");
+    up_pool_gate_t gate;
+    CHECK_EQ(up_pool_gate_init(&gate), 0);
+
+    atomic_store(&gate.post_failed, true);
+    sem_post(&gate.all_done);
+    CHECK_EQ(up_pool_gate_wait_all(&gate), -1);
+
+    /* One-shot: a clean dispatch afterwards succeeds again. */
+    sem_post(&gate.all_done);
+    CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
+
+    up_pool_gate_destroy(&gate);
+    END();
+}
+
 /*
  * Composition: detect + decide should always produce something the
  * worker pools can handle. This isn't testing the formula again — it's
@@ -472,6 +493,7 @@ int main(void)
 #endif
     test_pool_gate_dispatch_cycles();
     test_pool_gate_exit_completes_unseen();
+    test_pool_gate_post_failure_reported();
     test_detect_then_decide();
     test_explicit_at_max_boundary();
 

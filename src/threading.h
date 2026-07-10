@@ -268,6 +268,7 @@ typedef struct {
     uint64_t        generation;   /* bumped per dispatch, guarded by lock */
     atomic_int      pending;      /* live workers this dispatch */
     sem_t           all_done;     /* posted once when pending hits 0 */
+    atomic_bool     post_failed;  /* CON-2: last finisher's post failed */
     bool            cv_inited;    /* destroy guards for partial init */
     bool            sem_inited;
 } up_pool_gate_t;
@@ -276,6 +277,7 @@ static inline int up_pool_gate_init(up_pool_gate_t *g)
 {
     g->generation = 0;
     atomic_init(&g->pending, 0);
+    atomic_init(&g->post_failed, false);
     g->cv_inited  = false;
     g->sem_inited = false;
     if (pthread_mutex_init(&g->lock, NULL) != 0) return -1;
@@ -347,18 +349,28 @@ static inline bool up_pool_gate_wait_for_go(up_pool_gate_t *g,
     return run;
 }
 
-/* Worker side: signal completion. The last finisher posts the barrier. */
+/* Worker side: signal completion. The last finisher posts the barrier.
+ * CON-2: sem_post on a valid unnamed semaphore can only fail with
+ * EOVERFLOW — the count is already at SEM_VALUE_MAX, so the main
+ * thread's wait cannot block — but it does mean the barrier accounting
+ * is no longer trustworthy. Record it so wait_all reports the dispatch
+ * as broken instead of silently succeeding. */
 static inline void up_pool_gate_worker_done(up_pool_gate_t *g)
 {
-    if (atomic_fetch_sub_explicit(&g->pending, 1, memory_order_acq_rel) == 1)
-        sem_post(&g->all_done);
+    if (atomic_fetch_sub_explicit(&g->pending, 1, memory_order_acq_rel) == 1
+        && sem_post(&g->all_done) != 0)
+        atomic_store_explicit(&g->post_failed, true, memory_order_release);
 }
 
 /* Main-thread side: wait for every worker of this dispatch. Returns 0 on
  * success; non-zero means the barrier is broken (poison + stop). */
 static inline int up_pool_gate_wait_all(up_pool_gate_t *g)
 {
-    return up_sem_wait_nointr(&g->all_done);
+    if (up_sem_wait_nointr(&g->all_done) != 0) return -1;
+    if (atomic_exchange_explicit(&g->post_failed, false,
+                                 memory_order_acquire))
+        return -1;
+    return 0;
 }
 
 #endif /* AUTOUPSCALE_THREADING_H */

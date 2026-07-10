@@ -92,7 +92,7 @@ endif
 
 TEST_CFLAGS  := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefined $(EXTRA_CFLAGS)
 TEST_LDFLAGS := -fsanitize=address,undefined
-BARRIER_WRAP_LDFLAGS := -Wl,--wrap=sem_wait -Wl,--wrap=pthread_cond_broadcast
+BARRIER_WRAP_LDFLAGS := -Wl,--wrap=sem_wait -Wl,--wrap=sem_post -Wl,--wrap=pthread_cond_broadcast
 USM_POOL_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc
 
 FUZZ_SAN     := -fsanitize=fuzzer,address,undefined

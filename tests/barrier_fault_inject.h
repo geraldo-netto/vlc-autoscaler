@@ -8,6 +8,7 @@
 #include <stdatomic.h>
 
 static atomic_int g_fail_next_sem_wait;
+static atomic_int g_fail_next_sem_post;
 static atomic_int g_suppress_next_broadcast;
 
 int __real_sem_wait(sem_t *sem);
@@ -19,6 +20,26 @@ int __wrap_sem_wait(sem_t *sem)
         return -1;
     }
     return __real_sem_wait(sem);
+}
+
+/* CON-2: emulate sem_post's only real failure mode, EOVERFLOW — the
+ * count is already positive, so the waiter still wakes. Post for real,
+ * then report failure. */
+int __real_sem_post(sem_t *sem);
+int __wrap_sem_post(sem_t *sem)
+{
+    if (atomic_exchange_explicit(&g_fail_next_sem_post, 0,
+                                 memory_order_relaxed)) {
+        (void)__real_sem_post(sem);
+        errno = EOVERFLOW;
+        return -1;
+    }
+    return __real_sem_post(sem);
+}
+
+static inline void barrier_fault_inject_next_sem_post(void)
+{
+    atomic_store_explicit(&g_fail_next_sem_post, 1, memory_order_relaxed);
 }
 
 int __real_pthread_cond_broadcast(pthread_cond_t *cond);

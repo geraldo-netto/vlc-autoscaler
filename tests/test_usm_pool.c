@@ -274,6 +274,29 @@ static void test_inplace_matches_oracle(void)
     END();
 }
 
+/* CON-2 end-to-end: a sem_post failure on the done barrier (emulated
+ * EOVERFLOW — the wake still happens) must fail that dispatch and
+ * poison the pool, never hang or silently succeed. */
+static void test_barrier_post_failure_poisons_pool(void)
+{
+    BEGIN("done-barrier sem_post failure poisons the pool (CON-2)");
+    enum { W = 64, H = 64 };
+    static uint8_t buf[W * H];
+    memset(buf, 0x40, sizeof buf);
+    int amount = up_usm_amount_pct_to_q8(30);
+    usm_pool_t *p = up_usm_pool_create(2, W, H, 0);
+    CHECK(p != NULL);
+    if (p) {
+        CHECK(up_usm_pool_apply(p, buf, W, buf, W, amount) == 0);
+        barrier_fault_inject_next_sem_post();
+        CHECK(up_usm_pool_apply(p, buf, W, buf, W, amount) == -1);
+        /* Sticky: the pool stays broken. */
+        CHECK(up_usm_pool_apply(p, buf, W, buf, W, amount) == -1);
+        up_usm_pool_destroy(p);
+    }
+    END();
+}
+
 /* MEM-2 regression: create() must clamp n_threads at UP_THREADS_MAX even
  * when the stripe-height clamp alone would allow thousands of workers —
  * otherwise a direct caller can drive the worker-array and scratch size
@@ -645,6 +668,7 @@ int main(void)
     test_identity_pool_strided_slow_path();
     test_typical_30pct();
     test_inplace_matches_oracle();
+    test_barrier_post_failure_poisons_pool();
     test_create_clamps_huge_thread_count();
     test_inplace_stride_mismatch_rejected();
     test_aggressive_100pct();
