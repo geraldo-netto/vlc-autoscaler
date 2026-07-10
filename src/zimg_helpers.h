@@ -14,6 +14,7 @@
 #include "plane_utils.h"
 
 #include <limits.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -120,6 +121,56 @@ static inline int up_zimg_plane_idx(int idx, int swap)
     if (idx == 1) return 2;
     if (idx == 2) return 1;
     return idx;
+}
+
+/*
+ * zimg I/O plan resolver (PAT-1) — the single owner of the grid/zero-copy
+ * invariant chain that was previously enforced at three sites in
+ * scaler_zimg.c (open, rows-only transition, first-frame re-check):
+ *
+ *   - column tiling requires source-direct reads: without src zero-copy
+ *     the grid resolves rows-only (col_min 0 caps cols at 1);
+ *   - a retained tiled grid writes per-tile scratch, so dst zero-copy
+ *     is forced off (col_tiled => copy-out).
+ *
+ * Pure and deterministic: called at open (storage alignment unknown, so
+ * the caller passes the raw options) and re-run once on the first frame
+ * with alignment folded into the requested flags. Resolving a plan's own
+ * flags again returns the identical plan (fixed point), which is what
+ * makes the two call sites consistent by construction.
+ */
+typedef struct {
+    int  worker_budget;   /* threads available, >= 1 */
+    int  dst_w, dst_h;    /* destination geometry */
+    int  stripe_min;      /* min dst rows per stripe */
+    int  col_min;         /* min dst cols per tile */
+    bool src_zerocopy;    /* requested AND storage-permitted */
+    bool dst_zerocopy;
+} up_zimg_io_req_t;
+
+typedef struct {
+    int  n_rows;
+    int  n_cols;
+    int  n_threads;       /* == n_rows * n_cols */
+    bool col_tiled;       /* == (n_cols > 1) */
+    bool src_zerocopy;
+    bool dst_zerocopy;
+} up_zimg_io_plan_t;
+
+static inline void up_zimg_resolve_io_plan(const up_zimg_io_req_t *req,
+                                           up_zimg_io_plan_t *out)
+{
+    int rows, cols;
+    up_decide_tile_grid(req->worker_budget, req->dst_w, req->dst_h,
+                        req->stripe_min,
+                        req->src_zerocopy ? req->col_min : 0,
+                        &rows, &cols);
+    out->n_rows       = rows;
+    out->n_cols       = cols;
+    out->n_threads    = rows * cols;
+    out->col_tiled    = cols > 1;
+    out->src_zerocopy = req->src_zerocopy;
+    out->dst_zerocopy = req->dst_zerocopy && cols <= 1;
 }
 
 #endif /* AUTOUPSCALE_ZIMG_HELPERS_H */

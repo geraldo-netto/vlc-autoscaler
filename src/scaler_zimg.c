@@ -245,6 +245,8 @@ typedef struct
      * scratch. Otherwise n_cols == 1 and this is the row-stripe path. */
     int               n_rows, n_cols;
     bool              col_tiled;
+    int               worker_budget;  /* up_threads_decide result at open;
+                                       * first-frame plan re-resolve input */
 
     /* SCAL-4/5: pin workers only to exact IDs in the allowed CPU set. */
     bool              pin_cpus;
@@ -991,23 +993,16 @@ static int zimg_lazy_init(zimg_priv_t *p)
  * per-cell graphs - that all happens lazily on the first valid Filter()
  * call. See zimg_lazy_init() for rationale.
  */
-/* Column tiles require source-direct reads. When source copy-in is selected,
- * transition the grid and both I/O modes together so their invariant has one
- * owner. Returns true when a tiled grid changed to rows-only. */
-static bool zimg_use_rows_only(zimg_priv_t *p, int worker_budget,
-                               int stripe_min_lines, bool dst_zerocopy)
+/* PAT-1: grid and zero-copy modes are resolved atomically by the pure
+ * up_zimg_resolve_io_plan (zimg_helpers.h) and applied in one place. */
+static void zimg_apply_io_plan(zimg_priv_t *p, const up_zimg_io_plan_t *plan)
 {
-    if (!p->col_tiled || p->src_zerocopy) return false;
-    int rows, cols;
-    up_decide_tile_grid(worker_budget, p->dst_w, p->dst_h,
-                        stripe_min_lines, 0, &rows, &cols);
-    p->n_rows = rows;
-    p->n_cols = cols;
-    p->n_threads = rows * cols;
-    p->col_tiled = false;
-    p->src_zerocopy = false;
-    p->dst_zerocopy = dst_zerocopy;
-    return true;
+    p->n_rows       = plan->n_rows;
+    p->n_cols       = plan->n_cols;
+    p->n_threads    = plan->n_threads;
+    p->col_tiled    = plan->col_tiled;
+    p->src_zerocopy = plan->src_zerocopy;
+    p->dst_zerocopy = plan->dst_zerocopy;
 }
 
 static int zimg_open(scaler_ctx_t *ctx)
@@ -1039,40 +1034,44 @@ static int zimg_open(scaler_ctx_t *ctx)
     int n_threads = up_threads_decide(ctx->threads_pref,
                                       cpu_topology.allowed_count);
 
-    /* SCAL-3: pick a row x col worker grid. When the frame is too short for
-     * row-stripes alone to use every thread, tile columns. cols==1 => the plain
-     * row-stripe path. */
+    /* SCAL-3/PAT-1: resolve grid + zero-copy modes in one place. Storage
+     * alignment is unknown until the first frame, so the raw options go
+     * in; zimg_prepare_first_frame_io re-resolves once with alignment. */
     int stripe_min_lines = up_zimg_stripe_min_lines(ctx->zimg.min_stripe_lines);
-    int rows, cols;
-    up_decide_tile_grid(n_threads, ctx->dst_w, ctx->dst_h,
-                        stripe_min_lines, ZIMG_COL_MIN_WIDTH, &rows, &cols);
+    const up_zimg_io_req_t req = {
+        .worker_budget = n_threads,
+        .dst_w         = ctx->dst_w,
+        .dst_h         = ctx->dst_h,
+        .stripe_min    = stripe_min_lines,
+        .col_min       = ZIMG_COL_MIN_WIDTH,
+        .src_zerocopy  = (ctx->zimg.src_zerocopy != 0),
+        .dst_zerocopy  = (ctx->zimg.zerocopy != 0),
+    };
+    up_zimg_io_plan_t plan;
+    up_zimg_resolve_io_plan(&req, &plan);
 
     zimg_priv_t *p = calloc(1, sizeof(*p));
     if (!p) return -1;
-    p->n_rows    = rows;
-    p->n_cols    = cols;
-    p->col_tiled = (cols > 1);
-    p->n_threads = rows * cols;
+    p->worker_budget = n_threads;
+    zimg_apply_io_plan(p, &plan);
     init_priv_geometry(p, ctx, sub_w, sub_h, swap);
 
     /* Save what zimg_lazy_init() needs that isn't already in priv. */
     p->algo_saved    = (int)AlgoToZimg(ctx->algo);
     p->log_obj_saved = ctx->log_obj;
-    p->dst_zerocopy  = (ctx->zimg.zerocopy != 0);
-    p->src_zerocopy  = (ctx->zimg.src_zerocopy != 0);
 
-    /* Source copy-in cannot feed column graphs. Preserve the destination
-     * option when switching to rows-only; a retained tiled grid must copy its
-     * per-cell output back into the destination. */
-    if (zimg_use_rows_only(p, n_threads, stripe_min_lines,
-                           p->dst_zerocopy)) {
-        if (ctx->log_obj)
+    if (!req.src_zerocopy && ctx->log_obj) {
+        /* Would the grid have tiled with source-direct reads? Then
+         * zerocopy-src=0 is what demoted it — say so. */
+        up_zimg_io_req_t hyp = req;
+        up_zimg_io_plan_t tiled;
+        hyp.src_zerocopy = true;
+        up_zimg_resolve_io_plan(&hyp, &tiled);
+        if (tiled.col_tiled)
             msg_Warn((vlc_object_t *)ctx->log_obj,
                      "AutoUpscale: zerocopy-src=0 disables column tiling; "
                      "using %d row stripes instead of %dx%d grid",
-                     p->n_rows, rows, cols);
-    } else if (p->col_tiled) {
-        p->dst_zerocopy = false;
+                     plan.n_rows, tiled.n_rows, tiled.n_cols);
     }
 
     /* SCAL-4/5: retain the same allowed topology used for thread planning so
@@ -1204,14 +1203,23 @@ static void zimg_prepare_first_frame_io(zimg_priv_t *p,
                                         const up_picture_view_t *dst)
 {
     if (p->lazy_init_done || p->lazy_init_failed) return;
-    const bool src_aligned = zimg_view_aligned(src);
-    const bool dst_aligned = zimg_view_aligned(dst);
-    if (!src_aligned) p->src_zerocopy = false;
-    if (!dst_aligned) p->dst_zerocopy = false;
-    const int stripe_min = up_zimg_stripe_min_lines(
-        ctx->zimg.min_stripe_lines);
-    zimg_use_rows_only(p, p->n_threads, stripe_min,
-                       ctx->zimg.zerocopy != 0 && dst_aligned);
+    /* Re-resolve the plan with real storage alignment folded into the
+     * requested flags; the resolver is a fixed point, so an unchanged
+     * request yields the identical plan. */
+    const up_zimg_io_req_t req = {
+        .worker_budget = p->worker_budget,
+        .dst_w         = p->dst_w,
+        .dst_h         = p->dst_h,
+        .stripe_min    = up_zimg_stripe_min_lines(ctx->zimg.min_stripe_lines),
+        .col_min       = ZIMG_COL_MIN_WIDTH,
+        .src_zerocopy  = (ctx->zimg.src_zerocopy != 0)
+                         && zimg_view_aligned(src),
+        .dst_zerocopy  = (ctx->zimg.zerocopy != 0)
+                         && zimg_view_aligned(dst),
+    };
+    up_zimg_io_plan_t plan;
+    up_zimg_resolve_io_plan(&req, &plan);
+    zimg_apply_io_plan(p, &plan);
 }
 
 /* A later frame may drift to different storage. Copy paths accept arbitrary

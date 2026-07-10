@@ -87,12 +87,9 @@ idioms; fourcc constants pinned by `_Static_assert`.
 
 ## business/design patterns/DDD
 
-| id | status | effort | description | notes |
-|---|---|---|---|---|
-| PAT-1 | open | M | The zero-copy/tiling mode resolution is a distributed state machine with three owners: `zimg_use_rows_only` mutates five fields, `zimg_open` re-adjusts `dst_zerocopy` (src/scaler_zimg.c:1105-1126), and `zimg_prepare_first_frame_io` re-runs the transition on the first frame (:1243-1257). The invariant "col_tiled ⇒ src-direct reads ∧ dst copy-out" is enforced in three places. | Introduce a pure `zimg_resolve_io_plan(options, geometry, alignment) -> {n_rows, n_cols, col_tiled, src_zerocopy, dst_zerocopy}` computed at open and once at first frame, applied atomically. Pure function slots into the existing header-based test/fuzz harness (fuzz_decide_tile_grid already covers the grid half). |
-
-Otherwise the codebase already uses the right patterns (strategy vtables, table-driven
-mappings, flat switches); proposing more would violate the "only when it improves clarity" rule.
+No open findings. The codebase already uses the right patterns (strategy vtables,
+table-driven mappings, flat switches); proposing more would violate the "only when it
+improves clarity" rule.
 
 ## reliability/correctness
 

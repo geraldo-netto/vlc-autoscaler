@@ -24,7 +24,7 @@
  * Two entry points: LLVMFuzzerTestOneInput + a deterministic smoke main that
  * also sweeps the boundary values explicitly.
  *****************************************************************************/
-#include "../src/plane_utils.h"
+#include "../src/zimg_helpers.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -101,12 +101,54 @@ static int check_grid(int n_threads, int dst_w, int dst_h,
     return 0;
 }
 
+/* PAT-1 plan invariants: cols collapse without src zero-copy, tiling
+ * forces dst copy-out, counts stay consistent, and the resolver is a
+ * fixed point of its own output flags. */
+static int check_plan(int n_threads, int dst_w, int dst_h,
+                      int stripe_min, int col_min)
+{
+    const up_zimg_io_req_t req = {
+        .worker_budget = n_threads, .dst_w = dst_w, .dst_h = dst_h,
+        .stripe_min = stripe_min, .col_min = col_min,
+        .src_zerocopy = (n_threads & 1) != 0,
+        .dst_zerocopy = (dst_w & 1) != 0,
+    };
+    up_zimg_io_plan_t p1, p2;
+    up_zimg_resolve_io_plan(&req, &p1);
+
+    int bad = (p1.n_threads != p1.n_rows * p1.n_cols)
+           || (p1.col_tiled != (p1.n_cols > 1))
+           || (!req.src_zerocopy && p1.n_cols != 1)
+           || (p1.col_tiled && p1.dst_zerocopy)
+           || (p1.src_zerocopy != req.src_zerocopy);
+
+    up_zimg_io_req_t again = req;
+    again.src_zerocopy = p1.src_zerocopy;
+    again.dst_zerocopy = p1.dst_zerocopy;
+    up_zimg_resolve_io_plan(&again, &p2);
+    bad = bad || memcmp(&p1, &p2, sizeof p1) != 0;
+
+    if (bad) {
+        fprintf(stderr, "FAIL: io plan invariant broke for n=%d dw=%d "
+                "dh=%d sm=%d cm=%d szc=%d dzc=%d -> %dx%d tiled=%d "
+                "szc=%d dzc=%d\n",
+                n_threads, dst_w, dst_h, stripe_min, col_min,
+                (int)req.src_zerocopy, (int)req.dst_zerocopy,
+                p1.n_rows, p1.n_cols, (int)p1.col_tiled,
+                (int)p1.src_zerocopy, (int)p1.dst_zerocopy);
+        return 1;
+    }
+    return 0;
+}
+
 static int run_one(const uint8_t *data, size_t size)
 {
     if (size < 5 * sizeof(int32_t)) return 0;
     int32_t v[5];
     memcpy(v, data, sizeof v);
     return check_grid((int)v[0], (int)v[1], (int)v[2],
+                      (int)v[3], (int)v[4])
+         + check_plan((int)v[0], (int)v[1], (int)v[2],
                       (int)v[3], (int)v[4]);
 }
 

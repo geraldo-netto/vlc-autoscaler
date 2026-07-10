@@ -489,6 +489,63 @@ static void test_decide_tile_grid(void)
     END();
 }
 
+/* PAT-1: the io-plan resolver owns the grid/zero-copy invariant chain. */
+static void test_resolve_io_plan(void)
+{
+    BEGIN("up_zimg_resolve_io_plan invariants");
+    up_zimg_io_plan_t plan;
+
+    /* Tall frame, both zero-copies on: rows-only, both preserved. */
+    up_zimg_io_req_t req = { 8, 1920, 1080, 16, 64, true, true };
+    up_zimg_resolve_io_plan(&req, &plan);
+    CHECK_EQ(plan.n_rows, 8); CHECK_EQ(plan.n_cols, 1);
+    CHECK_EQ(plan.col_tiled, 0);
+    CHECK_EQ(plan.src_zerocopy, 1); CHECK_EQ(plan.dst_zerocopy, 1);
+    CHECK_EQ(plan.n_threads, plan.n_rows * plan.n_cols);
+
+    /* Wide + short: tiles engage, and col_tiled forces dst copy-out. */
+    req = (up_zimg_io_req_t){ 16, 1920, 96, 16, 64, true, true };
+    up_zimg_resolve_io_plan(&req, &plan);
+    CHECK_EQ(plan.n_rows, 4); CHECK_EQ(plan.n_cols, 4);
+    CHECK_EQ(plan.col_tiled, 1);
+    CHECK_EQ(plan.src_zerocopy, 1);
+    CHECK_EQ(plan.dst_zerocopy, 0);   /* forced off by tiling */
+
+    /* Same geometry without src zero-copy: column tiling is impossible
+     * (graphs must read the source directly), grid demotes to rows-only
+     * and the dst option survives. */
+    req.src_zerocopy = false;
+    up_zimg_resolve_io_plan(&req, &plan);
+    CHECK_EQ(plan.n_cols, 1);
+    CHECK_EQ(plan.col_tiled, 0);
+    CHECK_EQ(plan.dst_zerocopy, 1);
+
+    /* Fixed point: resolving a plan's own flags yields the same plan —
+     * the property that keeps the open and first-frame call sites
+     * consistent with each other. */
+    static const up_zimg_io_req_t reqs[] = {
+        { 16, 1920,   96, 16, 64, true,  true  },
+        { 16, 1920,   96, 16, 64, false, true  },
+        {  8, 1920, 1080, 16, 64, true,  false },
+        { 64, 7680,   64, 16, 64, true,  true  },
+        {  1,  128,  128, 16, 64, false, false },
+    };
+    for (size_t i = 0; i < sizeof reqs / sizeof reqs[0]; i++) {
+        up_zimg_io_plan_t a, b;
+        up_zimg_resolve_io_plan(&reqs[i], &a);
+        up_zimg_io_req_t again = reqs[i];
+        again.src_zerocopy = a.src_zerocopy;
+        again.dst_zerocopy = a.dst_zerocopy;
+        up_zimg_resolve_io_plan(&again, &b);
+        CHECK_EQ(a.n_rows, b.n_rows);
+        CHECK_EQ(a.n_cols, b.n_cols);
+        CHECK_EQ(a.col_tiled, b.col_tiled);
+        CHECK_EQ(a.src_zerocopy, b.src_zerocopy);
+        CHECK_EQ(a.dst_zerocopy, b.dst_zerocopy);
+    }
+    END();
+}
+
 int main(void)
 {
     printf("Running zimg_helpers tests...\n");
@@ -527,6 +584,7 @@ int main(void)
 
     test_zimg_stripe_min_lines_boundaries();
     test_decide_tile_grid();
+    test_resolve_io_plan();
 
     printf("\n%d tests run, %d failed\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;
