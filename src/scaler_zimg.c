@@ -1267,7 +1267,7 @@ static bool zimg_frame_io_safe(const zimg_priv_t *p,
 }
 
 static bool zimg_frame_views_init(const scaler_ctx_t *ctx,
-                                  const picture_t *src, picture_t *dst,
+                                  const picture_t *src, const picture_t *dst,
                                   up_picture_view_t *src_view,
                                   up_picture_view_t *dst_view)
 {

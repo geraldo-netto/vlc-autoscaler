@@ -264,10 +264,10 @@ static void test_inplace_stride_mismatch_rejected(void)
 {
     BEGIN("in-place with mismatched strides is rejected");
     enum { W = 64, H = 64, STRIDE = 80 };
-    static uint8_t buf[STRIDE * H];
     usm_pool_t *p = up_usm_pool_create(2, W, H, 0);
     CHECK(p != NULL);
     if (p) {
+        static uint8_t buf[STRIDE * H];
         CHECK(up_usm_pool_apply(p, buf, STRIDE, buf, W,
                                 up_usm_amount_pct_to_q8(30)) == -1);
         up_usm_pool_destroy(p);

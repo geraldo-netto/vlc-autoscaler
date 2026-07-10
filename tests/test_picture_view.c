@@ -83,7 +83,7 @@ static void check_plane(const test_picture_t *test,
     CHECK(plane->height == (int)(y1 - y0));
     CHECK(plane->row_bytes == (int)((x1 - x0) * (size_t)group_bytes));
 
-    uint8_t *last = plane->pixels
+    const uint8_t *last = plane->pixels
                   + (size_t)(plane->height - 1) * (size_t)plane->pitch
                   + (size_t)plane->row_bytes - 1;
     CHECK(last >= test->storage[plane_index]);

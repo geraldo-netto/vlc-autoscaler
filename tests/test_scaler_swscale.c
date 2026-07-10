@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
+/* cppcheck-suppress unusedStructMember ; keeps the stub struct non-empty */
 struct SwsContext { int tag; };
 
 static struct SwsContext g_sws_ctx = { 1 };
@@ -48,6 +49,7 @@ int sws_scale(struct SwsContext *ctx, const uint8_t *const src[],
     return g_scale_result;
 }
 
+/* cppcheck-suppress constParameterPointer ; mirrors the FFmpeg prototype */
 void sws_freeContext(struct SwsContext *ctx)
 {
     if (ctx) g_free_calls++;

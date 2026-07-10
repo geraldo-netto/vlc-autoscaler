@@ -783,10 +783,13 @@ analyze: complexity
 	# autoupscale.c is excluded — it depends on VLC's macro-heavy headers
 	# that cppcheck cannot reasonably parse without a full include path.
 	# The interesting logic is all in *_logic.h / usm.h, exercised via tests.
+	# scaler_zimg.c IS analyzed, against the test VLC stubs (cppcheck chokes
+	# on the real vlc_variables.h); needs libzimg headers, skipped otherwise.
 	cppcheck --enable=warning,style,performance,portability \
 		--inline-suppr --std=c11 --error-exitcode=2 \
 		--suppress=missingIncludeSystem \
-		-I src src/upscale_logic.h src/usm.h src/perfmon.h src/threading.h src/zimg_helpers.h src/chroma_classify.h src/scaler_zimg_chroma.h src/content_probe.h src/scaler_pick_logic.h src/usm_pool.h src/usm_pool.c tests/
+		-I src -I tests/stubs $(ZIMG_CFLAGS) \
+		src/upscale_logic.h src/usm.h src/perfmon.h src/threading.h src/zimg_helpers.h src/chroma_classify.h src/scaler_zimg_chroma.h src/content_probe.h src/scaler_pick_logic.h src/usm_pool.h src/usm_pool.c $(if $(HAVE_ZIMG),src/scaler_zimg.c) tests/
 
 scan-build:
 	@command -v scan-build >/dev/null 2>&1 || { echo "scan-build not found"; exit 1; }
