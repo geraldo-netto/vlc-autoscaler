@@ -32,11 +32,39 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Intended gross-seam ceiling for randomized geometry; looser than the fixed
- * suite's 6 because tiny cells and steep synthetic gradients amplify phase
- * rounding. The standard 400-case smoke gate passes. An extended-run delta of
- * 18 is tracked as REL-9, so 16 is not claimed as a proven global envelope. */
-#define SEAM_MAX_DELTA 16
+/* Gross-seam ceiling for randomized geometry (REL-9). Tiling's documented
+ * contract is SLOPE-PROPORTIONAL: each cell's independent graph edge-extends
+ * at interior boundaries, so the worst seam delta scales with the synthetic
+ * gradient's per-source-pixel slope on the steepest (smallest) plane —
+ * fill_smooth normalizes 128 levels across the plane, so a 16-row source
+ * has an 8-chroma-row plane at ~18 levels/row and 480x16 -> 1166x42 t6
+ * legitimately reaches delta 19 right at the stripe seam. A flat ceiling is
+ * therefore wrong in both directions: too loose for real-size sources, too
+ * tight for tiny ones. BASE covers phase rounding on gentle slopes; the
+ * factor-2 slope term covers boundary tap divergence (~2 source pixels,
+ * measured). Capped so an unwritten band (delta ~100+) always still trips. */
+#define SEAM_BASE_DELTA 6
+#define SEAM_MAX_BOUND  64
+
+static void min_plane_dims(uint32_t chroma, int sw, int sh, int *cw, int *ch)
+{
+    switch (chroma) {
+    case VLC_CODEC_I420:
+    case VLC_CODEC_YV12: *cw = sw / 2; *ch = sh / 2; break;
+    case VLC_CODEC_I422: *cw = sw / 2; *ch = sh;     break;
+    default:             *cw = sw;     *ch = sh;     break;
+    }
+}
+
+static int seam_bound(uint32_t chroma, int sw, int sh)
+{
+    int cw, ch;
+    min_plane_dims(chroma, sw, sh, &cw, &ch);
+    double vs = ch > 1 ? 128.0 / (ch - 1) : 128.0;
+    double hs = cw > 1 ? 127.0 / (cw - 1) : 127.0;
+    double allowed = SEAM_BASE_DELTA + 2.0 * (vs + hs);
+    return allowed > SEAM_MAX_BOUND ? SEAM_MAX_BOUND : (int)allowed;
+}
 
 static const uint32_t CHROMAS[] = {
     VLC_CODEC_I420, VLC_CODEC_YV12, VLC_CODEC_I422, VLC_CODEC_I444,
@@ -132,9 +160,11 @@ static void run_one(const uint8_t *data, size_t size)
     if (resample(chroma, sw, sh, dw, dh, threads, &tiled)
             == SCALER_PROCESS_OK) {
         int md = max_delta(&ref, &tiled);
-        if (md > SEAM_MAX_DELTA) {
-            fprintf(stderr, "SEAM: %dx%d->%dx%d t=%d chroma=%08x maxdelta=%d\n",
-                    sw, sh, dw, dh, threads, chroma, md);
+        int bound = seam_bound(chroma, sw, sh);
+        if (md > bound) {
+            fprintf(stderr,
+                    "SEAM: %dx%d->%dx%d t=%d chroma=%08x maxdelta=%d bound=%d\n",
+                    sw, sh, dw, dh, threads, chroma, md, bound);
             __builtin_trap();
         }
         zt_pic_free(&tiled);

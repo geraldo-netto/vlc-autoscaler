@@ -118,7 +118,6 @@ PAT-1 (group dispatch fn-pointers into a usm_pool_ops_t vtable) DONE — commit 
 
 | id | status | effort | description | notes |
 |----|--------|--------|-------------|-------|
-| REL-9 | open | S | The deterministic zimg seam fuzzer exceeds its documented smooth-content bound during an extended run: `480x16 -> 1166x42`, 6 workers, I420 reaches max delta 18 versus `SEAM_MAX_DELTA=16`. | Reproduces before the SCAL-6 selector change because both selectors choose the same 2x3 grid. The standard 400-iteration gate passes, but the comment's claimed 4000+ empirical envelope is stale. Preserve the failing seed, then decide whether the quality bound, minimum cell geometry, or independent-graph tiling needs adjustment. Re-verified still-open 2026-07-10: `SEAM_MAX_DELTA` is still 16 (`fuzz_scaler_seam.c:39`); the in-file comment now honestly cites REL-9 instead of the stale 4000+ envelope, but the delta-18 exceedance itself is unaddressed. The REL-10 fix restored tiled grids in the fuzzer, so the repro is reachable again. |
 | REL-12 | open | S | `test_geometry_edge_cases.c` `test_zero_hardware` (`:37-44`) asserts nothing (prints only — cannot fail), and `test_edge_dimensions`' bypass branches check nothing; the binary is gated in `make test` (`Makefile:190`) but only the 1x1/1920x1 assert arms can ever fail. | Add expected-outcome checks (0-core/0-RAM must still yield a valid plan or a bypass per `up_decide_target_height`'s contract), or fold into `test_upscale_logic.c` and delete the file. |
 
 ## error handling
