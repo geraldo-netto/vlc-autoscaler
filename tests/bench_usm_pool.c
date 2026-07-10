@@ -103,6 +103,13 @@ static int run_warmup(usm_pool_t *pool, uint8_t *src, uint8_t *dst,
     return 0;
 }
 
+/* C11 aligned_alloc requires size to be a multiple of the alignment. */
+static void *alloc64(size_t n)
+{
+    if (n > SIZE_MAX - 63) return NULL;
+    return aligned_alloc(64, (n + 63) & ~(size_t)63);
+}
+
 static int checked_now(struct timespec *ts)
 {
     if (clock_gettime(CLOCK_MONOTONIC, ts) != 0) {
@@ -145,9 +152,13 @@ int main(int argc, char **argv)
     int amount = up_usm_amount_pct_to_q8(a.amount_pct);
     size_t plane = (size_t)a.width * (size_t)a.height;
 
-    uint8_t *src = aligned_alloc(64, plane);
-    uint8_t *dst = aligned_alloc(64, plane);
-    if (!src || !dst) { fprintf(stderr, "alloc fail\n"); return 1; }
+    uint8_t *src = alloc64(plane);
+    uint8_t *dst = alloc64(plane);
+    if (!src || !dst) {
+        fprintf(stderr, "alloc fail\n");
+        free(src); free(dst);
+        return 1;
+    }
 
     usm_pool_t *pool = up_usm_pool_create(a.n_threads, a.width, a.height, 0);
     if (!pool) {
