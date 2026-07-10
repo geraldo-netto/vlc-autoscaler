@@ -146,6 +146,27 @@ static uint64_t check_metric(const char *name, metric_fn_t fn,
     return a;
 }
 
+/* PERF-1 differential oracle: the fused single-pass sweep must return
+ * exactly the same sums and sample counts as the two reference sweeps
+ * for every shape the fuzzer can produce. */
+static void check_fused_matches(const uint8_t *plane, int stride, int w, int h,
+                                uint64_t lap, uint64_t lap_n,
+                                uint64_t edge, uint64_t edge_n)
+{
+    up_probe_metrics_t m;
+    up_probe_metrics(plane, stride, w, h, &m);
+    if (m.lap_sum != lap || m.lap_n != lap_n
+        || m.edge_sum != edge || m.edge_n != edge_n) {
+        FAIL("fused sweep diverges on (stride=%d w=%d h=%d): "
+             "lap %llu/%llu ref %llu/%llu, edge %llu/%llu ref %llu/%llu",
+             stride, w, h,
+             (unsigned long long)m.lap_sum, (unsigned long long)m.lap_n,
+             (unsigned long long)lap, (unsigned long long)lap_n,
+             (unsigned long long)m.edge_sum, (unsigned long long)m.edge_n,
+             (unsigned long long)edge, (unsigned long long)edge_n);
+    }
+}
+
 /* Verify observe() advances frames monotonically across two calls. */
 static void check_observe_monotonic(uint64_t lap_a, uint64_t lap_n,
                                     uint64_t edge_a, uint64_t edge_n)
@@ -216,6 +237,7 @@ static void run_one(const uint8_t *data, size_t size)
     uint64_t edge_a = check_metric("block_edge_strength", up_block_edge_strength,
                                    plane, stride, w, h, &edge_n);
 
+    check_fused_matches(plane, stride, w, h, lap_a, lap_n, edge_a, edge_n);
     check_observe_monotonic(lap_a, lap_n, edge_a, edge_n);
 
     up_probe_accum_t a2;

@@ -808,12 +808,10 @@ static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
 
     const uint8_t *pixels = view.plane[0].pixels;
     const int pitch = view.plane[0].pitch;
-    uint64_t lap_n = 0, edge_n = 0;
-    uint64_t lap = up_laplacian_variance( pixels, pitch,
-                                          sc->src_w, sc->src_h, &lap_n );
-    uint64_t edge = up_block_edge_strength( pixels, pitch,
-                                            sc->src_w, sc->src_h, &edge_n );
-    up_probe_observe( &p_sys->probe_accum, lap, lap_n, edge, edge_n );
+    up_probe_metrics_t m;
+    up_probe_metrics( pixels, pitch, sc->src_w, sc->src_h, &m );
+    up_probe_observe( &p_sys->probe_accum, m.lap_sum, m.lap_n,
+                      m.edge_sum, m.edge_n );
 
     if( p_sys->probe_accum.frames < UP_PROBE_WINDOW_FRAMES )
         return;

@@ -193,6 +193,70 @@ static inline uint64_t up_block_edge_strength(const uint8_t *plane,
 }
 
 /*
+ * Fused single-pass sweep (PERF-1): both metrics in one walk over the
+ * sampled rows instead of three separate strided sweeps. Exactly
+ * equivalent to up_laplacian_variance + up_block_edge_strength (which
+ * remain the reference oracles for tests and fuzzing): the same rows,
+ * samples, and 64-bit sums, just interleaved.
+ */
+typedef struct {
+    uint64_t lap_sum;
+    uint64_t lap_n;
+    uint64_t edge_sum;
+    uint64_t edge_n;
+} up_probe_metrics_t;
+
+static inline void up_probe__lap_row(const uint8_t *plane, int stride,
+                                     int w, int h, int y,
+                                     up_probe_metrics_t *m)
+{
+    if (y < UP_PROBE_GRID_STEP || y + 1 >= h)
+        return;
+    const uint8_t *row    = plane + (size_t)y * (size_t)stride;
+    const uint8_t *row_up = row - stride;
+    const uint8_t *row_dn = row + stride;
+    for (int x = UP_PROBE_GRID_STEP; x < w - 1; x += UP_PROBE_GRID_STEP) {
+        int lap = 4 * row[x] - (row_up[x] + row_dn[x] + row[x - 1] + row[x + 1]);
+        m->lap_sum += (uint64_t)(lap * lap);
+        m->lap_n++;
+    }
+}
+
+static inline void up_probe__edge_rows(const uint8_t *plane, int stride,
+                                       int w, int h, int y,
+                                       up_probe_metrics_t *m)
+{
+    if (w <= UP_PROBE_BLOCK_SIZE || h <= UP_PROBE_BLOCK_SIZE)
+        return;
+    const uint8_t *row = plane + (size_t)y * (size_t)stride;
+    for (int x = UP_PROBE_BLOCK_SIZE; x < w; x += UP_PROBE_BLOCK_SIZE) {
+        int diff = (int)row[x] - (int)row[x - 1];
+        m->edge_sum += (uint64_t)(diff < 0 ? -diff : diff);
+        m->edge_n++;
+    }
+    if (y < UP_PROBE_BLOCK_SIZE || y % UP_PROBE_BLOCK_SIZE != 0)
+        return;
+    const uint8_t *row_up = row - stride;
+    for (int x = 0; x < w; x += UP_PROBE_GRID_STEP) {
+        int diff = (int)row[x] - (int)row_up[x];
+        m->edge_sum += (uint64_t)(diff < 0 ? -diff : diff);
+        m->edge_n++;
+    }
+}
+
+static inline void up_probe_metrics(const uint8_t *plane, int stride,
+                                    int w, int h, up_probe_metrics_t *m)
+{
+    *m = (up_probe_metrics_t){ 0, 0, 0, 0 };
+    if (plane == NULL || stride <= 0 || stride < w)
+        return;
+    for (int y = 0; y < h; y += UP_PROBE_GRID_STEP) {
+        up_probe__lap_row(plane, stride, w, h, y, m);
+        up_probe__edge_rows(plane, stride, w, h, y, m);
+    }
+}
+
+/*
  * Probe accumulator. Tracks metric averages over the probe window so a
  * single noisy frame doesn't bias the decision. Initialize to zero and
  * call up_probe_observe() for each frame in the window.

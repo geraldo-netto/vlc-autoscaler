@@ -27,11 +27,7 @@ allocation-size arithmetic overflow-checked at every seam; all format strings li
 
 ## performance
 
-| id | status | effort | description | notes |
-|---|---|---|---|---|
-| PERF-1 | open | S | `src/autoupscale.c:809-816` + `src/content_probe.h:71-193` — `RunProbe` makes three separate strided sweeps over the luma plane per probed frame (Laplacian, vertical block edges, horizontal block edges) instead of one fused pass. | Bounded to the 60-frame probe window and grid-subsampled, so cost is small and transient; only worth doing if startup frame pacing matters. |
-
-Verified clean otherwise: zero steady-state per-frame allocations; zero-copy defaults mean the
+No open findings (PERF-P1 parked). Verified clean: zero steady-state per-frame allocations; zero-copy defaults mean the
 default aligned row-stripe path copies no planes; copy-in/out (when enabled) is parallelized
 inside the same dispatch; hot USM kernels have correct `restrict` placement and are
 multiversioned at three -march levels with load-time dispatch.

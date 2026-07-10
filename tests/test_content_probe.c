@@ -392,6 +392,44 @@ static void test_probe_stride_less_than_width(void)
     END();
 }
 
+/* PERF-1: the fused single-pass sweep must be exactly equivalent to the
+ * two reference sweeps — same sums, same sample counts — on boundary
+ * shapes, padded strides, and the stride<w reject path. */
+static void test_fused_metrics_match_references(void)
+{
+    BEGIN("fused up_probe_metrics matches both reference sweeps");
+    static const struct { int w, h, stride; } shapes[] = {
+        { 2, 2, 2 },   { 3, 3, 3 },     { 8, 8, 8 },    { 9, 9, 16 },
+        { 16, 8, 16 }, { 8, 16, 8 },    { 64, 48, 64 }, { 65, 47, 80 },
+        { 320, 240, 352 }, { 127, 129, 127 }, { 40, 40, 20 },
+    };
+    uint32_t s = 0x12345u;
+    for (size_t i = 0; i < sizeof shapes / sizeof shapes[0]; i++) {
+        size_t bytes = (size_t)shapes[i].stride * (size_t)shapes[i].h;
+        uint8_t *buf = malloc(bytes ? bytes : 1);
+        CHECK(buf != NULL);
+        if (!buf) continue;
+        for (size_t j = 0; j < bytes; j++) {
+            s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+            buf[j] = (uint8_t)s;
+        }
+        uint64_t lap_n = 0, edge_n = 0;
+        uint64_t lap = up_laplacian_variance(buf, shapes[i].stride,
+                                             shapes[i].w, shapes[i].h, &lap_n);
+        uint64_t edge = up_block_edge_strength(buf, shapes[i].stride,
+                                               shapes[i].w, shapes[i].h,
+                                               &edge_n);
+        up_probe_metrics_t m;
+        up_probe_metrics(buf, shapes[i].stride, shapes[i].w, shapes[i].h, &m);
+        CHECK_EQ(m.lap_sum, lap);
+        CHECK_EQ(m.lap_n, lap_n);
+        CHECK_EQ(m.edge_sum, edge);
+        CHECK_EQ(m.edge_n, edge_n);
+        free(buf);
+    }
+    END();
+}
+
 int main(void)
 {
     printf("Running content_probe tests...\n");
@@ -419,6 +457,7 @@ int main(void)
 
     test_observe_accumulates();
     test_probe_stride_less_than_width();
+    test_fused_metrics_match_references();
 
     printf("\n%d tests run, %d failed\n", g_tests_run, g_tests_failed);
     return g_tests_failed == 0 ? 0 : 1;
