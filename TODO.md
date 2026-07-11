@@ -163,7 +163,6 @@ are all balanced on every path.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| OBS-1 | open | M | `worker_main` (`scaler_zimg.c:497`) collapses the `zimg_error_code_e rc` to `result = (rc==0)?0:-1`, and `zimg_dispatch_and_wait` returns FATAL with **no log** on both the worker-error and barrier-break paths (`:1133-1142`). Only the generic dispatcher one-shot in `Filter` surfaces — no zimg error code, no barrier-vs-graph distinction. | Add a one-shot `msg_Err` at the failure site carrying `rc`; safe from spam because `pool_broken` latches. |
 | OBS-3 | open | S | swscale backend failure paths are all silent: `SCALER_PROCESS_TRANSIENT` geometry reject (`scaler_swscale.c:118`), short-`sws_scale` line-count reject (`:144`, returned count discarded), `!priv` FATAL (`:111`). zimg has a one-shot `zimg_warn_bad_geometry`; the fallback everyone lands on has no counterpart. | Add a one-shot geometry warn symmetric with zimg's. |
 | OBS-5 | open | S | `log_zimg_open` (`scaler_zimg.c:917`) reports only plane-scratch MB, not the per-worker `zimg_filter_graph` tmp buffers (`build_worker_graph_and_tmp`, ~0.5-2 MB each, up to 64 workers → tens of MB, and column-tile graphs keep `src_full_w` so tmp doesn't shrink). The dominant memory term is unaccounted. | Sum `w->tmp_size` into the open log; optionally cap worker count by a tmp budget. |
 

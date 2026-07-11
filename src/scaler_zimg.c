@@ -233,6 +233,7 @@ typedef struct
     plane_view_t       vlc_dst;
 
     int                result;        /* 0 OK, -1 fail */
+    zimg_error_code_e  err_code;      /* OBS-1: libzimg code when result != 0 */
 } stripe_worker_t;
 
 typedef struct
@@ -502,6 +503,7 @@ static void *worker_main(void *arg)
         zimg_error_code_e rc = zimg_filter_graph_process(
             w->graph, &sb, &db, w->tmp, NULL, NULL, NULL, NULL);
         w->result = (rc == 0) ? 0 : -1;
+        w->err_code = rc;               /* OBS-1: keep the code for the log */
 
         worker_emit_output(w);
 
@@ -1134,15 +1136,26 @@ static scaler_process_status_t zimg_dispatch_and_wait(zimg_priv_t *p)
     up_pool_gate_unlock_broadcast(&p->gate);
 
     /* On a fatal barrier error, synchronously drain the dispatched generation
-     * and join the pool before returning control to the picture owner. */
+     * and join the pool before returning control to the picture owner.
+     * OBS-1: log once — pool_broken latches, so zimg_process short-circuits
+     * every later frame and this site is not reached again. */
     if (up_pool_gate_wait_all(&p->gate) != 0) {
         p->pool_broken = true;
+        if (p->lazy.log_obj)
+            msg_Err((vlc_object_t *)p->lazy.log_obj,
+                    "AutoUpscale: zimg worker completion barrier failed; "
+                    "pool poisoned (this is logged only once)");
         zimg_stop_workers(p);
         return SCALER_PROCESS_FATAL;
     }
     for (int i = 0; i < p->plan.n_threads; i++) {
         if (p->workers[i].result != 0) {
             p->pool_broken = true;
+            if (p->lazy.log_obj)
+                msg_Err((vlc_object_t *)p->lazy.log_obj,
+                        "AutoUpscale: zimg graph processing failed on worker "
+                        "%d (libzimg error %d); pool poisoned (logged once)",
+                        i, (int)p->workers[i].err_code);
             return SCALER_PROCESS_FATAL;
         }
     }
