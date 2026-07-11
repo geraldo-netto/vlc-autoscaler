@@ -214,8 +214,12 @@ jobs:
         # Build the production target only — tests are not invoked.
         # build-wrapper captures every compiler invocation into
         # bw-output/ so the sonar-scanner can analyse the C/C++ TUs.
+        # BUILD-2: MULTIVERSION=1 so the runtime dispatcher
+        # (usm_pool_dispatch.c) and the per-march variant compilations of
+        # usm_pool.c are captured too; the default MULTIVERSION=0 build links
+        # only usm_pool.o, leaving the dispatch/SIMD code unanalysed.
         run: |
-          build-wrapper-linux-x86-64 --out-dir bw-output make plugin
+          build-wrapper-linux-x86-64 --out-dir bw-output make plugin MULTIVERSION=1
 
       - name: Run sonar-scanner
         uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
