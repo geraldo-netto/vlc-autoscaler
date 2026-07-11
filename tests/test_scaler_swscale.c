@@ -178,6 +178,10 @@ static void test_geometry_rejection_recovers(void)
 {
     BEGIN("malformed geometry is transient and the next frame recovers");
     scaler_ctx_t ctx = make_ctx(VLC_CODEC_I420, UP_ALGO_LANCZOS);
+    /* Non-NULL log object so the OBS-3 one-shot geometry warning path in
+     * sws_warn_once actually runs (first reject fires it, the rest latch). */
+    vlc_object_t log_obj = { 0 };
+    ctx.log_obj = &log_obj;
     sws_priv_t priv = { .ctx = &g_sws_ctx, .av_fmt = AV_PIX_FMT_YUV420P };
     picture_t src, dst;
     uint8_t src_data[4] = {0}, dst_data[4] = {0};
