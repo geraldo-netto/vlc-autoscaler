@@ -671,27 +671,56 @@ fail:
     return 0;
 }
 
-static int Open( vlc_object_t *p_this )
+/* CX-1: reject CPUs below the build's -march LEVEL. This whole object is
+ * compiled at that level, so the headline feature alone does not cover
+ * BMI2/FMA/... (v3) or AVX512VL/... (v4) instructions the compiler is free
+ * to emit anywhere in the plugin (BUILD-5/PORT-6). Returns VLC_SUCCESS when
+ * the CPU is adequate (always, off x86-64). Extracted from Open() so the two
+ * `#if` decision points don't count against Open's CCN. */
+static int CheckCpuLevel( vlc_object_t *p_this )
 {
-    filter_t *p_filter = (filter_t *)p_this;
-
+    (void)p_this;
 #if defined(__x86_64__)
-    /* BUILD-5/PORT-6: this whole object is compiled at the build's -march
-     * level, so reject CPUs below that LEVEL — the headline feature alone
-     * does not cover BMI2/FMA/... (v3) or AVX512VL/... (v4) instructions
-     * the compiler is free to emit anywhere in the plugin. */
-#if defined(__AVX512F__)
+# if defined(__AVX512F__)
     if (!up_cpu_supports_v4()) {
         msg_Err(p_this, "AutoUpscale: CPU below x86-64-v4 required by this build");
         return VLC_EGENERIC;
     }
-#elif defined(__AVX2__)
+# elif defined(__AVX2__)
     if (!up_cpu_supports_v3()) {
         msg_Err(p_this, "AutoUpscale: CPU below x86-64-v3 required by this build");
         return VLC_EGENERIC;
     }
+# endif
 #endif
-#endif
+    return VLC_SUCCESS;
+}
+
+/* CX-1: the one-shot "engaged" diagnostic. Every value but preset/cores/mem_mb
+ * is already on p_sys by the time Open reaches this point, so the banner needs
+ * no wide parameter list. Extracted from Open() to cut its physical length. */
+static void LogEngaged( filter_t *p_filter, filter_sys_t *p_sys,
+                        int preset, int cores, unsigned long mem_mb )
+{
+    const scaler_ctx_t *sc = &p_sys->scaler;
+    int threads_resolved = up_threads_decide( sc->threads_pref, cores );
+
+    msg_Info( p_filter,
+              "AutoUpscale engaged: %dx%d -> %dx%d "
+              "(backend=%s preset=%d algo=%d usm=%d fps_target=%d "
+              "threads_budget=%d cores=%d mem=%luMB simd=%s)",
+              sc->src_w, sc->src_h, sc->dst_w, sc->dst_h,
+              sc->backend->name,
+              preset, p_sys->algo, p_sys->usm_pct, p_sys->target_fps,
+              threads_resolved, cores, mem_mb, up_usm_pool_variant_name );
+}
+
+static int Open( vlc_object_t *p_this )
+{
+    filter_t *p_filter = (filter_t *)p_this;
+
+    if( CheckCpuLevel( p_this ) != VLC_SUCCESS )
+        return VLC_EGENERIC;
 
     int src_w, src_h;
     ResolveInputDims( p_filter, &src_w, &src_h );
@@ -748,17 +777,7 @@ static int Open( vlc_object_t *p_this )
     p_filter->p_sys           = p_sys;
     p_filter->pf_video_filter = Filter;
 
-    int threads_resolved = up_threads_decide(
-        p_sys->scaler.threads_pref, cores );
-
-    msg_Info( p_filter,
-              "AutoUpscale engaged: %dx%d -> %dx%d "
-              "(backend=%s preset=%d algo=%d usm=%d fps_target=%d "
-              "threads_budget=%d cores=%d mem=%luMB simd=%s)",
-              src_w, src_h, target.width, target.height,
-              p_sys->scaler.backend->name,
-              preset, algo, usm_pct, p_sys->target_fps,
-              threads_resolved, cores, mem_mb, up_usm_pool_variant_name );
+    LogEngaged( p_filter, p_sys, preset, cores, mem_mb );
 
     return VLC_SUCCESS;
 }

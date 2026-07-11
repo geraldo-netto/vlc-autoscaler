@@ -71,7 +71,6 @@ only; the two pools share no mutable state and run strictly sequentially; test h
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| CX-1 | open | S | `src/autoupscale.c:674` — `Open` is the longest function in the tree (91 lines) and simultaneously at the CCN-10 ceiling, so any new config knob or backend branch tips it over. | Extract the `#ifdef` CPU-level gate (678-694) into `CheckCpuLevel()` and the engaged-banner `msg_Info` block (754-761) into `LogEngaged()`; both drop length + CCN with no behavior change. Verified linear (no hard control flow), just long. |
 
 Lizard 1.23.0 at HEAD: zero CCN>10 with the project threshold; every production function is at
 ≤7 params (only test helpers reach 8-10, inherent in/out tuples — deliberately not restructured).
