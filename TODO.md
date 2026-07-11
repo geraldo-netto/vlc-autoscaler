@@ -80,7 +80,6 @@ Lizard 1.23.0 at HEAD: zero CCN>10 with the project threshold; every production 
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| DUP-1 | open | S | The `stripe_bounds4` compat shim (10 lines, identical body + comment) is copy-pasted across `tests/fuzz_frame_shape.c:59`, `tests/fuzz_stripe_bounds.c:30`, `tests/test_zimg_helpers.c:15`. | Hoist once into a shared header (`tests/stripe_bounds_compat.h` or existing `tests/test_harness.h`). Verified byte-identical across the three sites. |
 | DUP-2 | open | S | Four+ scattered deterministic-PRNG fillers with divergent constants: `fill_pseudorandom` (test_usm_pool.c:80, xorshift64), `fill_xorshift`/`xs32` (stress_usm_pool.c:51), `zt_pic_fill` (zimg_test_util.h:100), inline LCGs (test_usm.c:192, test_upscale_logic.c:689). | Add `tests/prng.h` exposing one `up_xs32`/`up_fill_random`; `zt_pic_fill` keeps its geometry loop and wraps the scalar. `tests/fuzz_smoke.h` already shares the smoke-main PRNG, so the pattern exists. Values shift once — verify no hardcoded expected outputs depend on the stream. |
 
 ## architecture/modularity/SOLID

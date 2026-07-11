@@ -25,18 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Compat shim over the struct-based bounds API (Sonar >7-params refactor):
- * preserves this file's original out-pointer call shape. */
-static int stripe_bounds4(int i, int n, int src_h, int dst_h,
-                          int *src_start, int *src_end,
-                          int *dst_start, int *dst_end)
-{
-    up_stripe_bounds_t b = { 0, 0, 0, 0 };
-    int ok = up_compute_stripe_bounds(i, n, src_h, dst_h, &b);
-    *src_start = b.src_start; *src_end = b.src_end;
-    *dst_start = b.dst_start; *dst_end = b.dst_end;
-    return ok;
-}
+#include "stripe_bounds_compat.h"
 
 
 #define MAX_N      64
