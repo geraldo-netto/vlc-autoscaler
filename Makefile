@@ -189,7 +189,38 @@ endif
 
 PLUGIN_OBJS += $(USM_OBJS)
 
-.PHONY: all plugin abi-layout-check test check check-visibility fuzz fuzz-smoke fuzz-seam analyze scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
+# BUILD-4: prove each SIMD variant actually emits its target ISA. The
+# cross-variant test asserts byte-identical *output*, which by design masks an
+# accidental collapse to the baseline (a vectorization-disabling pragma, a
+# broken -march mapping, a compiler regression) — three identical SSE2 kernels
+# would still pass it. Compile usm_pool.c at each level without LTO/ASan (so
+# real instructions are emitted, not GIMPLE or scalar-instrumented code) and
+# assert the register file widens: SSE2 baseline has no ymm/zmm, the v3 variant
+# emits ymm (AVX2), the v4 variant emits zmm (AVX-512). This checks the
+# source+flags+compiler; it does not exercise the LTO link (LTO preserving
+# per-TU target attributes is a compiler guarantee, not our code's concern).
+.PHONY: check-multiversion-isa
+check-multiversion-isa: | $(BUILD)
+	@if [ "$$(uname -m)" != "x86_64" ]; then \
+	    echo "  check-multiversion-isa: skipped (non-x86_64 host)"; exit 0; fi; \
+	 set -e; fail=0; \
+	 for spec in "sse2:x86-64:sse" "avx2:x86-64-v3:ymm" "avx512:x86-64-v4:zmm"; do \
+	    v=$${spec%%:*}; rest=$${spec#*:}; march=$${rest%%:*}; want=$${rest##*:}; \
+	    obj=$(BUILD)/isacheck_$$v.o; \
+	    $(CC) -O3 -march=$$march $(WARN) -DUSM_VARIANT=$$v -Isrc -c src/usm_pool.c -o $$obj; \
+	    ymm=$$(objdump -d $$obj | grep -c ymm || true); \
+	    zmm=$$(objdump -d $$obj | grep -c zmm || true); \
+	    case $$want in \
+	      sse) if [ $$ymm -ne 0 ] || [ $$zmm -ne 0 ]; then echo "  [FAIL] $$v ($$march): ymm=$$ymm zmm=$$zmm, expected SSE-only"; fail=1; else echo "  [ok] $$v: SSE baseline"; fi ;; \
+	      ymm) if [ $$ymm -eq 0 ] || [ $$zmm -ne 0 ]; then echo "  [FAIL] $$v ($$march): ymm=$$ymm zmm=$$zmm, expected AVX2 (ymm>0, zmm=0)"; fail=1; else echo "  [ok] $$v: AVX2 ($$ymm ymm ops)"; fi ;; \
+	      zmm) if [ $$zmm -eq 0 ]; then echo "  [FAIL] $$v ($$march): zmm=0, variant collapsed below AVX-512"; fail=1; else echo "  [ok] $$v: AVX-512 ($$zmm zmm ops)"; fi ;; \
+	    esac; \
+	    rm -f $$obj; \
+	 done; \
+	 if [ $$fail -ne 0 ]; then echo "  multiversion ISA check FAILED"; exit 1; fi; \
+	 echo "  multiversion ISA check passed"
+
+.PHONY: all plugin abi-layout-check check-multiversion-isa test check check-visibility fuzz fuzz-smoke fuzz-seam analyze scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
 
 all: plugin
 

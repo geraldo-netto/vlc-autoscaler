@@ -153,7 +153,6 @@ are all balanced on every path.
 |---|---|---|---|---|
 | BUILD-1 | open | S | `make check-visibility` runs after the gcc build (ci.yml:45) and the MULTIVERSION build (:71) but **not** for the clang plugin step (:51-56, which builds then `make clean`s). clang-specific symbol-visibility/dispatch link regressions slip through. | Add a `check-visibility` to the clang job. |
 | BUILD-3 | open | S | `Makefile:817` defines a `scan-build` (clang static analyzer, `--status-bugs`) target that no CI job invokes, so the clang-analyzer path can rot silently. | May be a deliberate cost tradeoff — flagged as a coverage gap. Wire into CI or note as intentionally manual. |
-| BUILD-4 | open | M | The multiversion variants are `-flto` objects at distinct `-march` levels linked `-flto`; the mechanism depends on the LTO link preserving per-TU target attributes, and the cross-variant test asserts **byte-identical** output, which masks an accidental ISA downgrade (nothing would catch a variant collapsing to baseline). | Codegen/perf-integrity gap, not a correctness bug. Verifying needs an objdump/ISA check on the built variant symbols in the shipped `.so`. |
 
 ## observability
 

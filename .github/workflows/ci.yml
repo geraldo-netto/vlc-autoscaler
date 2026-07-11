@@ -71,6 +71,12 @@ jobs:
           make check-visibility MULTIVERSION=1 EXTRA_CFLAGS=-Werror
           make clean
 
+      # BUILD-4: prove the three SIMD variants actually emit distinct ISA;
+      # the byte-identical-output variant test cannot catch a collapse to
+      # the SSE2 baseline.
+      - name: Verify multiversion variants emit distinct ISA
+        run: make check-multiversion-isa
+
       - name: Unit tests (ASan + UBSan) + complexity gate
         run: make check EXTRA_CFLAGS=-Werror
 
