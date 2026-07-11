@@ -104,7 +104,6 @@ UB-1 (perfmon signed shift) is also a portability item; tracked once under undef
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| ERR-2 | open | S | `tests/fuzz_usm_variants.c:126-131` `run_sse2_reference` ignores `up_usm_pool_apply_sse2`'s return; if the reference apply fails while variant applies succeed, the harness compares the 0xCC poison baseline against real output and reports a bogus "variant divergence" instead of the actual failure. | Return/abort on reference failure so the report names the real culprit. |
 
 src/ otherwise clean end-to-end: `scaler_process_status_t` honored by every producer/consumer;
 `up_sem_wait_nointr` retries only EINTR; all alloc/sem/pthread init results checked with

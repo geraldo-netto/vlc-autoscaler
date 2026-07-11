@@ -111,16 +111,22 @@ static void fill_source(uint8_t *src, size_t n,
     }
 }
 
-/* Run SSE2 reference. Returns 0 on pool-create failure, 1 on success. */
+/* Run SSE2 reference. Returns 1 when dst holds real output; 0 when the
+ * input must be skipped because the pool could not be created or the apply
+ * failed (lazy worker spawn is resource-dependent, not a variant bug).
+ * Comparing after a failed apply would diff the 0xCC poison against real
+ * variant output and report a bogus divergence instead of the culprit. */
 static int run_sse2_reference(uint8_t *dst, const uint8_t *src, size_t n,
                               const fuzz_params_t *p)
 {
     memset(dst, 0xCC, n);
     usm_pool_t *pool = up_usm_pool_create_sse2(p->workers, p->width, p->height, 0);
     if (!pool) return 0;
-    up_usm_pool_apply_sse2(pool, dst, p->width, src, p->width, p->amount);
+    int rc = up_usm_pool_apply_sse2(pool, dst, p->width, src, p->width, p->amount);
     up_usm_pool_destroy_sse2(pool);
-    return 1;
+    if (rc != 0)
+        fprintf(stderr, "sse2 reference apply failed (input skipped)\n");
+    return rc == 0;
 }
 
 static void run_avx2_and_check(uint8_t *dst, const uint8_t *dst_ref,
@@ -130,8 +136,12 @@ static void run_avx2_and_check(uint8_t *dst, const uint8_t *dst_ref,
     memset(dst, 0xCC, n);
     usm_pool_t *pool = up_usm_pool_create_avx2(p->workers, p->width, p->height, 0);
     if (!pool) return;
-    up_usm_pool_apply_avx2(pool, dst, p->width, src, p->width, p->amount);
+    int rc = up_usm_pool_apply_avx2(pool, dst, p->width, src, p->width, p->amount);
     up_usm_pool_destroy_avx2(pool);
+    if (rc != 0) {
+        fprintf(stderr, "avx2 apply failed (input skipped)\n");
+        return;
+    }
     check_equal_or_abort(dst_ref, dst, n, "avx2",
                          p->width, p->height, p->amount, p->workers);
 }
@@ -143,8 +153,12 @@ static void run_avx512_and_check(uint8_t *dst, const uint8_t *dst_ref,
     memset(dst, 0xCC, n);
     usm_pool_t *pool = up_usm_pool_create_avx512(p->workers, p->width, p->height, 0);
     if (!pool) return;
-    up_usm_pool_apply_avx512(pool, dst, p->width, src, p->width, p->amount);
+    int rc = up_usm_pool_apply_avx512(pool, dst, p->width, src, p->width, p->amount);
     up_usm_pool_destroy_avx512(pool);
+    if (rc != 0) {
+        fprintf(stderr, "avx512 apply failed (input skipped)\n");
+        return;
+    }
     check_equal_or_abort(dst_ref, dst, n, "avx512",
                          p->width, p->height, p->amount, p->workers);
 }
