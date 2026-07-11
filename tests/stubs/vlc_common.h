@@ -20,6 +20,11 @@ typedef struct vlc_object_t { int unused; } vlc_object_t;
 #define VLC_CODEC_RGBA  VLC_FOURCC('R', 'G', 'B', 'A')
 #define VLC_CODEC_BGRA  VLC_FOURCC('B', 'G', 'R', 'A')
 
-#define msg_Dbg(obj, ...) ((void)(obj))
+/* VLC's real headers expand every msg_* to msg_Generic; the tests only need
+ * them to evaluate their object argument and vanish. */
+#define msg_Dbg(obj, ...)  ((void)(obj))
+#define msg_Warn(obj, ...) ((void)(obj))
+#define msg_Err(obj, ...)  ((void)(obj))
+#define msg_Info(obj, ...) ((void)(obj))
 
 #endif

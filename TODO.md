@@ -163,7 +163,6 @@ are all balanced on every path.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| OBS-3 | open | S | swscale backend failure paths are all silent: `SCALER_PROCESS_TRANSIENT` geometry reject (`scaler_swscale.c:118`), short-`sws_scale` line-count reject (`:144`, returned count discarded), `!priv` FATAL (`:111`). zimg has a one-shot `zimg_warn_bad_geometry`; the fallback everyone lands on has no counterpart. | Add a one-shot geometry warn symmetric with zimg's. |
 
 No log-spam risk on per-frame paths: perf advisory, process-fail, alignment-drift, bad-geometry,
 probe verdict, and USM-pool-failure messages are all one-shot latched; periodic stats are

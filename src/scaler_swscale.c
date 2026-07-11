@@ -24,7 +24,21 @@ typedef struct
 {
     struct SwsContext *ctx;
     enum AVPixelFormat av_fmt;
+    /* OBS-3: one-shot latches so a persistently bad stream logs a reason once
+     * instead of spamming every frame — symmetric with zimg's bad-geometry
+     * warning. */
+    int                geom_warned;
+    int                short_warned;
 } sws_priv_t;
+
+/* OBS-3: emit a one-shot swscale failure reason, latched via *warned. */
+static void sws_warn_once( scaler_ctx_t *ctx, int *warned, const char *reason )
+{
+    (void)reason;   /* unused when msg_Warn compiles out (unit-test stub) */
+    if( !ctx->log_obj || *warned ) return;
+    *warned = 1;
+    msg_Warn( ctx->log_obj, "swscale: %s (logged only once)", reason );
+}
 
 /* Local helper — same set of chromas the original plugin supported. */
 static enum AVPixelFormat ChromaToAVFmt( vlc_fourcc_t c )
@@ -115,7 +129,12 @@ static scaler_process_status_t sws_process( scaler_ctx_t *ctx,
     up_picture_view_t src_view, dst_view;
     if( !up_picture_view_init( &src_view, src, ctx->chroma, &src_region )
      || !up_picture_view_init( &dst_view, dst, ctx->chroma, &dst_region ) )
+    {
+        sws_warn_once( ctx, &p->geom_warned,
+                       "frame geometry unusable (crop/stride/subsample "
+                       "mismatch); dropping frame(s)" );
         return SCALER_PROCESS_TRANSIENT;
+    }
 
     const uint8_t *src_data[4]   = { NULL };
     int            src_stride[4] = { 0 };
@@ -141,6 +160,10 @@ static scaler_process_status_t sws_process( scaler_ctx_t *ctx,
      * scale must emit exactly dst_h lines; a short return (rc < dst_h, incl.
      * 0 or a negative error) leaves the destination partially filled, so
      * fail rather than forward a half-written frame. */
+    if( rc < ctx->dst_h )
+        sws_warn_once( ctx, &p->short_warned,
+                       "sws_scale emitted fewer lines than the target height; "
+                       "dropping frame(s)" );
     return scaler_process_lines_status( rc, ctx->dst_h );
 }
 
