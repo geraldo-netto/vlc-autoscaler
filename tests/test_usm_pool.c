@@ -17,6 +17,7 @@
 #include "../src/usm_pool.h"
 #include "../src/threading.h"
 #include "barrier_fault_inject.h"
+#include "prng.h"   /* DUP-2: shared xorshift32 */
 
 #include <errno.h>
 #include <limits.h>
@@ -76,14 +77,13 @@ static size_t max_aligned_alloc_size(void)
 
 #include "test_harness.h"
 
-/* Deterministic xorshift, identical seeding per test for reproducibility. */
+/* Deterministic fill, identical seeding per test for reproducibility. Thin
+ * wrapper over the shared PRNG (DUP-2); the 64-bit seed is folded to 32 bits.
+ * Values feed pool-vs-single byte-identity checks, so the exact stream is
+ * immaterial as long as both sides see the same buffer. */
 static void fill_pseudorandom(uint8_t *buf, size_t n, uint64_t seed)
 {
-    uint64_t s = seed ? seed : 0xc0ffee123ULL;
-    for (size_t i = 0; i < n; i++) {
-        s ^= s << 13; s ^= s >> 7; s ^= s << 17;
-        buf[i] = (uint8_t)(s & 0xFF);
-    }
+    up_fill_random(buf, n, (uint32_t)seed ^ (uint32_t)(seed >> 32));
 }
 
 /*

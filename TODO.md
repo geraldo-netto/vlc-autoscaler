@@ -80,7 +80,7 @@ Lizard 1.23.0 at HEAD: zero CCN>10 with the project threshold; every production 
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| DUP-2 | open | S | Four+ scattered deterministic-PRNG fillers with divergent constants: `fill_pseudorandom` (test_usm_pool.c:80, xorshift64), `fill_xorshift`/`xs32` (stress_usm_pool.c:51), `zt_pic_fill` (zimg_test_util.h:100), inline LCGs (test_usm.c:192, test_upscale_logic.c:689). | Add `tests/prng.h` exposing one `up_xs32`/`up_fill_random`; `zt_pic_fill` keeps its geometry loop and wraps the scalar. `tests/fuzz_smoke.h` already shares the smoke-main PRNG, so the pattern exists. Values shift once — verify no hardcoded expected outputs depend on the stream. |
+| DUP-2b | open | S | Two more xorshift32 buffer fills remain inline in `tests/fuzz_content_probe.c:61` and `tests/test_content_probe.c:381` (same 13/17/5 stream now in `tests/prng.h`). | Left out of the DUP-2 pass: they feed content-probe metric assertions, so a stream change could shift expected values. Adopt `prng.h` only after confirming those assertions are stream-agnostic. |
 
 ## architecture/modularity/SOLID
 

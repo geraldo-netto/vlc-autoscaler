@@ -37,22 +37,7 @@
 #include <string.h>
 #include <time.h>
 
-/* xorshift32 — same as the smoke fuzzers. Deterministic across runs. */
-static uint32_t xs32(uint32_t *s)
-{
-    uint32_t v = *s;
-    v ^= v << 13;
-    v ^= v >> 17;
-    v ^= v << 5;
-    *s = v;
-    return v;
-}
-
-static void fill_xorshift(uint8_t *buf, size_t n, uint32_t seed)
-{
-    uint32_t s = seed ? seed : 0xC0FFEEu;
-    for (size_t i = 0; i < n; i++) buf[i] = (uint8_t)xs32(&s);
-}
+#include "prng.h"   /* DUP-2: shared xorshift32 (up_fill_random / up_xs32) */
 
 /* Returns 0 on byte-identical, otherwise the count of differing bytes. */
 static size_t byte_diff(const uint8_t *a, const uint8_t *b, size_t n)
@@ -104,7 +89,7 @@ static size_t run_one_frame(const stress_config_t *cfg, stress_bufs_t *b,
                             size_t plane_size)
 {
     /* Fresh src each frame — defeats any pointer-caching bug. */
-    fill_xorshift(b->src, plane_size, 0xDEADBEEFu + (uint32_t)frame * 7919);
+    up_fill_random(b->src, plane_size, 0xDEADBEEFu + (uint32_t)frame * 7919);
 
     /* Single-threaded reference. */
     memset(b->dst_st, 0, plane_size);

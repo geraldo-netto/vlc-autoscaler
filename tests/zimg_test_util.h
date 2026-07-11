@@ -18,6 +18,7 @@
 #include "../src/scaler_zimg_chroma.h"
 #include "../src/zimg_helpers.h"
 #include "../src/upscale_logic.h"
+#include "prng.h"   /* DUP-2: shared xorshift32 */
 
 #include <limits.h>
 #include <stdint.h>
@@ -104,10 +105,8 @@ static inline void zt_pic_fill(zt_pic_t *tp, uint32_t seed)
         plane_t *p = &tp->pic.p[k];
         for (int y = 0; y < p->i_visible_lines; y++) {
             uint8_t *row = p->p_pixels + (size_t)y * (size_t)p->i_pitch;
-            for (int x = 0; x < p->i_visible_pitch; x++) {
-                s ^= s << 13; s ^= s >> 17; s ^= s << 5;
-                row[x] = (uint8_t)s;
-            }
+            for (int x = 0; x < p->i_visible_pitch; x++)
+                row[x] = (uint8_t)up_xs32(&s);
         }
     }
 }
