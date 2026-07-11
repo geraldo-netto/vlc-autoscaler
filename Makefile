@@ -21,6 +21,11 @@ CLANG   ?= clang
 INSTALL ?= install
 BUILD   ?= build
 
+# x86-64 host detection. The runtime SIMD dispatcher (usm_pool_dispatch.c) and
+# its unit test are x86-only (the TU #errors on other targets), so gate them on
+# this. Empty string on non-x86.
+IS_X86 := $(findstring x86_64,$(shell $(CC) -dumpmachine 2>/dev/null))
+
 # --------- pkg-config (only needed for the plugin itself) ---------
 VLC_CFLAGS := $(shell pkg-config --cflags vlc-plugin 2>/dev/null)
 VLC_LIBS   := $(shell pkg-config --libs   vlc-plugin 2>/dev/null)
@@ -276,7 +281,7 @@ check-visibility: $(BUILD)/$(PLUGIN).so
 # works on machines without lizard installed.
 check: complexity test
 
-test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_threading_noaffinity $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants
+test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_threading_noaffinity $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants $(if $(IS_X86),$(BUILD)/test_usm_pool_dispatch)
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/test_upscale_logic
@@ -325,6 +330,14 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/tes
 	@echo
 	@echo "=== usm_pool_variants (cross-SIMD byte-equivalence) ==="
 	@$(BUILD)/test_usm_pool_variants
+	@echo
+	@if [ -n "$(IS_X86)" ]; then \
+	    echo "=== usm_pool_dispatch (runtime SIMD selection) ==="; \
+	    $(BUILD)/test_usm_pool_dispatch; \
+	 else echo "=== usm_pool_dispatch (skipped: non-x86 host) ==="; fi
+
+$(BUILD)/test_usm_pool_dispatch: tests/test_usm_pool_dispatch.c src/usm_pool_dispatch.c src/usm_pool_variants.h src/usm_pool.h src/cpu_level.h tests/test_harness.h | $(BUILD)
+	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
 $(BUILD)/test_upscale_logic: tests/test_upscale_logic.c src/upscale_logic.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
@@ -736,7 +749,8 @@ COV_TESTS := \
     $(COV_BUILD)/test_scaler_pick \
     $(COV_BUILD)/test_scaler_swscale \
     $(COV_BUILD)/test_picture_view \
-    $(COV_BUILD)/test_lifetime
+    $(COV_BUILD)/test_lifetime \
+    $(if $(IS_X86),$(COV_BUILD)/test_usm_pool_dispatch)
 
 COV_FUZZERS := \
     $(COV_BUILD)/fuzz_upscale_logic \
@@ -776,6 +790,8 @@ $(COV_BUILD)/usm_pool_cov.o: src/usm_pool.c | $(COV_BUILD)
 $(COV_BUILD)/test_usm_pool: tests/test_usm_pool.c $(COV_BUILD)/usm_pool_cov.o | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_BUILD)/usm_pool_cov.o $(COV_LDFLAGS) \
 	    $(USM_POOL_WRAP_LDFLAGS) -lpthread
+$(COV_BUILD)/test_usm_pool_dispatch: tests/test_usm_pool_dispatch.c src/usm_pool_dispatch.c src/usm_pool_variants.h src/usm_pool.h src/cpu_level.h tests/test_harness.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_content_probe: tests/test_content_probe.c src/content_probe.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h src/scaler_status.h | $(COV_BUILD)

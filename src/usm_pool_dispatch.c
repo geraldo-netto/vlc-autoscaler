@@ -84,41 +84,55 @@ typedef struct {
 static usm_pool_ops_t g_ops;
 
 /*
- * Constructor: runs at .so load via the GCC/Clang constructor attribute.
  * Selection priority: AVX-512 > AVX2 > SSE2. The SSE2 baseline is always a
  * valid fallback (every x86_64 CPU has SSE2; it's part of the architecture).
+ * Split out from the constructor and parameterised on the two capability bits
+ * so the whole selection table is unit-testable without the host's actual CPU
+ * (tests/test_usm_pool_dispatch.c drives all three arms).
  *
  * PORT-6: the variant objects are compiled at -march=x86-64-v4/v3, so
  * selection proves the full level (the v4 object contains EVEX.256
  * instructions requiring AVX512VL, not just F+BW).
  */
+static void usm_pool_select_ops(int have_v4, int have_v3,
+                                usm_pool_ops_t *ops, const char **name)
+{
+    if (have_v4) {
+        *ops = (usm_pool_ops_t){ up_usm_pool_create_avx512,
+                                 up_usm_pool_destroy_avx512,
+                                 up_usm_pool_apply_avx512,
+                                 up_usm_pool_effective_threads_avx512 };
+        *name = "avx512";
+        return;
+    }
+    if (have_v3) {
+        *ops = (usm_pool_ops_t){ up_usm_pool_create_avx2,
+                                 up_usm_pool_destroy_avx2,
+                                 up_usm_pool_apply_avx2,
+                                 up_usm_pool_effective_threads_avx2 };
+        *name = "avx2";
+        return;
+    }
+    *ops = (usm_pool_ops_t){ up_usm_pool_create_sse2,
+                             up_usm_pool_destroy_sse2,
+                             up_usm_pool_apply_sse2,
+                             up_usm_pool_effective_threads_sse2 };
+    *name = "sse2";
+}
+
+/* Constructor: runs at .so load via the GCC/Clang constructor attribute and
+ * binds g_ops to the best variant the running CPU supports. */
 static void __attribute__((constructor))
 up_usm_pool_dispatch_init(void)
 {
+    int have_v4 = 0;
+    int have_v3 = 0;
 #if defined(__GNUC__) || defined(__clang__)
     __builtin_cpu_init();
-    if (up_cpu_supports_v4()) {
-        g_ops = (usm_pool_ops_t){ up_usm_pool_create_avx512,
-                                  up_usm_pool_destroy_avx512,
-                                  up_usm_pool_apply_avx512,
-                                  up_usm_pool_effective_threads_avx512 };
-        up_usm_pool_variant_name = "avx512";
-        return;
-    }
-    if (up_cpu_supports_v3()) {
-        g_ops = (usm_pool_ops_t){ up_usm_pool_create_avx2,
-                                  up_usm_pool_destroy_avx2,
-                                  up_usm_pool_apply_avx2,
-                                  up_usm_pool_effective_threads_avx2 };
-        up_usm_pool_variant_name = "avx2";
-        return;
-    }
+    have_v4 = up_cpu_supports_v4();
+    have_v3 = up_cpu_supports_v3();
 #endif
-    g_ops = (usm_pool_ops_t){ up_usm_pool_create_sse2,
-                              up_usm_pool_destroy_sse2,
-                              up_usm_pool_apply_sse2,
-                              up_usm_pool_effective_threads_sse2 };
-    up_usm_pool_variant_name = "sse2";
+    usm_pool_select_ops(have_v4, have_v3, &g_ops, &up_usm_pool_variant_name);
 }
 
 /* Public API — thin forwarding shims through the load-time-selected table. */
