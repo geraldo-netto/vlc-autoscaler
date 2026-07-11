@@ -201,7 +201,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential clang pkg-config unzip \
+            build-essential clang pkg-config unzip gcovr \
             libvlccore-dev libvlc-dev \
             libswscale-dev libavutil-dev libzimg-dev
 
@@ -226,6 +226,16 @@ jobs:
         # only usm_pool.o, leaving the dispatch/SIMD code unanalysed.
         run: |
           build-wrapper-linux-x86-64 --out-dir bw-output make plugin MULTIVERSION=1
+
+      - name: Generate coverage report for Sonar
+        # Separate from the build-wrapper build above: `make coverage` builds
+        # and runs the instrumented unit tests (gcc --coverage), leaving .gcda
+        # in build/cov. gcovr aggregates them across all test binaries into a
+        # single SonarQube generic-coverage XML with root-relative src/ paths,
+        # which sonar.coverageReportPaths points at.
+        run: |
+          make coverage
+          gcovr --root . --filter 'src/' --sonarqube coverage-sonar.xml build/cov
 
       - name: Run sonar-scanner
         uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
