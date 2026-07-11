@@ -971,9 +971,19 @@ static void TryBackendFallback( filter_t *p_filter, filter_sys_t *p_sys )
     p_sys->fallback_tried = 1;
 
     scaler_ctx_t *ctx = &p_sys->scaler;
-    if( ctx->backend->id != SCALER_BACKEND_ZIMG
-     || p_sys->backend_pref == SCALER_BACKEND_ZIMG )
+    if( ctx->backend->id != SCALER_BACKEND_ZIMG )
         return;
+    if( p_sys->backend_pref == SCALER_BACKEND_ZIMG )
+    {
+        /* OBS-2: without this the user sees only the generic one-shot
+         * "failed to process a frame" warning, with no hint that their
+         * forced-backend setting is what suppressed recovery. */
+        msg_Err( p_filter,
+                 "AutoUpscale: zimg failed fatally but "
+                 "--autoupscale-backend forces zimg; swscale fallback "
+                 "suppressed, all remaining frames will be dropped" );
+        return;
+    }
 
     const scaler_backend_t *sw = scaler_pick( SCALER_BACKEND_SWSCALE,
                                               ctx->chroma, ctx->algo );

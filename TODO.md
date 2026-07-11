@@ -144,7 +144,6 @@ Test-harness pic leaks are tracked as MEM-1/MEM-3.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | OBS-1 | open | M | The USM pool's effective worker count is unobservable: partial spawn silently shrinks `n_threads` (src/usm_pool.c:422-436) and create-time stripe clamping (usm_pool.c:459-461) shrinks it too, while the engagement log (src/autoupscale.c:712-722) prints `threads=%d` from an independent `up_threads_decide()` computation reflecting neither pool. | The zimg pool logs its real grid (`log_zimg_open`); the USM pool logs nothing — headline log can overstate parallelism. Log actual `n_threads` after lazy init (needs a query hook or deferred log). |
-| OBS-2 | open | S | `src/autoupscale.c:964-991` `TryBackendFallback` returns silently when a FATAL zimg failure occurs but fallback is suppressed by forced `--autoupscale-backend=1`; user sees only the generic one-shot "backend failed to process a frame" with no hint that the forced-backend setting suppressed recovery and all remaining frames will drop. | One-shot msg_Err naming the forced-backend suppression. |
 
 No log-spam risks found: all repeated-path messages are one-shot latched; periodic stats
 are msg_Dbg on a 5 s tick.
