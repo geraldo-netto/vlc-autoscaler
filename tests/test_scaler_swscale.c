@@ -301,14 +301,15 @@ static void test_cropped_plane_forwarding(void)
 static void test_close_without_context(void)
 {
     BEGIN("close handles empty private state and empty FFmpeg context");
+    const int free_calls_before = g_free_calls;
     scaler_ctx_t ctx = {0};
-    sws_close(&ctx);
+    sws_close(&ctx);   /* priv NULL: nothing to free */
     sws_priv_t *priv = calloc(1, sizeof *priv);
     CHECK(priv != NULL);
     ctx.priv = priv;
-    sws_close(&ctx);
+    sws_close(&ctx);   /* priv set, sws NULL: still no context free */
     CHECK(ctx.priv == NULL);
-    CHECK(g_free_calls == 4);
+    CHECK(g_free_calls == free_calls_before);
     END();
 }
 
