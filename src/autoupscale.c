@@ -674,28 +674,36 @@ static void ClampConfig( int *preset, int *algo, int *backend, int *usm, int *sk
     if( *skip < 0 ) *skip = 0;
 }
 
+/* OBS-5: the exported stat variables, in creation order. Kept as one table so
+ * CreateStatsVars / the MaybeLogStats export / the Close teardown all agree on
+ * the set; the names are documented in README under "Exported VLC variables". */
+static const char *const k_stats_vars[] = {
+    "autoupscale-ewma-us",   /* current EWMA frame time, microseconds */
+    "autoupscale-frames",    /* frames processed */
+    "autoupscale-dropped",   /* frames dropped (OBS-4) */
+};
+#define STATS_VAR_COUNT (sizeof(k_stats_vars) / sizeof(k_stats_vars[0]))
+
 /* OBS-5: expose performance and frame stats via VLC variables.
  * ERR-1: on failure the export is disabled rather than var_SetInteger
- * silently operating on a nonexistent variable; a partial pair is
- * rolled back so Close() can gate both var_Destroy calls together.
- * Returns 1 when both variables exist. */
+ * silently operating on a nonexistent variable; any variables already created
+ * are rolled back so Close() can gate every var_Destroy on the same flag.
+ * Returns 1 only when the whole set exists. */
 static int CreateStatsVars( filter_t *p_filter )
 {
-    if( var_Create( p_filter, "autoupscale-ewma-us",
-                    VLC_VAR_INTEGER ) != VLC_SUCCESS )
-        goto fail;
-    if( var_Create( p_filter, "autoupscale-frames",
-                    VLC_VAR_INTEGER ) != VLC_SUCCESS )
+    for( size_t i = 0; i < STATS_VAR_COUNT; i++ )
     {
-        var_Destroy( p_filter, "autoupscale-ewma-us" );
-        goto fail;
+        if( var_Create( p_filter, k_stats_vars[i],
+                        VLC_VAR_INTEGER ) == VLC_SUCCESS )
+            continue;
+        for( size_t j = 0; j < i; j++ )
+            var_Destroy( p_filter, k_stats_vars[j] );
+        msg_Warn( p_filter,
+                  "AutoUpscale: stat variable creation failed; "
+                  "autoupscale-ewma-us/-frames/-dropped export disabled" );
+        return 0;
     }
     return 1;
-fail:
-    msg_Warn( p_filter,
-              "AutoUpscale: stat variable creation failed; "
-              "autoupscale-ewma-us/-frames export disabled" );
-    return 0;
 }
 
 /* CX-1: reject CPUs below the build's -march LEVEL. This whole object is
@@ -1027,6 +1035,7 @@ static void MaybeLogStats( filter_t *p_filter, filter_sys_t *p_sys,
         var_SetInteger( p_filter, "autoupscale-ewma-us",
                         (int64_t)up_perfmon_ewma_us( &p_sys->perfmon ) );
         var_SetInteger( p_filter, "autoupscale-frames", p_sys->frame_count );
+        var_SetInteger( p_filter, "autoupscale-dropped", p_sys->dropped_count );
     }
 }
 
@@ -1173,8 +1182,8 @@ static void Close( vlc_object_t *p_this )
          * pair having been created successfully. */
         if( p_sys->stats_vars_ok )
         {
-            var_Destroy( p_filter, "autoupscale-ewma-us" );
-            var_Destroy( p_filter, "autoupscale-frames" );
+            for( size_t i = 0; i < STATS_VAR_COUNT; i++ )
+                var_Destroy( p_filter, k_stats_vars[i] );
         }
         free( p_sys );
     }
