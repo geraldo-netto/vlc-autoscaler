@@ -105,13 +105,18 @@ _Static_assert(UP_TILE_THREADS_MAX == UP_THREADS_MAX,
 
 /*
  * SCAL-4: best-effort pin one worker thread to a single CPU core. Opt-in
- * (--autoupscale-pin-threads), Linux only — isolates the non-portable
- * pthread_setaffinity_np here. Failure is ignored: pinning is an optimization,
- * never a correctness requirement, and can fail benignly (CPU offline, cgroup
- * cpuset, container limits). No-op on non-Linux. */
+ * (--autoupscale-pin-threads), isolates the non-portable pthread_setaffinity_np
+ * here. Failure is ignored: pinning is an optimization, never a correctness
+ * requirement, and can fail benignly (CPU offline, cgroup cpuset, container
+ * limits). No-op where the CPU-affinity capability is absent.
+ *
+ * PORT-2: guard on the same UP_HAVE_CPU_AFFINITY capability macro that
+ * threading.h derives (CPU_ALLOC family present AND !UP_NO_CPU_AFFINITY), not
+ * a bare __linux__ — so a Linux libc lacking the CPU_ALLOC macros, or a build
+ * that forces affinity off, degrades to a no-op instead of failing to compile. */
 static void pin_worker_to_cpu(pthread_t thread, int cpu)
 {
-#if defined(__linux__)
+#if UP_HAVE_CPU_AFFINITY
     size_t set_size = CPU_ALLOC_SIZE((size_t)cpu + 1);
     cpu_set_t *set = CPU_ALLOC((size_t)cpu + 1);
     if (set == NULL) return;

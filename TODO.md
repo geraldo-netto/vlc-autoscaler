@@ -119,9 +119,7 @@ speculative pattern-work the project explicitly rejects.
 
 ## portability/standards conformance
 
-| id | status | effort | description | notes |
-|---|---|---|---|---|
-| PORT-2 | open | S | `src/scaler_zimg.c:112` guards `pin_worker_to_cpu` on `__linux__` and unconditionally uses `CPU_ALLOC*`/`CPU_*_S`/`pthread_setaffinity_np`, but `src/threading.h:54` guards the same capability on `UP_HAVE_CPU_AFFINITY` (`CPU_ALLOC && CPU_ALLOC_SIZE && !UP_NO_CPU_AFFINITY`) with a fallback. | A Linux libc defining `__linux__` without the `CPU_ALLOC*` family compiles threading.h but fails to compile scaler_zimg.c. Key scaler_zimg.c off the same capability macro. Untested: no target builds scaler_zimg.c with affinity forced off (threading.h has `test_threading_noaffinity`, scaler_zimg.c has no analogue). |
+No open findings.
 
 ## error handling
 
