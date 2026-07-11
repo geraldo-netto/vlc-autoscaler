@@ -845,7 +845,11 @@ static void test_tiling_matches_untiled(void)
     for (size_t i = 0; i < NCFG; i++) {
         zt_pic_t ref;
         if (run_zimg_threads_in(&CFGS[i], 1, 1, 0, &ref)
-                != SCALER_PROCESS_OK) { CHECK(0); continue; }
+                != SCALER_PROCESS_OK) {
+            CHECK(0);
+            zt_pic_free(&ref);
+            continue;
+        }
         for (size_t t = 0; t < sizeof TCOUNTS / sizeof *TCOUNTS; t++) {
             zt_pic_t tiled;
             int r = run_zimg_threads_in(&CFGS[i], TCOUNTS[t], 1, 0, &tiled);

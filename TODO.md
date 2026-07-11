@@ -21,7 +21,6 @@ allocation-size arithmetic overflow-checked at every seam; all format strings li
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| MEM-3 | open | S | `tests/test_scaler_zimg.c:775-778` `test_tiling_matches_untiled` does `CHECK(0); continue;` on reference-run failure without `zt_pic_free(&ref)`; leaks the ref planes when `run_zimg_threads_in` fails after allocating out (process failure, not alloc failure). | Test-only leak under ASan-visible conditions; add the free before `continue`. |
 
 ## performance
 
