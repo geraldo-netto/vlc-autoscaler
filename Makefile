@@ -509,6 +509,9 @@ stress: $(BUILD)/stress_usm_pool $(BUILD)/stress_usm_pool_tsan
 ifdef HAVE_ZIMG
 ZIMG_H_CFLAGS  := -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS) $(EXTRA_CFLAGS)
 ZIMG_H_LIBS    := $(VLC_LIBS) $(ZIMG_LIBS) -lpthread
+# test_scaler_zimg defines __wrap_aligned_alloc (MEM-1 OOM fault injection)
+# on top of the barrier wraps; only links of that file may use this.
+ZIMG_TEST_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc
 
 # scaler_zimg.c compiled once per sanitizer/optimization mode; header
 # dependencies come from -MMD (the coverage-zimg recipe rebuilds from
@@ -525,12 +528,12 @@ $(BUILD)/scaler_zimg_bench.o: src/scaler_zimg.c | $(BUILD)
 $(BUILD)/test_scaler_zimg: tests/test_scaler_zimg.c $(BUILD)/scaler_zimg_asan.o | $(BUILD)
 	$(CC) -O2 $(ZIMG_H_CFLAGS) -fsanitize=address,undefined -MMD -MP -o $@ \
 	    $< $(BUILD)/scaler_zimg_asan.o -fsanitize=address,undefined \
-	    $(BARRIER_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
+	    $(ZIMG_TEST_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
 
 $(BUILD)/test_scaler_zimg_tsan: tests/test_scaler_zimg.c $(BUILD)/scaler_zimg_tsan.o | $(BUILD)
 	$(CLANG) -O1 $(ZIMG_H_CFLAGS) -fsanitize=thread -MMD -MP -o $@ \
 	    $< $(BUILD)/scaler_zimg_tsan.o -fsanitize=thread \
-	    $(BARRIER_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
+	    $(ZIMG_TEST_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
 
 $(BUILD)/bench_scaler_zimg: tests/bench_scaler_zimg.c $(BUILD)/scaler_zimg_bench.o | $(BUILD)
 	$(CC) -O2 $(ZIMG_H_CFLAGS) -MMD -MP -o $@ $< $(BUILD)/scaler_zimg_bench.o $(ZIMG_H_LIBS)
@@ -584,7 +587,7 @@ coverage-zimg:
 	@rm -rf $(BUILD)/covz && mkdir -p $(BUILD)/covz
 	$(CC) -O0 -g --coverage $(ZIMG_H_CFLAGS) -o $(BUILD)/covz/tz \
 	    tests/test_scaler_zimg.c src/scaler_zimg.c --coverage \
-	    $(BARRIER_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
+	    $(ZIMG_TEST_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
 	@$(BUILD)/covz/tz >/dev/null 2>&1 || true
 	@# Run gcov inside covz (with src/tests symlinks so embedded relative
 	@# paths resolve) — .gcov output stays out of the repo root even when

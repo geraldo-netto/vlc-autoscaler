@@ -22,7 +22,6 @@ allocation-size arithmetic overflow-checked at every seam; all format strings li
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| MEM-1 | open | S | `tests/zimg_test_util.h:73-78` `zt_pic_alloc` returns -1 mid-loop leaving planes `[0,k)` allocated; callers `run_zimg` (tests/test_scaler_zimg.c:98) and `resample` (tests/fuzz_scaler_seam.c:106-107) then return without `zt_pic_free(&src)`, leaking the partial picture. | OOM-only. Fix inside `zt_pic_alloc` (free partial planes before returning -1) closes every caller at once; pairs with UB-3. |
 | MEM-3 | open | S | `tests/test_scaler_zimg.c:775-778` `test_tiling_matches_untiled` does `CHECK(0); continue;` on reference-run failure without `zt_pic_free(&ref)`; leaks the ref planes when `run_zimg_threads_in` fails after allocating out (process failure, not alloc failure). | Test-only leak under ASan-visible conditions; add the free before `continue`. |
 
 ## performance

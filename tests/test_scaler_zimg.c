@@ -30,8 +30,31 @@
 #include "barrier_fault_inject.h"
 #include "../src/threading.h"
 
+#include <errno.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <sys/resource.h>
+
+/* Linked with -Wl,--wrap=aligned_alloc: OOM fault injection for the MEM-1 /
+ * UB-3 error-path tests. Atomic because scaler_zimg workers also allocate. */
+static atomic_int g_alloc_fail_at;   /* N>0: the Nth aligned_alloc fails */
+
+void *__real_aligned_alloc(size_t alignment, size_t size);
+void *__wrap_aligned_alloc(size_t alignment, size_t size)
+{
+    int n = atomic_load_explicit(&g_alloc_fail_at, memory_order_relaxed);
+    if (n > 0 && atomic_fetch_sub_explicit(&g_alloc_fail_at, 1,
+                                           memory_order_relaxed) == 1) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    return __real_aligned_alloc(alignment, size);
+}
+
+static void zt_alloc_fail_at(int nth)
+{
+    atomic_store_explicit(&g_alloc_fail_at, nth, memory_order_relaxed);
+}
 
 static int g_run = 0, g_fail = 0, g_cur_fail = 0;
 static const char *g_cur = NULL;
@@ -885,6 +908,24 @@ static void test_pin_cpus_matches(void)
     END();
 }
 
+/* MEM-1: an OOM on plane k must free planes [0,k) (LeakSanitizer enforces)
+ * and leave every buf[] NULL so a later zt_pic_free stays safe. */
+static void test_pic_alloc_partial_failure(void)
+{
+    BEGIN("zt_pic_alloc OOM mid-loop frees earlier planes, stays free-safe");
+    for (int fail_at = 1; fail_at <= 3; fail_at++) {
+        zt_pic_t pic;
+        memset(&pic, 0xAA, sizeof pic);
+        zt_alloc_fail_at(fail_at);
+        CHECK(zt_pic_alloc(&pic, VLC_CODEC_I420, 64, 64) == -1);
+        for (int k = 0; k < 3; k++)
+            CHECK(pic.buf[k] == NULL);
+        zt_pic_free(&pic);
+    }
+    zt_alloc_fail_at(0);
+    END();
+}
+
 static void test_picture_alloc_bounds(void)
 {
     BEGIN("zimg test picture allocation rejects unsafe dimensions");
@@ -920,6 +961,7 @@ int main(void)
     test_barrier_failure_drains_and_sticks();
     test_pin_cpus_matches();
     test_tiling_matches_untiled();
+    test_pic_alloc_partial_failure();
     test_picture_alloc_bounds();
     printf("\n%d tests run, %d failed\n", g_run, g_fail);
     return g_fail == 0 ? 0 : 1;

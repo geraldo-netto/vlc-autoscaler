@@ -45,9 +45,15 @@ static inline int zt_align_up(int v)
     return (v + (ZT_ALIGN - 1)) & ~(ZT_ALIGN - 1);
 }
 
+static inline void zt_pic_free(zt_pic_t *tp)
+{
+    for (int k = 0; k < 3; k++) { free(tp->buf[k]); tp->buf[k] = NULL; }
+}
+
 /* Allocate a 3-plane YUV picture for `chroma` at w x h. Pitch is 64-aligned;
  * chroma planes are subsampled per the chroma. Returns 0 on success, -1 if
- * the chroma is unsupported or any allocation fails. */
+ * the chroma is unsupported or any allocation fails (already-allocated
+ * planes are freed, so failure never leaks and *tp stays free-safe). */
 static inline int zt_pic_alloc(zt_pic_t *tp, uint32_t chroma, int w, int h)
 {
     unsigned sw, sh;
@@ -74,7 +80,7 @@ static inline int zt_pic_alloc(zt_pic_t *tp, uint32_t chroma, int w, int h)
         int pitch = zt_align_up(pw[k]);
         size_t sz = (size_t)pitch * (size_t)ph[k];
         tp->buf[k] = aligned_alloc(ZT_ALIGN, sz);
-        if (!tp->buf[k]) return -1;
+        if (!tp->buf[k]) { zt_pic_free(tp); return -1; }
         plane_t *p = &tp->pic.p[k];
         p->p_pixels        = tp->buf[k];
         p->i_pitch         = pitch;
@@ -84,11 +90,6 @@ static inline int zt_pic_alloc(zt_pic_t *tp, uint32_t chroma, int w, int h)
         p->i_visible_lines = ph[k];
     }
     return 0;
-}
-
-static inline void zt_pic_free(zt_pic_t *tp)
-{
-    for (int k = 0; k < 3; k++) { free(tp->buf[k]); tp->buf[k] = NULL; }
 }
 
 /* Deterministic xorshift fill of every plane's visible region. */
