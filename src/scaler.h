@@ -37,7 +37,7 @@ typedef struct scaler_ctx_s
     unsigned                src_coded_w, src_coded_h;
     unsigned                src_x_offset, src_y_offset;
     int                     dst_w, dst_h;
-    int                     algo;       /* UP_ALGO_* */
+    int                     algo;
     int                     threads_pref; /* 0 = auto; >0 = explicit */
     int                     pin_cpus;   /* SCAL-4: 1 = pin each scaler worker
                                          * thread to a distinct CPU core (opt-in,

@@ -315,21 +315,24 @@ struct filter_sys_t
      * achievable; a real bypass would need a structural change to
      * VLC's filter graph that we can't make from a video filter.
      *
-     *   probe_enabled : 1 if metric collection runs — either the
+     *   enabled       : 1 if metric collection runs — either the
      *                   content-probe option is on, or the USM sharpness
      *                   gate needs the metrics (usm > 0 and
      *                   usm-sharp-threshold > 0)
-     *   probe_advice  : 1 if the bypass advisory may be logged
+     *   advice        : 1 if the bypass advisory may be logged
      *                   (content-probe option only)
-     *   probe_active  : 1 while we're still collecting samples
+     *   active        : 1 while we're still collecting samples
      *   advice_logged : 1 once we've logged the bypass recommendation
-     *   probe_accum   : accumulator state passed to up_probe_observe()
+     *   accum         : accumulator state passed to up_probe_observe()
      */
-    int                probe_enabled;
-    int                probe_advice;
-    int                probe_active;
-    int                advice_logged;
-    up_probe_accum_t   probe_accum;
+    struct
+    {
+        int              enabled;
+        int              advice;
+        int              active;
+        int              advice_logged;
+        up_probe_accum_t accum;
+    } probe;
 
     /* Set after probe completes when source is heavily textured/grainy.
      * Causes ApplyUsmIfEnabled to return early — USM on such content
@@ -612,13 +615,13 @@ static void InitProbeAndPerfmon( filter_sys_t *p_sys, filter_t *p_filter,
     /* Metric collection also runs with content-probe=0 when the USM
      * sharpness gate needs it — that gate changes pixel output, so it
      * must not silently die with the diagnostic-only probe option. */
-    p_sys->probe_advice  = InheritIntSat( p_filter,
+    p_sys->probe.advice  = InheritIntSat( p_filter,
                                                CFG_PREFIX "content-probe" ) != 0;
-    p_sys->probe_enabled = ( p_sys->probe_advice
+    p_sys->probe.enabled = ( p_sys->probe.advice
                           || ( p_sys->usm_sharp_threshold > 0 && usm_pct > 0 ) )
                        && ChromaHasYPlane( chroma );
-    p_sys->probe_active  = p_sys->probe_enabled;
-    p_sys->advice_logged = 0;
+    p_sys->probe.active  = p_sys->probe.enabled;
+    p_sys->probe.advice_logged = 0;
 }
 
 /* Wire fmt_out to the upscale target. Same chroma, new dimensions. */
@@ -823,8 +826,8 @@ static void EmitPerfAdvisory( filter_t *p_filter, filter_sys_t *p_sys )
  * Run one iteration of the content probe on the source frame, and
  * close the probe (logging an advisory) once the window is full.
  * Observe-only — does not modify p_in or any output. Called from
- * Filter() while p_sys->probe_active is true and p_in has a readable luma
- * plane (the probe_enabled gate in Open() already filtered out formats
+ * Filter() while p_sys->probe.active is true and p_in has a readable luma
+ * plane (the probe.enabled gate in Open() already filtered out formats
  * without one). The shared picture view
  * resolves VLC's visible-area crop and rejects malformed plane geometry.
  *
@@ -846,14 +849,14 @@ static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
     const int pitch = view.plane[0].pitch;
     up_probe_metrics_t m;
     up_probe_metrics( pixels, pitch, sc->src_w, sc->src_h, &m );
-    up_probe_observe( &p_sys->probe_accum, m.lap_sum, m.lap_n,
+    up_probe_observe( &p_sys->probe.accum, m.lap_sum, m.lap_n,
                       m.edge_sum, m.edge_n );
 
-    if( p_sys->probe_accum.frames < UP_PROBE_WINDOW_FRAMES )
+    if( p_sys->probe.accum.frames < UP_PROBE_WINDOW_FRAMES )
         return;
 
-    p_sys->probe_active = 0;
-    if( up_should_skip_usm_for_sharpness( &p_sys->probe_accum,
+    p_sys->probe.active = 0;
+    if( up_should_skip_usm_for_sharpness( &p_sys->probe.accum,
                                           p_sys->usm_sharp_threshold ) )
     {
         p_sys->usm_skip_sharp = 1;
@@ -863,11 +866,11 @@ static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
                   "to avoid amplifying grain. "
                   "Override via --autoupscale-usm-sharp-threshold=0 "
                   "(disable) or a different cutoff.",
-                  (unsigned long long)(p_sys->probe_accum.lap_sum
-                       / p_sys->probe_accum.lap_samples),
+                  (unsigned long long)(p_sys->probe.accum.lap_sum
+                       / p_sys->probe.accum.lap_samples),
                   p_sys->usm_sharp_threshold );
     }
-    if( p_sys->probe_advice )
+    if( p_sys->probe.advice )
         LogProbeVerdict( p_filter, p_sys );
 }
 
@@ -876,15 +879,15 @@ static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
  * above also serves the USM sharpness gate. */
 static void LogProbeVerdict( filter_t *p_filter, filter_sys_t *p_sys )
 {
-    int recommend_bypass = up_should_bypass_for_content( &p_sys->probe_accum );
-    uint64_t lap_mean  = p_sys->probe_accum.lap_samples
-        ? p_sys->probe_accum.lap_sum  / p_sys->probe_accum.lap_samples : 0;
-    uint64_t edge_mean = p_sys->probe_accum.edge_samples
-        ? p_sys->probe_accum.edge_sum / p_sys->probe_accum.edge_samples : 0;
+    int recommend_bypass = up_should_bypass_for_content( &p_sys->probe.accum );
+    uint64_t lap_mean  = p_sys->probe.accum.lap_samples
+        ? p_sys->probe.accum.lap_sum  / p_sys->probe.accum.lap_samples : 0;
+    uint64_t edge_mean = p_sys->probe.accum.edge_samples
+        ? p_sys->probe.accum.edge_sum / p_sys->probe.accum.edge_samples : 0;
 
-    if( recommend_bypass && !p_sys->advice_logged )
+    if( recommend_bypass && !p_sys->probe.advice_logged )
     {
-        p_sys->advice_logged = 1;
+        p_sys->probe.advice_logged = 1;
         msg_Info( p_filter,
                   "AutoUpscale: content probe complete: source is "
                   "soft (lap_mean=%llu) AND blocky (edge_mean=%llu). "
@@ -1058,7 +1061,7 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
         return NULL;
     }
 
-    if( p_sys->probe_active && p_in->i_planes >= 1 )
+    if( p_sys->probe.active && p_in->i_planes >= 1 )
         RunProbe( p_filter, p_sys, p_in );
 
     picture_t *p_out = filter_NewPicture( p_filter );

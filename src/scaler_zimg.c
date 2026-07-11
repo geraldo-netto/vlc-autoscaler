@@ -144,6 +144,18 @@ typedef struct
     plane_layout_t layout;
 } plane_buffer_t;
 
+typedef struct
+{
+    int      src_y_start;   /* in luma rows */
+    int      src_y_end;     /* in luma rows (copy-in stripe) */
+    int      dst_y_start;
+    int      dst_y_end;     /* in luma rows (copy-out stripe) */
+    int      dst_x_start;   /* luma column start (dst), copy-out placement */
+    int      src_w;         /* luma TILE width (src) */
+    int      dst_w;         /* luma TILE width (dst) */
+    unsigned sub_w, sub_h;
+} worker_cell_geom_t;
+
 /* Per-worker state. */
 typedef struct
 {
@@ -181,18 +193,10 @@ typedef struct
 
     /* Cell geometry (constant after lazy initialization). A worker owns a
      * row-stripe; with column tiling (SCAL-3) it also owns a column tile
-     * [src/dst_x_start ..
-     * + src/dst_w). With n_cols==1 the column spans the full width. */
-    int                src_y_start;   /* in luma rows */
-    int                src_y_end;     /* in luma rows (copy-in stripe) */
-    int                dst_y_start;
-    int                dst_y_end;     /* in luma rows (copy-out stripe) */
-    int                src_x_start;   /* luma column start (src), used by active_region */
-    int                dst_x_start;   /* luma column start (dst), copy-out placement */
+     * [dst_x_start .. + dst_w). With n_cols==1 the column spans the full
+     * width. */
+    worker_cell_geom_t cell;
     int                worker_id;
-    int                src_w;         /* luma TILE width (src) */
-    int                dst_w;         /* luma TILE width (dst) */
-    unsigned           sub_w, sub_h;
 
     /* SCAL-3: true when this cell is a column tile. Then the graph reads the
      * full-width source (active_region crops columns, with halo) and writes a
@@ -228,7 +232,6 @@ typedef struct
 
 typedef struct
 {
-    int               n_threads;
     stripe_worker_t  *workers;
     /* SCAL-2 wake gate: one broadcast wakes all workers (was N sem_post). */
     /* Shared wake gate + counting done-barrier (DUP-1, threading.h).
@@ -239,19 +242,24 @@ typedef struct
     int               yv12_swap_uv;
     unsigned          sub_w, sub_h;
 
-    /* SCAL-3: worker grid. n_threads == n_rows * n_cols. n_cols > 1 (column
-     * tiling) engages only when row stripes cannot use the worker preference;
-     * then col_tiled forces source-direct read + per-tile dst
-     * scratch. Otherwise n_cols == 1 and this is the row-stripe path. */
-    int               n_rows, n_cols;
-    bool              col_tiled;
+    /* SCAL-3/PAT-1: worker grid + zero-copy modes, resolved atomically by
+     * the pure up_zimg_resolve_io_plan (zimg_helpers.h) and stored verbatim.
+     * n_cols > 1 (column tiling) engages only when row stripes cannot use
+     * the worker preference; then col_tiled forces source-direct read +
+     * per-tile dst scratch. Otherwise n_cols == 1 (row-stripe path).
+     * src/dst_zerocopy: graphs read/write the VLC picture directly; OFF
+     * (via option or first-frame alignment) falls back to copy via scratch.
+     * See the COPY-IN/COPY-OUT note at the top. */
+    up_zimg_io_plan_t plan;
     int               worker_budget;  /* up_threads_decide result at open;
                                        * first-frame plan re-resolve input */
 
     /* REL-6: consecutive frames rejected for alignment drift; a full
-     * streak escalates to FATAL. drift_warned latches the one-shot log. */
-    int               drift_streak;
-    bool              drift_warned;
+     * streak escalates to FATAL. `warned` latches the one-shot log. */
+    struct {
+        int  streak;
+        bool warned;
+    } drift;
 
     /* SCAL-4/5: pin workers only to exact IDs in the allowed CPU set. */
     bool              pin_cpus;
@@ -265,39 +273,26 @@ typedef struct
     plane_buffer_t    dst;
     int               src_w, src_h, dst_w, dst_h;
 
-    /* Lazy-init state. lazy_init_done is set by zimg_lazy_init() after
-     * the worker pool, scratch, and per-cell graphs are constructed
-     * successfully. lazy_init_failed sticks once the first attempt has
-     * failed so we don't retry-allocate every frame. The algo and
-     * log_obj are saved at Open() time so lazy_init can build graphs
-     * and emit its diagnostic message without needing the ctx.
+    /* Lazy-init state. `done` is set by zimg_lazy_init() after the worker
+     * pool, scratch, and per-cell graphs are constructed successfully.
+     * `failed` sticks once the first attempt has failed so we don't
+     * retry-allocate every frame. The algo and log_obj are saved at
+     * Open() time so lazy_init can build graphs and emit its diagnostic
+     * message without needing the ctx.
      *
-     * CON-2: lazy_init_done / lazy_init_failed are PLAIN bools, read+written
-     * with no atomics or lock. This is sound only under the contract that a
-     * single filter instance's zimg_process() (driven by VLC's Filter()) is
-     * never entered concurrently — VLC calls a filter's pf_video_filter
+     * CON-2: done / failed are PLAIN bools, read+written with no atomics
+     * or lock. This is sound only under the contract that a single filter
+     * instance's zimg_process() (driven by VLC's Filter()) is never
+     * entered concurrently — VLC calls a filter's pf_video_filter
      * serially per instance. If this scaler is ever shared across threads
      * within one instance, gate the first-frame init with pthread_once (or
      * make these _Atomic) to close the check-then-act window. */
-    bool              lazy_init_done;
-    bool              lazy_init_failed;
-    int               algo_saved;
-    void             *log_obj_saved;
-
-    /* Destination zero-copy mode. When true, workers write directly into
-     * VLC's destination picture; the dy/du/dv pointers and dst pitch
-     * fields above are NOT allocated and are instead overwritten per
-     * frame from the picture passed to zimg_process(). Skips the final
-     * memcpy back from scratch to the VLC destination.
-     * ON by default (autoupscale-zerocopy-dst); set the option to 0 to
-     * fall back to copy-out via scratch. */
-    bool              dst_zerocopy;
-
-    /* Source zero-copy: when true, worker graphs read the VLC source picture
-     * directly (no copy-in, no scratch src). Symmetric to dst_zerocopy and,
-     * like it, ON by default (autoupscale-zerocopy-src) — set the option to 0
-     * to fall back to copy-in. See the COPY-IN/COPY-OUT note at the top. */
-    bool              src_zerocopy;
+    struct {
+        bool  done;
+        bool  failed;
+        int   algo;
+        void *log_obj;
+    } lazy;
 
     /* One-shot guard so the per-frame picture-geometry check (pre-flight)
      * warns once instead of every dropped frame. */
@@ -364,19 +359,19 @@ static inline void set_const_buf_plane(zimg_image_buffer_const *b, int idx,
  */
 static void worker_copy_in_stripe(stripe_worker_t *w)
 {
-    const int rows = w->src_y_end - w->src_y_start;
+    const int rows = w->cell.src_y_end - w->cell.src_y_start;
     up_copy_plane(
         w->src.data[PLANE_Y]
-            + (size_t)w->src_y_start * (size_t)w->src.pitch[PLANE_Y],
+            + (size_t)w->cell.src_y_start * (size_t)w->src.pitch[PLANE_Y],
         w->src.pitch[PLANE_Y],
         w->vlc_src.data[PLANE_Y]
-            + (size_t)w->src_y_start * (size_t)w->vlc_src.pitch[PLANE_Y],
+            + (size_t)w->cell.src_y_start * (size_t)w->vlc_src.pitch[PLANE_Y],
         w->vlc_src.pitch[PLANE_Y],
-        w->src_w, rows);
+        w->cell.src_w, rows);
 
-    const int cs    = w->src_y_start >> w->sub_h;
-    const int crows = (w->src_y_end >> w->sub_h) - cs;
-    const int cw    = up_chroma_dim(w->src_w, (int)w->sub_w);
+    const int cs    = w->cell.src_y_start >> w->cell.sub_h;
+    const int crows = (w->cell.src_y_end >> w->cell.sub_h) - cs;
+    const int cw    = up_chroma_dim(w->cell.src_w, (int)w->cell.sub_w);
     for (int p = PLANE_U; p < PLANE_COUNT; p++) {
         up_copy_plane(
             w->src.data[p] + (size_t)cs * (size_t)w->src.pitch[p],
@@ -395,19 +390,19 @@ static void worker_copy_in_stripe(stripe_worker_t *w)
  */
 static void worker_copy_out_stripe(stripe_worker_t *w)
 {
-    const int rows = w->dst_y_end - w->dst_y_start;
+    const int rows = w->cell.dst_y_end - w->cell.dst_y_start;
     up_copy_plane(
         w->vlc_dst.data[PLANE_Y]
-            + (size_t)w->dst_y_start * (size_t)w->vlc_dst.pitch[PLANE_Y],
+            + (size_t)w->cell.dst_y_start * (size_t)w->vlc_dst.pitch[PLANE_Y],
         w->vlc_dst.pitch[PLANE_Y],
         w->dst.data[PLANE_Y]
-            + (size_t)w->dst_y_start * (size_t)w->dst.pitch[PLANE_Y],
+            + (size_t)w->cell.dst_y_start * (size_t)w->dst.pitch[PLANE_Y],
         w->dst.pitch[PLANE_Y],
-        w->dst_w, rows);
+        w->cell.dst_w, rows);
 
-    const int cs    = w->dst_y_start >> w->sub_h;
-    const int crows = (w->dst_y_end >> w->sub_h) - cs;
-    const int cw    = up_chroma_dim(w->dst_w, (int)w->sub_w);
+    const int cs    = w->cell.dst_y_start >> w->cell.sub_h;
+    const int crows = (w->cell.dst_y_end >> w->cell.sub_h) - cs;
+    const int cw    = up_chroma_dim(w->cell.dst_w, (int)w->cell.sub_w);
     for (int p = PLANE_U; p < PLANE_COUNT; p++) {
         up_copy_plane(
             w->vlc_dst.data[p] + (size_t)cs * (size_t)w->vlc_dst.pitch[p],
@@ -424,19 +419,19 @@ static void worker_copy_out_stripe(stripe_worker_t *w)
  */
 static void worker_copy_out_tile(stripe_worker_t *w)
 {
-    const int rows = w->dst_y_end - w->dst_y_start;
-    const int cx   = w->dst_x_start;
+    const int rows = w->cell.dst_y_end - w->cell.dst_y_start;
+    const int cx   = w->cell.dst_x_start;
     up_copy_plane(
         w->vlc_dst.data[PLANE_Y]
-            + (size_t)w->dst_y_start * (size_t)w->vlc_dst.pitch[PLANE_Y] + cx,
+            + (size_t)w->cell.dst_y_start * (size_t)w->vlc_dst.pitch[PLANE_Y] + cx,
         w->vlc_dst.pitch[PLANE_Y],
         w->dst.data[PLANE_Y], w->dst.pitch[PLANE_Y],
-        w->dst_w, rows);
+        w->cell.dst_w, rows);
 
-    const int cs    = w->dst_y_start >> w->sub_h;
-    const int crows = (w->dst_y_end >> w->sub_h) - cs;
-    const int cw    = up_chroma_dim(w->dst_w, (int)w->sub_w);
-    const int cxc   = w->dst_x_start >> w->sub_w;
+    const int cs    = w->cell.dst_y_start >> w->cell.sub_h;
+    const int crows = (w->cell.dst_y_end >> w->cell.sub_h) - cs;
+    const int cw    = up_chroma_dim(w->cell.dst_w, (int)w->cell.sub_w);
+    const int cxc   = w->cell.dst_x_start >> w->cell.sub_w;
     for (int p = PLANE_U; p < PLANE_COUNT; p++) {
         up_copy_plane(
             w->vlc_dst.data[p]
@@ -483,12 +478,12 @@ static void *worker_main(void *arg)
         zimg_image_buffer       db = { ZIMG_API_VERSION };
 #pragma GCC diagnostic pop
 
-        const int src_off_y = w->src_y_start;
-        const int src_off_c = w->src_y_start >> w->sub_h;
+        const int src_off_y = w->cell.src_y_start;
+        const int src_off_c = w->cell.src_y_start >> w->cell.sub_h;
         /* A column tile writes its own tile scratch starting at row 0; a plain
          * stripe writes into the shared/VLC full-frame dst at its row offset. */
-        const int dst_off_y = w->col_tiled ? 0 : w->dst_y_start;
-        const int dst_off_c = w->col_tiled ? 0 : (w->dst_y_start >> w->sub_h);
+        const int dst_off_y = w->col_tiled ? 0 : w->cell.dst_y_start;
+        const int dst_off_c = w->col_tiled ? 0 : (w->cell.dst_y_start >> w->cell.sub_h);
 
         const int src_offs[3]    = { src_off_y, src_off_c, src_off_c };
         const int dst_offs[3]    = { dst_off_y, dst_off_c, dst_off_c };
@@ -673,10 +668,10 @@ static int alloc_scratch_buffers(zimg_priv_t *p)
     /* Each side's scratch is allocated only when that side COPIES. With
      * zero-copy on a side, the graph reads/writes the VLC picture directly and
      * the scratch stays NULL (set per-frame from the VLC picture instead). */
-    if (!p->src_zerocopy && alloc_plane_buffer(&p->src) != 0) return -1;
+    if (!p->plan.src_zerocopy && alloc_plane_buffer(&p->src) != 0) return -1;
     /* Column tiling gives each worker its own tile dst scratch, so the shared
      * priv-level dst scratch isn't used. */
-    if (!p->dst_zerocopy && !p->col_tiled && alloc_plane_buffer(&p->dst) != 0)
+    if (!p->plan.dst_zerocopy && !p->plan.col_tiled && alloc_plane_buffer(&p->dst) != 0)
         return -1;
     return 0;
 }
@@ -710,7 +705,7 @@ static void init_priv_geometry(zimg_priv_t *p, const scaler_ctx_t *ctx,
 static int alloc_tile_dst(stripe_worker_t *w, const zimg_priv_t *p,
                           int dst_stripe_h)
 {
-    init_plane_layout(&w->tile_dst.layout, w->dst_w, dst_stripe_h,
+    init_plane_layout(&w->tile_dst.layout, w->cell.dst_w, dst_stripe_h,
                       p->sub_w, p->sub_h);
     if (alloc_plane_buffer(&w->tile_dst) != 0) return -1;
     w->dst = plane_buffer_view(&w->tile_dst);
@@ -741,24 +736,23 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
                               unsigned sub_w, unsigned sub_h,
                               zimg_resample_filter_e filt)
 {
-    w->src_y_start  = c->rows.src_start;
-    w->src_y_end    = c->rows.src_end;
-    w->dst_y_start  = c->rows.dst_start;
-    w->dst_y_end    = c->rows.dst_end;
-    w->src_x_start  = c->cols.src_start;
-    w->dst_x_start  = c->cols.dst_start;
-    w->col_tiled    = p->col_tiled;
-    w->src_w        = c->cols.src_end - c->cols.src_start;   /* TILE widths */
-    w->dst_w        = c->cols.dst_end - c->cols.dst_start;
-    /* worker_main shifts row offsets by sub (`>> w->sub_h`); a value >= the
+    w->cell.src_y_start = c->rows.src_start;
+    w->cell.src_y_end   = c->rows.src_end;
+    w->cell.dst_y_start = c->rows.dst_start;
+    w->cell.dst_y_end   = c->rows.dst_end;
+    w->cell.dst_x_start = c->cols.dst_start;
+    w->col_tiled    = p->plan.col_tiled;
+    w->cell.src_w       = c->cols.src_end - c->cols.src_start;   /* TILE widths */
+    w->cell.dst_w       = c->cols.dst_end - c->cols.dst_start;
+    /* worker_main shifts row offsets by sub (`>> w->cell.sub_h`); a value >= the
      * int width would be UB. Valid YUV chroma gives 0 or 1, but clamp both
      * exponents defensively so a malformed value can never reach the shift
      * (UB-2, UB-3). */
-    w->sub_h        = (sub_h < 8u) ? sub_h : 0u;
-    w->sub_w        = (sub_w < 8u) ? sub_w : 0u;
+    w->cell.sub_h        = (sub_h < 8u) ? sub_h : 0u;
+    w->cell.sub_w        = (sub_w < 8u) ? sub_w : 0u;
     /* I/O mode: copy on the side that is NOT zero-copy. */
-    w->copy_in      = !p->src_zerocopy;
-    w->copy_out     = !p->dst_zerocopy;
+    w->copy_in      = !p->plan.src_zerocopy;
+    w->copy_out     = !p->plan.dst_zerocopy;
     w->gate         = &p->gate;
     w->seen_gen     = p->gate.generation;  /* don't run a frame before the first dispatch */
     w->worker_id    = worker_id;
@@ -831,7 +825,7 @@ static void zimg_wake_all_for_exit(zimg_priv_t *p)
      * runs after gate init), so there is nothing to wake. */
     if (!up_pool_gate_ready(&p->gate)) return;
     up_pool_gate_lock(&p->gate);
-    for (int i = 0; i < p->n_threads; i++)
+    for (int i = 0; i < p->plan.n_threads; i++)
         if (p->workers[i].thread_started)
             p->workers[i].should_exit = true;
     up_pool_gate_unlock_broadcast(&p->gate);
@@ -841,7 +835,7 @@ static void zimg_stop_workers(zimg_priv_t *p)
 {
     if (!p->workers) return;
     zimg_wake_all_for_exit(p);
-    for (int i = 0; i < p->n_threads; i++) {
+    for (int i = 0; i < p->plan.n_threads; i++) {
         stripe_worker_t *w = &p->workers[i];
         if (!w->thread_started) continue;
         pthread_join(w->thread, NULL);
@@ -878,14 +872,14 @@ static int try_spawn_one_worker(zimg_priv_t *p, int i,
                                 zimg_resample_filter_e filt)
 {
     stripe_worker_t *w = &p->workers[i];
-    const int row = i / p->n_cols;
-    const int col = i % p->n_cols;
+    const int row = i / p->plan.n_cols;
+    const int col = i % p->plan.n_cols;
 
     cell_bounds_t c;
-    if (!up_compute_stripe_bounds(row, p->n_rows, p->src_h, p->dst_h,
+    if (!up_compute_stripe_bounds(row, p->plan.n_rows, p->src_h, p->dst_h,
                                   &c.rows))
         return -1;
-    if (!up_compute_stripe_bounds(col, p->n_cols, p->src_w, p->dst_w,
+    if (!up_compute_stripe_bounds(col, p->plan.n_cols, p->src_w, p->dst_w,
                                   &c.cols))
         return -1;
 
@@ -909,14 +903,14 @@ static void construct_workers(zimg_priv_t *p,
                               zimg_resample_filter_e filt,
                               int *out_constructed)
 {
-    for (int i = 0; i < p->n_threads; i++) {
+    for (int i = 0; i < p->plan.n_threads; i++) {
         if (try_spawn_one_worker(p, i, sub_w, sub_h, filt) != 0) {
             teardown_constructed_workers(p, i);   /* tear down [0, i) */
             *out_constructed = 0;
             return;
         }
     }
-    *out_constructed = p->n_threads;
+    *out_constructed = p->plan.n_threads;
 }
 
 /* Diagnostic log emitted once after successful lazy initialization. */
@@ -924,19 +918,19 @@ static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
 {
     if (!log_obj) return;
     /* Only scratch that is actually allocated (the copy side) counts. */
-    size_t src_mb = p->src_zerocopy ? 0 : (plane_buffer_bytes(&p->src) >> 20);
+    size_t src_mb = p->plan.src_zerocopy ? 0 : (plane_buffer_bytes(&p->src) >> 20);
     /* Column tiling uses per-worker tile dst scratch, not the shared p->dst. */
-    size_t dst_mb = (p->dst_zerocopy || p->col_tiled) ? 0
+    size_t dst_mb = (p->plan.dst_zerocopy || p->plan.col_tiled) ? 0
         : (plane_buffer_bytes(&p->dst) >> 20);
     msg_Info(log_obj,
              "zimg: %d worker thread%s (grid %dx%d), %dx%d -> %dx%d, "
              "scratch %zu MB (src %s, dst %s)",
-             p->n_threads, p->n_threads == 1 ? "" : "s",
-             p->n_rows, p->n_cols,
+             p->plan.n_threads, p->plan.n_threads == 1 ? "" : "s",
+             p->plan.n_rows, p->plan.n_cols,
              p->src_w, p->src_h, p->dst_w, p->dst_h,
              src_mb + dst_mb,
-             p->src_zerocopy ? "zero-copy" : "copy",
-             p->col_tiled ? "tiled+copy" : (p->dst_zerocopy ? "zero-copy" : "copy"));
+             p->plan.src_zerocopy ? "zero-copy" : "copy",
+             p->plan.col_tiled ? "tiled+copy" : (p->plan.dst_zerocopy ? "zero-copy" : "copy"));
 }
 
 /*
@@ -970,7 +964,7 @@ static int zimg_lazy_init(zimg_priv_t *p)
      * aligned_alloc's C11 size constraint. Manual memset replaces
      * calloc's zero-init. */
     {
-        size_t total = (size_t)p->n_threads * sizeof(*p->workers);
+        size_t total = (size_t)p->plan.n_threads * sizeof(*p->workers);
         p->workers = aligned_alloc(64, total);
         if (!p->workers) return -1;
         memset(p->workers, 0, total);
@@ -984,10 +978,10 @@ static int zimg_lazy_init(zimg_priv_t *p)
     /* ARCH-1: the worker-construction chain reads only src/dst geometry, all
      * of which lives in the priv struct (init_priv_geometry) — no fake ctx. */
     construct_workers(p, p->sub_w, p->sub_h,
-                      (zimg_resample_filter_e)p->algo_saved, &constructed);
+                      (zimg_resample_filter_e)p->lazy.algo, &constructed);
     if (constructed == 0) return -1;
 
-    log_zimg_open((vlc_object_t *)p->log_obj_saved, p);
+    log_zimg_open((vlc_object_t *)p->lazy.log_obj, p);
     return 0;
 }
 
@@ -998,18 +992,6 @@ static int zimg_lazy_init(zimg_priv_t *p)
  * per-cell graphs - that all happens lazily on the first valid Filter()
  * call. See zimg_lazy_init() for rationale.
  */
-/* PAT-1: grid and zero-copy modes are resolved atomically by the pure
- * up_zimg_resolve_io_plan (zimg_helpers.h) and applied in one place. */
-static void zimg_apply_io_plan(zimg_priv_t *p, const up_zimg_io_plan_t *plan)
-{
-    p->n_rows       = plan->n_rows;
-    p->n_cols       = plan->n_cols;
-    p->n_threads    = plan->n_threads;
-    p->col_tiled    = plan->col_tiled;
-    p->src_zerocopy = plan->src_zerocopy;
-    p->dst_zerocopy = plan->dst_zerocopy;
-}
-
 static int zimg_open(scaler_ctx_t *ctx)
 {
     /* REL-3: fail gracefully if the runtime libzimg is a different ABI major
@@ -1058,12 +1040,12 @@ static int zimg_open(scaler_ctx_t *ctx)
     zimg_priv_t *p = calloc(1, sizeof(*p));
     if (!p) return -1;
     p->worker_budget = n_threads;
-    zimg_apply_io_plan(p, &plan);
+    p->plan = plan;
     init_priv_geometry(p, ctx, sub_w, sub_h, swap);
 
     /* Save what zimg_lazy_init() needs that isn't already in priv. */
-    p->algo_saved    = (int)AlgoToZimg(ctx->algo);
-    p->log_obj_saved = ctx->log_obj;
+    p->lazy.algo    = (int)AlgoToZimg(ctx->algo);
+    p->lazy.log_obj = ctx->log_obj;
 
     if (!req.src_zerocopy && ctx->log_obj) {
         /* Would the grid have tiled with source-direct reads? Then
@@ -1120,7 +1102,7 @@ static void point_workers_planes(zimg_priv_t *p,
     const int iy = 0;
     const int iu = up_zimg_plane_idx(1, swap);
     const int iv = up_zimg_plane_idx(2, swap);
-    for (int i = 0; i < p->n_threads; i++) {
+    for (int i = 0; i < p->plan.n_threads; i++) {
         plane_view_t *view = worker_view_for(&p->workers[i], side, zerocopy);
         view->data[PLANE_Y] = pic->plane[iy].pixels;
         view->data[PLANE_U] = pic->plane[iu].pixels;
@@ -1141,8 +1123,8 @@ static scaler_process_status_t zimg_dispatch_and_wait(zimg_priv_t *p)
      * critical section, so a worker that wakes sees pending already
      * armed and its result already reset. */
     up_pool_gate_lock(&p->gate);
-    up_pool_gate_arm_locked(&p->gate, p->n_threads);
-    for (int i = 0; i < p->n_threads; i++)
+    up_pool_gate_arm_locked(&p->gate, p->plan.n_threads);
+    for (int i = 0; i < p->plan.n_threads; i++)
         p->workers[i].result = 0;
     up_pool_gate_unlock_broadcast(&p->gate);
 
@@ -1153,7 +1135,7 @@ static scaler_process_status_t zimg_dispatch_and_wait(zimg_priv_t *p)
         zimg_stop_workers(p);
         return SCALER_PROCESS_FATAL;
     }
-    for (int i = 0; i < p->n_threads; i++) {
+    for (int i = 0; i < p->plan.n_threads; i++) {
         if (p->workers[i].result != 0) {
             p->pool_broken = true;
             return SCALER_PROCESS_FATAL;
@@ -1170,20 +1152,20 @@ static scaler_process_status_t zimg_dispatch_and_wait(zimg_priv_t *p)
  */
 static int zimg_ensure_lazy_init(zimg_priv_t *p)
 {
-    if (p->lazy_init_done) return 0;
-    if (p->lazy_init_failed) return -1;
+    if (p->lazy.done) return 0;
+    if (p->lazy.failed) return -1;
     if (zimg_lazy_init(p) != 0) {
-        p->lazy_init_failed = true;
+        p->lazy.failed = true;
         /* OBS-2: the expensive setup ran at the first valid frame, after cheap
          * Open() succeeded; say so once, else every frame drops silently. */
-        if (p->log_obj_saved)
-            msg_Err((vlc_object_t *)p->log_obj_saved,
+        if (p->lazy.log_obj)
+            msg_Err((vlc_object_t *)p->lazy.log_obj,
                     "zimg: lazy backend init failed (%dx%d -> %dx%d); "
                     "dropping this frame (AUTO may fall back)",
                     p->src_w, p->src_h, p->dst_w, p->dst_h);
         return -1;
     }
-    p->lazy_init_done = true;
+    p->lazy.done = true;
     return 0;
 }
 
@@ -1207,7 +1189,7 @@ static void zimg_prepare_first_frame_io(zimg_priv_t *p,
                                         const up_picture_view_t *src,
                                         const up_picture_view_t *dst)
 {
-    if (p->lazy_init_done || p->lazy_init_failed) return;
+    if (p->lazy.done || p->lazy.failed) return;
     /* Re-resolve the plan with real storage alignment folded into the
      * requested flags; the resolver is a fixed point, so an unchanged
      * request yields the identical plan. */
@@ -1224,7 +1206,7 @@ static void zimg_prepare_first_frame_io(zimg_priv_t *p,
     };
     up_zimg_io_plan_t plan;
     up_zimg_resolve_io_plan(&req, &plan);
-    zimg_apply_io_plan(p, &plan);
+    p->plan = plan;
 }
 
 /* A later frame may drift to different storage. Copy paths accept arbitrary
@@ -1233,8 +1215,8 @@ static bool zimg_frame_io_safe(const zimg_priv_t *p,
                                const up_picture_view_t *src,
                                const up_picture_view_t *dst)
 {
-    return (!p->src_zerocopy || zimg_view_aligned(src))
-        && (!p->dst_zerocopy || zimg_view_aligned(dst));
+    return (!p->plan.src_zerocopy || zimg_view_aligned(src))
+        && (!p->plan.dst_zerocopy || zimg_view_aligned(dst));
 }
 
 static bool zimg_frame_views_init(const scaler_ctx_t *ctx,
@@ -1252,8 +1234,8 @@ static void zimg_warn_bad_geometry(zimg_priv_t *p)
 {
     if (p->preflight_warned) return;
     p->preflight_warned = true;
-    if (p->log_obj_saved)
-        msg_Warn((vlc_object_t *)p->log_obj_saved,
+    if (p->lazy.log_obj)
+        msg_Warn((vlc_object_t *)p->lazy.log_obj,
                  "zimg: source/destination picture geometry unusable "
                  "(planes, extent, or crop); dropping frame(s)");
 }
@@ -1268,16 +1250,16 @@ static void zimg_warn_bad_geometry(zimg_priv_t *p)
 
 static scaler_process_status_t zimg_note_alignment_drift(zimg_priv_t *p)
 {
-    if (!p->drift_warned) {
-        p->drift_warned = true;
-        if (p->log_obj_saved)
-            msg_Warn((vlc_object_t *)p->log_obj_saved,
+    if (!p->drift.warned) {
+        p->drift.warned = true;
+        if (p->lazy.log_obj)
+            msg_Warn((vlc_object_t *)p->lazy.log_obj,
                      "AutoUpscale: zimg: picture storage drifted from the "
                      "alignment the zero-copy graphs were built for; "
                      "dropping frame(s), failing over after %d consecutive "
                      "misses", ZIMG_DRIFT_FATAL_STREAK);
     }
-    if (++p->drift_streak >= ZIMG_DRIFT_FATAL_STREAK) {
+    if (++p->drift.streak >= ZIMG_DRIFT_FATAL_STREAK) {
         p->pool_broken = true;
         return SCALER_PROCESS_FATAL;
     }
@@ -1300,13 +1282,13 @@ static scaler_process_status_t zimg_process(scaler_ctx_t *ctx,
     zimg_prepare_first_frame_io(p, ctx, &src_view, &dst_view);
     if (!zimg_frame_io_safe(p, &src_view, &dst_view))
         return zimg_note_alignment_drift(p);
-    p->drift_streak = 0;
+    p->drift.streak = 0;
     if (zimg_ensure_lazy_init(p) != 0) return SCALER_PROCESS_FATAL;
 
     /* Per-frame plane pointers. On each side the graph touches the VLC
      * picture directly (zero-copy) or the workers copy via scratch. */
-    point_workers_planes(p, &src_view, WORKER_VIEW_SRC, p->src_zerocopy);
-    point_workers_planes(p, &dst_view, WORKER_VIEW_DST, p->dst_zerocopy);
+    point_workers_planes(p, &src_view, WORKER_VIEW_SRC, p->plan.src_zerocopy);
+    point_workers_planes(p, &dst_view, WORKER_VIEW_DST, p->plan.dst_zerocopy);
 
     return zimg_dispatch_and_wait(p);
 }
@@ -1318,7 +1300,7 @@ static void zimg_close(scaler_ctx_t *ctx)
 
     if (p->workers) {
         zimg_stop_workers(p);
-        for (int i = 0; i < p->n_threads; i++) {
+        for (int i = 0; i < p->plan.n_threads; i++) {
             stripe_worker_t *w = &p->workers[i];
             release_worker_resources(w, w->thread_started);
         }
