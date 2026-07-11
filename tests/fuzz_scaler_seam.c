@@ -179,25 +179,21 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 }
 
 #ifdef FUZZ_MAIN
+#include "fuzz_smoke.h"
+
+static int smoke_iter(long i)
+{
+    (void)i;
+    uint8_t buf[16];
+    fuzz_smoke_fill(buf, sizeof buf);
+    run_one(buf, sizeof buf);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
-    long n = 400;   /* each iter spawns threads + builds graphs: keep modest */
-    if (argc > 1) {
-        char *end = NULL;
-        long v = strtol(argv[1], &end, 10);
-        if (end && *end == '\0' && v > 0) n = v;
-    }
-
-    uint32_t s = 0x5EA3711u;
-    uint8_t buf[16];
-    for (long i = 0; i < n; i++) {
-        for (size_t j = 0; j < sizeof buf; j += 4) {
-            s ^= s << 13; s ^= s >> 17; s ^= s << 5;
-            memcpy(buf + j, &s, 4);
-        }
-        run_one(buf, sizeof buf);
-    }
-    printf("scaler_seam smoke OK: %ld iterations\n", n);
-    return 0;
+    /* Each iter spawns threads + builds graphs: keep the default modest. */
+    fuzz_smoke_seed(0x5EA3711u);
+    return fuzz_smoke_main(argc, argv, 400, "scaler_seam", smoke_iter);
 }
 #endif

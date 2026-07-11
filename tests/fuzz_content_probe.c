@@ -254,24 +254,22 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 }
 
 #ifdef FUZZ_MAIN
+#include "fuzz_smoke.h"
+
+static int smoke_iter(long i)
+{
+    (void)i;
+    uint8_t buf[64];
+    for (size_t j = 0; j < sizeof buf; j += 4) {
+        uint32_t r = xs();
+        memcpy(buf + j, &r, 4);
+    }
+    run_one(buf, sizeof buf);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
-    long n = 100000;
-    if (argc > 1) {
-        char *end = NULL;
-        long v = strtol(argv[1], &end, 10);
-        if (end && *end == '\0' && v > 0) n = v;
-    }
-
-    uint8_t buf[64];
-    for (long i = 0; i < n; i++) {
-        for (size_t j = 0; j < sizeof buf; j += 4) {
-            uint32_t r = xs();
-            memcpy(buf + j, &r, 4);
-        }
-        run_one(buf, sizeof buf);
-    }
-    printf("content_probe smoke OK: %ld iterations\n", n);
-    return 0;
+    return fuzz_smoke_main(argc, argv, 100000, "content_probe", smoke_iter);
 }
 #endif

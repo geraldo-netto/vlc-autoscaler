@@ -202,35 +202,20 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 }
 
 #ifdef FUZZ_MAIN
-static uint64_t xs_state = 0x1234567890abcdefULL;
-static uint64_t xs(void)
+#include "fuzz_smoke.h"
+
+static int smoke_iter(long i)
 {
-    uint64_t x = xs_state;
-    x ^= x << 13; x ^= x >> 7; x ^= x << 17;
-    return xs_state = x;
+    (void)i;
+    uint8_t buf[256];
+    size_t n = (size_t)(fuzz_smoke_next() % sizeof buf);
+    fuzz_smoke_fill(buf, n);
+    return run_one(buf, n);
 }
 
 int main(int argc, char **argv)
 {
-    long iters = 100000;
-    if (argc > 2 || (argc == 2
-            && !up_cli_parse_long(argv[1], 1, LONG_MAX, &iters))) {
-        fprintf(stderr, "usage: %s [positive-iterations]\n", argv[0]);
-        return 2;
-    }
-    uint8_t buf[256];
-    long n_fail = 0;
-    for (long i = 0; i < iters; i++) {
-        size_t n = (size_t)(xs() % sizeof(buf));
-        for (size_t j = 0; j < n; j++) buf[j] = (uint8_t)xs();
-        if (run_one(buf, n)) n_fail++;
-    }
-    if (n_fail) {
-        fprintf(stderr, "threading smoke FAIL: %ld/%ld trials\n",
-                n_fail, iters);
-        return 1;
-    }
-    fprintf(stderr, "threading smoke OK: %ld iterations\n", iters);
-    return 0;
+    fuzz_smoke_seed(0x1234567890abcdefULL);
+    return fuzz_smoke_main(argc, argv, 100000, "threading", smoke_iter);
 }
 #endif

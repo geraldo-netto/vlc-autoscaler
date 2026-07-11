@@ -62,7 +62,6 @@ machine complexity is tracked as PAT-1 (the consolidation is the fix).
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| DUP-3 | open | S | Every `#ifdef FUZZ_MAIN` smoke block re-rolls the same xorshift PRNG + iteration loop + arg parsing (~12 copies; e.g. tests/fuzz_copy_plane.c:171-204, tests/fuzz_perfmon.c:132-171); some use shared `up_cli_parse_long`, others hand-roll `strtol`. | A `tests/fuzz_smoke.h` with the PRNG and a `fuzz_smoke_main(argc, argv, default_iters, run_one)` driver keeps per-fuzzer bias code local while deleting the scaffold copies. |
 
 ## architecture/modularity/SOLID
 

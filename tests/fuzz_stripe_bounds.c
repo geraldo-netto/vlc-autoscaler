@@ -164,34 +164,19 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 }
 
 #ifdef FUZZ_MAIN
-static uint64_t xs_state = 0xc0ffeebabe1234ULL;
-static uint64_t xs(void)
+#include "fuzz_smoke.h"
+
+static int smoke_iter(long i)
 {
-    uint64_t x = xs_state;
-    x ^= x << 13; x ^= x >> 7; x ^= x << 17;
-    return xs_state = x;
+    (void)i;
+    uint8_t buf[16];
+    fuzz_smoke_fill(buf, sizeof buf);
+    return run_one(buf, sizeof buf);
 }
 
 int main(int argc, char **argv)
 {
-    long iters = 100000;
-    if (argc > 2 || (argc == 2
-            && !up_cli_parse_long(argv[1], 1, LONG_MAX, &iters))) {
-        fprintf(stderr, "usage: %s [positive-iterations]\n", argv[0]);
-        return 2;
-    }
-    uint8_t buf[16];
-    long n_fail = 0;
-    for (long i = 0; i < iters; i++) {
-        for (size_t j = 0; j < sizeof buf; j++) buf[j] = (uint8_t)xs();
-        if (run_one(buf, sizeof buf)) n_fail++;
-    }
-    if (n_fail) {
-        fprintf(stderr, "stripe_bounds smoke FAIL: %ld/%ld trials\n",
-                n_fail, iters);
-        return 1;
-    }
-    fprintf(stderr, "stripe_bounds smoke OK: %ld iterations\n", iters);
-    return 0;
+    fuzz_smoke_seed(0xc0ffeebabe1234ULL);
+    return fuzz_smoke_main(argc, argv, 100000, "stripe_bounds", smoke_iter);
 }
 #endif

@@ -187,35 +187,20 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 }
 
 #ifdef FUZZ_MAIN
-static uint64_t fuzz_state = UINT64_C(0x9e3779b97f4a7c15);
+#include "fuzz_smoke.h"
 
-static uint8_t fuzz_random_byte(void)
+static int smoke_iter(long i)
 {
-    uint64_t x = fuzz_state;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    fuzz_state = x;
-    return (uint8_t)x;
+    uint8_t data[32];
+    if (i == 0)
+        LLVMFuzzerTestOneInput(data, 0);
+    fuzz_smoke_fill(data, sizeof data);
+    LLVMFuzzerTestOneInput(data, sizeof data);
+    return 0;
 }
 
 int main(int argc, char **argv)
 {
-    long iterations = 50000;
-    if (argc > 2 || (argc == 2
-            && !up_cli_parse_long(argv[1], 1, LONG_MAX, &iterations))) {
-        fprintf(stderr, "usage: %s [positive-iterations]\n", argv[0]);
-        return 2;
-    }
-    uint8_t data[32] = { 0 };
-    LLVMFuzzerTestOneInput(data, 0);
-    for (long i = 0; i < iterations; ++i)
-    {
-        for (size_t j = 0; j < sizeof data; ++j)
-            data[j] = fuzz_random_byte();
-        LLVMFuzzerTestOneInput(data, sizeof data);
-    }
-    printf("picture_view smoke: %ld cases passed\n", iterations);
-    return 0;
+    return fuzz_smoke_main(argc, argv, 50000, "picture_view", smoke_iter);
 }
 #endif

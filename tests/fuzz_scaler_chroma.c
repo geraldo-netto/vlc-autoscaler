@@ -253,44 +253,36 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 }
 
 #ifdef FUZZ_MAIN
+#include "fuzz_smoke.h"
+
+static int smoke_iter(long i)
+{
+    uint8_t buf[8];
+    fuzz_smoke_fill(buf, sizeof buf);
+
+    /* Bias every 4th iteration to a known fourcc, so coverage hits
+     * the supported branches explicitly even with chaotic input. */
+    if ((i & 3) == 0) {
+        static const uint32_t known[] = {
+            UP_FOURCC('I','4','2','0'),
+            UP_FOURCC('Y','V','1','2'),
+            UP_FOURCC('I','4','2','2'),
+            UP_FOURCC('I','4','4','4'),
+            UP_FOURCC('N','V','1','2'),
+            UP_FOURCC('Y','U','Y','2'),
+            UP_FOURCC('V','A','O','P'),
+        };
+        uint32_t pick = known[fuzz_smoke_next()
+                              % (sizeof known / sizeof *known)];
+        memcpy(buf, &pick, 4);
+    }
+    run_one(buf, sizeof buf);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
-    long n = 100000;
-    if (argc > 1) {
-        char *end = NULL;
-        long v = strtol(argv[1], &end, 10);
-        if (end && *end == '\0' && v > 0) n = v;
-    }
-
-    uint32_t s = 0xFACEBEEFu;
-    uint8_t buf[8];
-
-    for (long i = 0; i < n; i++) {
-        for (size_t j = 0; j < sizeof buf; j += 4) {
-            s ^= s << 13;
-            s ^= s >> 17;
-            s ^= s <<  5;
-            memcpy(buf + j, &s, 4);
-        }
-        /* Bias every 4th iteration to a known fourcc, so coverage hits
-         * the supported branches explicitly even with chaotic input. */
-        if ((i & 3) == 0) {
-            uint32_t known[] = {
-                UP_FOURCC('I','4','2','0'),
-                UP_FOURCC('Y','V','1','2'),
-                UP_FOURCC('I','4','2','2'),
-                UP_FOURCC('I','4','4','4'),
-                UP_FOURCC('N','V','1','2'),
-                UP_FOURCC('Y','U','Y','2'),
-                UP_FOURCC('V','A','O','P'),
-            };
-            uint32_t pick = known[s % (sizeof known / sizeof *known)];
-            memcpy(buf, &pick, 4);
-        }
-        run_one(buf, sizeof buf);
-    }
-
-    printf("scaler_chroma smoke OK: %ld iterations\n", n);
-    return 0;
+    fuzz_smoke_seed(0xFACEBEEFu);
+    return fuzz_smoke_main(argc, argv, 100000, "scaler_chroma", smoke_iter);
 }
 #endif

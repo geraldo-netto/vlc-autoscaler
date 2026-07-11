@@ -128,20 +128,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 }
 
 #ifdef FUZZ_MAIN
+#include "fuzz_smoke.h"
+
+static int smoke_iter(long i)
+{
+    run_case((uint8_t)i);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
-    long iterations = 100000;
-    if (argc > 1) {
-        char *end = NULL;
-        long parsed = strtol(argv[1], &end, 10);
-        if (end != NULL && *end == '\0' && parsed > 0)
-            iterations = parsed;
-    }
-
-    for (long i = 0; i < iterations; ++i)
-        run_case((uint8_t)i);
-
-    printf("scaler_open smoke OK: %ld iterations\n", iterations);
-    return 0;
+    return fuzz_smoke_main(argc, argv, 100000, "scaler_open", smoke_iter);
 }
 #endif

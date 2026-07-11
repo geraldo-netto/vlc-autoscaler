@@ -128,44 +128,27 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 }
 
 #ifdef FUZZ_MAIN
-/* Deterministic smoke-fuzz entry: PRNG-driven for N iterations. */
-static uint64_t xs_state = 0xdeadbeefcafebabeULL;
-static uint64_t xs(void)
+#include "fuzz_smoke.h"
+
+static int smoke_iter(long i)
 {
-    uint64_t x = xs_state;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    return xs_state = x;
+    uint8_t buf[4096];
+    if (i == 0) {
+        /* Edge case the PRNG would almost never produce. */
+        int edge_fps = INT_MIN;
+        int64_t edge_sample = 1;
+        memcpy(buf, &edge_fps, sizeof edge_fps);
+        memcpy(buf + sizeof edge_fps, &edge_sample, sizeof edge_sample);
+        if (run_one(buf, sizeof edge_fps + sizeof edge_sample)) return 1;
+    }
+    size_t n = (size_t)(fuzz_smoke_next() % sizeof buf);
+    fuzz_smoke_fill(buf, n);
+    return run_one(buf, n);
 }
 
 int main(int argc, char **argv)
 {
-    long iters = 50000;
-    if (argc > 2 || (argc == 2
-            && !up_cli_parse_long(argv[1], 1, LONG_MAX, &iters))) {
-        fprintf(stderr, "usage: %s [positive-iterations]\n", argv[0]);
-        return 2;
-    }
-    uint8_t buf[4096];
-    long n_fail = 0;
-
-    int edge_fps = INT_MIN;
-    int64_t edge_sample = 1;
-    memcpy(buf, &edge_fps, sizeof edge_fps);
-    memcpy(buf + sizeof edge_fps, &edge_sample, sizeof edge_sample);
-    if (run_one(buf, sizeof edge_fps + sizeof edge_sample)) n_fail++;
-
-    for (long i = 0; i < iters; i++) {
-        size_t n = (size_t)(xs() % sizeof(buf));
-        for (size_t j = 0; j < n; j++) buf[j] = (uint8_t)xs();
-        if (run_one(buf, n)) n_fail++;
-    }
-    if (n_fail) {
-        fprintf(stderr, "perfmon smoke FAIL: %ld/%ld trials\n", n_fail, iters);
-        return 1;
-    }
-    fprintf(stderr, "perfmon smoke OK: %ld iterations\n", iters);
-    return 0;
+    fuzz_smoke_seed(0xdeadbeefcafebabeULL);
+    return fuzz_smoke_main(argc, argv, 50000, "perfmon", smoke_iter);
 }
 #endif

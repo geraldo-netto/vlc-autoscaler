@@ -180,32 +180,26 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
 /* ---------- standalone smoke main ---------- */
 #ifdef FUZZ_MAIN
+#include "fuzz_smoke.h"
+
+static int smoke_iter(long i)
+{
+    (void)i;
+    uint8_t buf[32];
+    fuzz_smoke_fill(buf, sizeof buf);
+    run_one(buf, sizeof buf);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     /* Each iteration creates a worker pool for every runnable variant. The
      * default bounds sanitizer cost; an explicit argument can raise it. */
-    long n = 5000;
-    if (argc > 1) {
-        char *end = NULL;
-        long v = strtol(argv[1], &end, 10);
-        if (end && *end == '\0' && v > 0) n = v;
-    }
-
     init_features();
     printf("Variant fuzz: AVX2=%s AVX512=%s\n",
            has_avx2 ? "yes" : "no",
            has_avx512 ? "yes" : "no");
-
-    uint32_t s = 0xBADD00Du;
-    uint8_t buf[32];
-    for (long i = 0; i < n; i++) {
-        for (size_t j = 0; j < sizeof buf; j += 4) {
-            s ^= s << 13; s ^= s >> 17; s ^= s << 5;
-            memcpy(buf + j, &s, 4);
-        }
-        run_one(buf, sizeof buf);
-    }
-    printf("USM variant cross-equivalence smoke fuzz OK: %ld iterations\n", n);
-    return 0;
+    fuzz_smoke_seed(0xBADD00Du);
+    return fuzz_smoke_main(argc, argv, 5000, "usm_variants", smoke_iter);
 }
 #endif

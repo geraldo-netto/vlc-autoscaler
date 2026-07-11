@@ -454,59 +454,52 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 }
 
 #ifdef FUZZ_MAIN
-int main(int argc, char **argv)
+#include "fuzz_smoke.h"
+
+static int smoke_iter(long i)
 {
-    long n = 100000;
-    if (argc > 1) {
-        char *end = NULL;
-        long v = strtol(argv[1], &end, 10);
-        if (end && *end == '\0' && v > 0) n = v;
-    }
-
-    /* deterministic xorshift32 */
-    uint32_t s = 0xC0FFEE17u;
     uint8_t buf[24];
+    if (i == 0) {
+        /* Edge cases the PRNG would almost never produce. */
+        memset(buf, 0, sizeof buf);
+        int max_stripes = INT_MAX;
+        memcpy(buf + 16, &max_stripes, sizeof max_stripes);
+        run_one(buf, sizeof buf);
 
-    memset(buf, 0, sizeof buf);
-    int max_stripes = INT_MAX;
-    memcpy(buf + 16, &max_stripes, sizeof max_stripes);
-    run_one(buf, sizeof buf);
-
-    memset(buf, 0, sizeof buf);
-    int max_dimension = INT_MAX;
-    memcpy(buf + 8, &max_dimension, sizeof max_dimension);
-    memcpy(buf + 12, &max_dimension, sizeof max_dimension);
-    run_one(buf, sizeof buf);
-
-    for (long i = 0; i < n; i++) {
-        for (size_t j = 0; j < sizeof buf; j += 4) {
-            s ^= s << 13;
-            s ^= s >> 17;
-            s ^= s <<  5;
-            memcpy(buf + j, &s, 4);
-        }
-        /* Bias every 3rd iteration to use realistic dimensions, and every
-         * 5th to use small n_stripes (the common case). */
-        if ((i % 3) == 0) {
-            static const int common[] = {
-                1, 2, 16, 32, 64, 96, 128, 240, 360, 480, 540,
-                720, 1080, 1440, 2160, 4320, 65535
-            };
-            int w = common[s % (sizeof common / sizeof *common)];
-            int h = common[(s >> 8) % (sizeof common / sizeof *common)];
-            memcpy(buf +  8, &w, 4);
-            memcpy(buf + 12, &h, 4);
-        }
-        if ((i % 5) == 0) {
-            int ns = 1 + (int)(s % 32);  /* 1..32 */
-            int dh = 16 + (int)(s % 4080);  /* 16..4096 */
-            memcpy(buf + 16, &ns, 4);
-            memcpy(buf + 20, &dh, 4);
-        }
+        memset(buf, 0, sizeof buf);
+        int max_dimension = INT_MAX;
+        memcpy(buf + 8, &max_dimension, sizeof max_dimension);
+        memcpy(buf + 12, &max_dimension, sizeof max_dimension);
         run_one(buf, sizeof buf);
     }
+    fuzz_smoke_fill(buf, sizeof buf);
+    uint32_t s = (uint32_t)fuzz_smoke_next();
 
-    printf("frame_shape smoke OK: %ld iterations\n", n);
+    /* Bias every 3rd iteration to use realistic dimensions, and every
+     * 5th to use small n_stripes (the common case). */
+    if ((i % 3) == 0) {
+        static const int common[] = {
+            1, 2, 16, 32, 64, 96, 128, 240, 360, 480, 540,
+            720, 1080, 1440, 2160, 4320, 65535
+        };
+        int w = common[s % (sizeof common / sizeof *common)];
+        int h = common[(s >> 8) % (sizeof common / sizeof *common)];
+        memcpy(buf +  8, &w, 4);
+        memcpy(buf + 12, &h, 4);
+    }
+    if ((i % 5) == 0) {
+        int ns = 1 + (int)(s % 32);  /* 1..32 */
+        int dh = 16 + (int)(s % 4080);  /* 16..4096 */
+        memcpy(buf + 16, &ns, 4);
+        memcpy(buf + 20, &dh, 4);
+    }
+    run_one(buf, sizeof buf);
     return 0;
+}
+
+int main(int argc, char **argv)
+{
+    fuzz_smoke_seed(0xC0FFEE17u);
+    return fuzz_smoke_main(argc, argv, 100000, "frame_shape", smoke_iter);
 }
 #endif

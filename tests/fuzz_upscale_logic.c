@@ -260,50 +260,40 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 /* ---------- standalone smoke main (FUZZ_MAIN) ---------- */
 
 #ifdef FUZZ_MAIN
+#include "fuzz_smoke.h"
+
+static int smoke_iter(long i)
+{
+    uint8_t buf[32];
+    fuzz_smoke_fill(buf, sizeof buf);
+    uint32_t s = (uint32_t)fuzz_smoke_next();
+
+    /* Regularly bias input toward valid presets; uniform raw integers
+     * would almost never exercise the resolution ladder. */
+    if ((i & 3) == 0) {
+        int p = (int)(s % (UP_TARGET_MAX + 1u));  /* 0..UP_TARGET_MAX */
+        memcpy(buf + 12, &p, 4);
+    }
+
+    /* Also bias toward realistic source heights; raw src_h values are
+     * usually negative or huge. */
+    if ((i & 3) == 1) {
+        static const int common_heights[] = {
+            144, 240, 288, 360, 480, 540, 576, 720, 1080, 1440, 2160, 4320
+        };
+        int h = common_heights[s % (sizeof common_heights / sizeof *common_heights)];
+        int w = (h * 16) / 9;  /* 16:9 default */
+        memcpy(buf + 0, &w, 4);
+        memcpy(buf + 4, &h, 4);
+    }
+
+    run_one(buf, sizeof buf);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
-    long n = 100000;
-    if (argc > 1) {
-        char *end = NULL;
-        long v = strtol(argv[1], &end, 10);
-        if (end && *end == '\0' && v > 0) n = v;
-    }
-
-    /* deterministic xorshift32 */
-    uint32_t s = 0xDEADBEEFu;
-    uint8_t buf[32];
-
-    for (long i = 0; i < n; i++) {
-        for (size_t j = 0; j < sizeof buf; j += 4) {
-            s ^= s << 13;
-            s ^= s >> 17;
-            s ^= s <<  5;
-            memcpy(buf + j, &s, 4);
-        }
-
-        /* Regularly bias input toward valid presets; uniform raw integers
-         * would almost never exercise the resolution ladder. */
-        if ((i & 3) == 0) {
-            int p = (int)(s % (UP_TARGET_MAX + 1u));  /* 0..UP_TARGET_MAX */
-            memcpy(buf + 12, &p, 4);
-        }
-
-        /* Also bias toward realistic source heights; raw src_h values are
-         * usually negative or huge. */
-        if ((i & 3) == 1) {
-            static const int common_heights[] = {
-                144, 240, 288, 360, 480, 540, 576, 720, 1080, 1440, 2160, 4320
-            };
-            int h = common_heights[s % (sizeof common_heights / sizeof *common_heights)];
-            int w = (h * 16) / 9;  /* 16:9 default */
-            memcpy(buf + 0, &w, 4);
-            memcpy(buf + 4, &h, 4);
-        }
-
-        run_one(buf, sizeof buf);
-    }
-
-    printf("Smoke fuzz OK: %ld iterations\n", n);
-    return 0;
+    fuzz_smoke_seed(0xDEADBEEFu);
+    return fuzz_smoke_main(argc, argv, 100000, "upscale_logic", smoke_iter);
 }
 #endif

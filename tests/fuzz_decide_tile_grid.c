@@ -159,6 +159,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 }
 
 #ifdef FUZZ_MAIN
+#include "fuzz_smoke.h"
+
 /* Boundary values every parameter is swept over in the smoke main. */
 static const int BV[] = {
     INT_MIN, INT_MIN + 1, -65, -64, -2, -1, 0, 1, 2, 15, 16, 63, 64, 65,
@@ -179,31 +181,23 @@ static int sweep_boundaries(void)
     return fails;
 }
 
+/* Pseudo-random raw ints (full range) for anything the sweep missed. */
+static int smoke_iter(long i)
+{
+    (void)i;
+    uint8_t buf[20];
+    fuzz_smoke_fill(buf, sizeof buf);
+    return run_one(buf, sizeof buf);
+}
+
 int main(int argc, char **argv)
 {
-    long n = 200000;
-    if (argc > 1) {
-        char *end = NULL;
-        long t = strtol(argv[1], &end, 10);
-        if (end && *end == '\0' && t > 0) n = t;
-    }
-
     int fails = sweep_boundaries();
-
-    /* Plus pseudo-random raw ints (full range) for anything the grid missed. */
-    uint32_t s = 0x9E3779B9u;
-    uint8_t buf[20];
-    for (long i = 0; i < n && fails == 0; i++) {
-        for (size_t j = 0; j < sizeof buf; j += 4) {
-            s ^= s << 13; s ^= s >> 17; s ^= s << 5;
-            memcpy(buf + j, &s, 4);
-        }
-        fails += run_one(buf, sizeof buf);
+    if (fails) {
+        fprintf(stderr, "decide_tile_grid boundary sweep FAILED: %d\n", fails);
+        return 1;
     }
-
-    if (fails) { printf("decide_tile_grid smoke FAILED: %d\n", fails); return 1; }
-    printf("decide_tile_grid smoke OK: boundary sweep (%d^5) + %ld random\n",
-           NBV, n);
-    return 0;
+    fuzz_smoke_seed(0x9E3779B9u);
+    return fuzz_smoke_main(argc, argv, 200000, "decide_tile_grid", smoke_iter);
 }
 #endif
