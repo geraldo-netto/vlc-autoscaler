@@ -63,16 +63,22 @@
 const char *up_usm_pool_variant_name = "uninitialized";
 
 /*
- * One strategy vtable, selected once at load. Grouping the three function
- * pointers (rather than three loose statics) parallels scaler_backend_t
+ * One strategy vtable, selected once at load. Grouping the four function
+ * pointers (rather than four loose statics) parallels scaler_backend_t
  * and makes "the active variant" a single object — add a new entry point
- * and it is one struct member to wire, not another loose global. */
+ * and it is one struct member to wire, not another loose global.
+ *
+ * ABI-2: derive each member type from the matching variant declaration in
+ * usm_pool_variants.h (the single source of truth) rather than restating the
+ * signature here. A prototype change in that header now propagates to the
+ * vtable automatically; a truly incompatible change fails to type-check at the
+ * assignments below instead of drifting silently. __typeof__ is the
+ * strict-ISO-safe spelling and this TU is already GCC/Clang-x86 only. */
 typedef struct {
-    usm_pool_t *(*create) (int, int, int, int);
-    void        (*destroy)(usm_pool_t *);
-    int         (*apply)  (usm_pool_t *, uint8_t *, int,
-                           const uint8_t *, int, int);
-    int         (*effective_threads)(const usm_pool_t *);
+    __typeof__(&up_usm_pool_create_sse2)             create;
+    __typeof__(&up_usm_pool_destroy_sse2)            destroy;
+    __typeof__(&up_usm_pool_apply_sse2)              apply;
+    __typeof__(&up_usm_pool_effective_threads_sse2)  effective_threads;
 } usm_pool_ops_t;
 
 static usm_pool_ops_t g_ops;
