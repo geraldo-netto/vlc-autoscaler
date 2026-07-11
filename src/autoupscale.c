@@ -1022,6 +1022,7 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
     picture_t *p_out = filter_NewPicture( p_filter );
     if( !p_out )
     {
+        p_sys->dropped_count++;
         picture_Release( p_in );
         return NULL;
     }
