@@ -236,6 +236,9 @@ jobs:
         run: |
           make coverage
           gcovr --root . --filter 'src/' --sonarqube coverage-sonar.xml build/cov
+          make coverage-zimg
+          gcovr --root . --filter 'src/scaler_zimg\.c' \
+            --sonarqube coverage-zimg-sonar.xml build/covz
 
       - name: Run sonar-scanner
         uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0

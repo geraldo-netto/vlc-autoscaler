@@ -38,5 +38,6 @@ compile_commands.json
 # Generated docs
 docs/_build/
 
-# Sonar coverage report (generated in CI by gcovr)
+# Sonar coverage reports (generated in CI by gcovr)
 coverage-sonar.xml
+coverage-zimg-sonar.xml
