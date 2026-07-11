@@ -677,8 +677,13 @@ static void test_construction_pthread_fail(void)
     setrlimit(RLIMIT_NPROC, &old);   /* restore before any later test */
 
     CHECK(ok);
-    CHECK(rc1 == SCALER_PROCESS_FATAL);   /* lazy init failed */
-    CHECK(rc2 == SCALER_PROCESS_FATAL);   /* sticky */
+    /* RLIMIT_NPROC is not enforced for privileged processes (root is
+     * common in CI containers): there the spawn succeeds and the frame
+     * processes normally. Accept both, like test_usm_pool's spawn-fail
+     * test; the FATAL branch must be sticky, the OK branch repeatable,
+     * and ASan enforces no-leak either way. */
+    CHECK(rc1 == SCALER_PROCESS_FATAL || rc1 == SCALER_PROCESS_OK);
+    CHECK(rc2 == rc1);
     zt_pic_free(&src);
     zt_pic_free(&dst);
     END();
