@@ -56,5 +56,7 @@ kernel, so its results must not be combined with production-pipeline claims.
 
 For SIMD comparisons, use clean build directories for each `MARCH` and
 `MULTIVERSION` configuration. Variant byte equivalence is checked by
-`tests/test_usm_pool_variants.c`; throughput still must be measured on the
-deployment host.
+`tests/test_usm_pool_variants.c`; because that byte-identity would also hide an
+accidental collapse of a variant to the baseline, `make check-multiversion-isa`
+separately confirms each variant actually emits its target instruction set
+(SSE2 / AVX2 / AVX-512). Throughput still must be measured on the deployment host.

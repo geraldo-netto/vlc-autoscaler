@@ -30,7 +30,7 @@ and still fast enough for real-time playback on modest hardware.
 | Concurrency stress | `make stress` and `make stress-zimg` |
 | Static analysis | `make analyze` |
 | Cyclomatic complexity | `make complexity` enforces CCN ≤ 10 |
-| Per-file and per-function coverage | `make coverage` enforces ≥ 80% |
+| Per-file and per-function coverage | `make coverage` enforces ≥ 90% |
 | Plugin build | `make plugin EXTRA_CFLAGS=-Werror` |
 | zimg integration | `make test-zimg` |
 

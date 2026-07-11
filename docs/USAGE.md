@@ -717,7 +717,7 @@ Expected output includes the negotiated geometry and live configuration:
 
 ```
 AutoUpscale engaged: <source> -> <target> (backend=... preset=... algo=... \
-  usm=... fps_target=... threads=... cores=... mem=... simd=...)
+  usm=... fps_target=... threads_budget=... cores=... mem=... simd=...)
 ```
 
 `simd=default` is expected for the default single-baseline

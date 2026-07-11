@@ -1061,12 +1061,16 @@ configurations during development.
 `--coverage -fprofile-arcs -ftest-coverage`, runs them, then prints
 per-file summaries via `scripts/coverage_report.sh` and per-function summaries
 via `scripts/coverage_per_function.sh`. The scripts fail the build when a
-tracked file or function falls below 80% coverage, or when gcov data is
+tracked file or function falls below 90% coverage, or when gcov data is
 missing or malformed. Their generated output is the source of truth for
 tracked totals and percentages.
 
 The `make coverage` step is wired into the GitHub Actions CI job
 (`.github/workflows/ci.yml`) so a coverage-gate failure rejects the CI job.
+The SonarCloud job additionally converts the same instrumented run into a
+SonarQube generic-coverage report with `gcovr` and uploads it via
+`sonar.coverageReportPaths`, so line coverage of the production sources is
+visible on SonarCloud too.
 
 ### Cyclomatic complexity
 
