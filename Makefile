@@ -105,6 +105,8 @@ endif
 TEST_CFLAGS  := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefined $(EXTRA_CFLAGS)
 TEST_LDFLAGS := -fsanitize=address,undefined
 BARRIER_WRAP_LDFLAGS := -Wl,--wrap=sem_wait -Wl,--wrap=sem_post -Wl,--wrap=pthread_cond_broadcast
+# test_threading fault-injects pthread_cond_init to exercise gate-init cleanup.
+THREADING_WRAP_LDFLAGS := -Wl,--wrap=pthread_cond_init
 USM_POOL_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc
 
 FUZZ_SAN     := -fsanitize=fuzzer,address,undefined
@@ -764,7 +766,7 @@ $(COV_BUILD)/test_perfmon: tests/test_perfmon.c src/perfmon.h | $(COV_BUILD)
 $(COV_BUILD)/test_cli_parse: tests/test_cli_parse.c tests/cli_parse.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_threading: tests/test_threading.c src/threading.h | $(COV_BUILD)
-	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS) -lpthread
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
 $(COV_BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.h | $(COV_BUILD)
@@ -837,8 +839,8 @@ coverage: $(COV_BINS)
 	    (cd "$$text_dir" && $(GCOV) -r -m -o "$$cov_dir" "$$gcda" > /dev/null); \
 	    (cd "$$json_dir" && $(GCOV) -j -r -m -o "$$cov_dir" "$$gcda" > /dev/null); \
 	done
-	@COV_DIR=$(COV_BUILD) THRESHOLD=80 ./scripts/coverage_report.sh
-	@COV_DIR=$(COV_BUILD) THRESHOLD=80 ./scripts/coverage_per_function.sh
+	@COV_DIR=$(COV_BUILD) THRESHOLD=90 ./scripts/coverage_report.sh
+	@COV_DIR=$(COV_BUILD) THRESHOLD=90 ./scripts/coverage_per_function.sh
 
 coverage-summary: coverage
 
@@ -905,12 +907,12 @@ $(BUILD):
 -include $(wildcard $(BUILD)/*.d)
 -include $(wildcard $(COV_BUILD)/*.d)
 $(BUILD)/test_threading: tests/test_threading.c src/threading.h | $(BUILD)
-	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS) -lpthread
+	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
 
 # PORT-1: same suite compiled with the affinity machinery forced off,
 # proving the sysconf-only fallback (non-glibc libcs) builds and passes.
 $(BUILD)/test_threading_noaffinity: tests/test_threading.c src/threading.h | $(BUILD)
-	$(CC) $(TEST_CFLAGS) -DUP_NO_CPU_AFFINITY -o $@ $< $(TEST_LDFLAGS) -lpthread
+	$(CC) $(TEST_CFLAGS) -DUP_NO_CPU_AFFINITY -o $@ $< $(TEST_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
 
 $(BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)

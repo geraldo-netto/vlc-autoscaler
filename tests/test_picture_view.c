@@ -286,6 +286,24 @@ static void test_invalid_physical_bounds(void)
     expect_invalid(&test.pic, VLC_CODEC_RGBA, &region);
 }
 
+/* An unsupported fourcc has no layout-table entry: the lookup loop falls
+ * through to NULL. The invalid-format contract test can't reach this via
+ * up_picture_view_init (its chroma-match arg check rejects a mismatched
+ * fourcc first), so exercise the lookup directly and via a picture that
+ * declares the unknown chroma so the match check passes. */
+static void test_unknown_chroma_layout(void)
+{
+    CHECK(up_picture_format_layout(VLC_FOURCC('X', 'X', 'X', 'X')) == NULL);
+
+    test_picture_t test;
+    up_picture_view_t view;
+    up_picture_region_t region = test_region();
+    init_picture(&test, VLC_CODEC_I420);
+    test.pic.format.i_chroma = VLC_FOURCC('X', 'X', 'X', 'X');
+    CHECK(!up_picture_view_init(&view, &test.pic,
+                                VLC_FOURCC('X', 'X', 'X', 'X'), &region));
+}
+
 int main(void)
 {
     test_every_supported_format();
@@ -293,6 +311,7 @@ int main(void)
     test_invalid_format_contract();
     test_invalid_plane_storage();
     test_invalid_physical_bounds();
+    test_unknown_chroma_layout();
     if (failures != 0)
         fprintf(stderr, "picture_view: %d checks failed\n", failures);
     return failures == 0 ? 0 : 1;

@@ -5,10 +5,25 @@
 
 #include "../src/threading.h"
 
+#include <errno.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 #include "test_harness.h"
+
+/* Fault injection (linked with -Wl,--wrap=pthread_cond_init): make the next
+ * pthread_cond_init fail once so up_pool_gate_init's mutex-cleanup path runs. */
+static atomic_int g_fail_next_cond_init;
+extern int __real_pthread_cond_init(pthread_cond_t *,
+                                    const pthread_condattr_t *);
+int __wrap_pthread_cond_init(pthread_cond_t *cond,
+                             const pthread_condattr_t *attr)
+{
+    if (atomic_exchange(&g_fail_next_cond_init, 0))
+        return EAGAIN;
+    return __real_pthread_cond_init(cond, attr);
+}
 
 /*
  * Auto policy: cores/2 - 2, clamped to [1, UP_THREADS_MAX].
@@ -456,9 +471,25 @@ static void test_explicit_at_max_boundary(void)
     END();
 }
 
+/* up_pool_gate_init destroys the mutex it just created and returns -1 when
+ * pthread_cond_init fails, leaving cv/sem uninitialized. The fault is
+ * one-shot, so a retry succeeds and yields a fully usable gate. */
+static void test_pool_gate_init_cond_failure(void)
+{
+    BEGIN("gate init cleans up the mutex when cond init fails");
+    up_pool_gate_t gate;
+    atomic_store(&g_fail_next_cond_init, 1);
+    CHECK_EQ(up_pool_gate_init(&gate), -1);
+    CHECK_EQ(up_pool_gate_init(&gate), 0);
+    up_pool_gate_destroy(&gate);
+    END();
+}
+
 int main(void)
 {
     printf("Running threading tests...\n");
+
+    test_pool_gate_init_cond_failure();
 
     test_auto_typical();
     test_auto_low_core_count();
