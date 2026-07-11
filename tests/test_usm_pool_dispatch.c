@@ -59,14 +59,14 @@ static void test_select_ops_prefers_highest_isa(void)
 static void test_public_api_forwards(void)
 {
     BEGIN("public API forwards through the load-selected variant");
-    /* The constructor already ran at load and named the host's variant. */
-    CHECK(up_usm_pool_variant_name != NULL);
+    /* The constructor already ran at load and replaced the initial
+     * "uninitialized" sentinel with the host's variant name. */
     CHECK(strcmp(up_usm_pool_variant_name, "uninitialized") != 0);
 
     usm_pool_t *pool = up_usm_pool_create(4, 64, 64, 8);
     CHECK(pool != NULL);
     uint8_t dst[16] = { 0 };
-    uint8_t src[16] = { 0 };
+    const uint8_t src[16] = { 0 };
     CHECK(up_usm_pool_apply(pool, dst, 16, src, 16, 128) == 0);
     CHECK(up_usm_pool_effective_threads(pool) == 7);
     up_usm_pool_destroy(pool);
