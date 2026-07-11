@@ -25,6 +25,7 @@
 
 /* Variant entry points: one shared set of prototypes (ABI-2). */
 #include "../src/usm_pool_variants.h"
+#include "../src/cpu_level.h"
 
 /* Bound dimensions to keep memory and time reasonable per iteration.
  * The test suite (test_usm_pool_variants) covers larger sizes deterministically;
@@ -40,10 +41,12 @@ static int has_avx512 = 0;
 static void init_features(void)
 {
     if (features_init) return;
-    __builtin_cpu_init();
-    has_avx2   = __builtin_cpu_supports("avx2");
-    has_avx512 = __builtin_cpu_supports("avx512f")
-              && __builtin_cpu_supports("avx512bw");
+    /* Full x86-64-v3/v4 level probes, not headline flags: the variant
+     * objects are compiled at -march=x86-64-v3/v4 and may emit BMI2/FMA/
+     * AVX512VL anywhere, so gating on avx2/avx512f alone can SIGILL on
+     * partial-feature CPUs. Same probes as test_usm_pool_variants. */
+    has_avx2   = up_cpu_supports_v3();
+    has_avx512 = up_cpu_supports_v4();
     features_init = 1;
 }
 
