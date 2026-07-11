@@ -90,7 +90,6 @@ improves clarity" rule.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| REL-3 | open | S | `tests/fuzz_scaler_seam.c:152-154` — `dw` and `threads` decode the same input bytes (`data + 9`), and `dh` (`data + 12`) overlaps `dw`'s last byte, so destination width and thread count are deterministically coupled and cannot be explored independently. | Likely copy-paste offset; re-layout the 16-byte input (or grow it) so each field has its own bytes. Note: existing corpus seeds encode the coupled layout — re-derive or keep both decoders versioned. |
 
 ## portability/standards conformance
 

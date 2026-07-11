@@ -70,11 +70,13 @@ static const uint32_t CHROMAS[] = {
     VLC_CODEC_I420, VLC_CODEC_YV12, VLC_CODEC_I422, VLC_CODEC_I444,
 };
 
-/* Map 4 input bytes to a bounded value in [lo, hi]. */
+/* Map 2 input bytes (little-endian) to a bounded value in [lo, hi].
+ * Every decoded range fits in 16 bits, so two bytes per field lets all
+ * five fields occupy DISJOINT input bytes (REL-3): overlapping windows
+ * deterministically coupled dst width to thread count. */
 static int pick(const uint8_t *b, int lo, int hi)
 {
-    uint32_t v = (uint32_t)b[0] | ((uint32_t)b[1] << 8)
-               | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+    uint32_t v = (uint32_t)b[0] | ((uint32_t)b[1] << 8);
     return lo + (int)(v % (uint32_t)(hi - lo + 1));
 }
 
@@ -148,10 +150,10 @@ static void run_one(const uint8_t *data, size_t size)
      * subsampled chroma valid. The backend must stay memory-safe (and either
      * fail gracefully or hold the seam bound) for any of these. */
     int sw = pick(data + 1, 2, 512) & ~1;
-    int sh = pick(data + 5, 2, 512) & ~1;
-    int dw = pick(data + 9, sw, sw * 3) & ~1;   /* upscale (or equal) */
-    int dh = pick(data + 12, sh, sh * 3) & ~1;
-    int threads = pick(data + 9, 2, 32);        /* >=2 to tile; >cores stresses */
+    int sh = pick(data + 3, 2, 512) & ~1;
+    int dw = pick(data + 5, sw, sw * 3) & ~1;   /* upscale (or equal) */
+    int dh = pick(data + 7, sh, sh * 3) & ~1;
+    int threads = 2 + data[9] % 31;             /* >=2 to tile; >cores stresses */
     if (sw < 2 || sh < 2 || dw < 2 || dh < 2) return;
 
     zt_pic_t ref, tiled;
