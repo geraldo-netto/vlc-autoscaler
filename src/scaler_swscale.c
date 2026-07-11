@@ -32,9 +32,9 @@ typedef struct
 } sws_priv_t;
 
 /* OBS-3: emit a one-shot swscale failure reason, latched via *warned. */
-static void sws_warn_once( scaler_ctx_t *ctx, int *warned, const char *reason )
+static void sws_warn_once( const scaler_ctx_t *ctx, int *warned,
+                           const char *reason )
 {
-    (void)reason;   /* unused when msg_Warn compiles out (unit-test stub) */
     if( !ctx->log_obj || *warned ) return;
     *warned = 1;
     msg_Warn( ctx->log_obj, "swscale: %s (logged only once)", reason );

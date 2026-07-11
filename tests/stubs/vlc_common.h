@@ -20,11 +20,15 @@ typedef struct vlc_object_t { int unused; } vlc_object_t;
 #define VLC_CODEC_RGBA  VLC_FOURCC('R', 'G', 'B', 'A')
 #define VLC_CODEC_BGRA  VLC_FOURCC('B', 'G', 'R', 'A')
 
-/* VLC's real headers expand every msg_* to msg_Generic; the tests only need
- * them to evaluate their object argument and vanish. */
-#define msg_Dbg(obj, ...)  ((void)(obj))
-#define msg_Warn(obj, ...) ((void)(obj))
-#define msg_Err(obj, ...)  ((void)(obj))
-#define msg_Info(obj, ...) ((void)(obj))
+/* VLC's real headers expand every msg_* to a printf-like msg_Generic that
+ * reads all of its arguments. The stub forwards them to a variadic sink so the
+ * object AND the format arguments are "used" — otherwise cppcheck (which parses
+ * these stubs) reports false unreadVariable warnings for values passed only to
+ * a log call. No output is produced. */
+static inline void vlc_stub_msg_sink(void *obj, ...) { (void)obj; }
+#define msg_Dbg(obj, ...)  vlc_stub_msg_sink((obj), __VA_ARGS__)
+#define msg_Warn(obj, ...) vlc_stub_msg_sink((obj), __VA_ARGS__)
+#define msg_Err(obj, ...)  vlc_stub_msg_sink((obj), __VA_ARGS__)
+#define msg_Info(obj, ...) vlc_stub_msg_sink((obj), __VA_ARGS__)
 
 #endif
