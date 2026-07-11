@@ -141,7 +141,6 @@ Test-harness pic leaks are tracked as MEM-1/MEM-3.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| OBS-1 | open | M | The USM pool's effective worker count is unobservable: partial spawn silently shrinks `n_threads` (src/usm_pool.c:422-436) and create-time stripe clamping (usm_pool.c:459-461) shrinks it too, while the engagement log (src/autoupscale.c:712-722) prints `threads=%d` from an independent `up_threads_decide()` computation reflecting neither pool. | The zimg pool logs its real grid (`log_zimg_open`); the USM pool logs nothing — headline log can overstate parallelism. Log actual `n_threads` after lazy init (needs a query hook or deferred log). |
 
 No log-spam risks found: all repeated-path messages are one-shot latched; periodic stats
 are msg_Dbg on a 5 s tick.
@@ -168,6 +167,7 @@ consumer.
 | id | status | effort | description | why not now |
 |---|---|---|---|---|
 | PERF-P1 | parked | M | `src/usm_pool.c:476-516` — in-place USM does 2×n_threads serial main-thread halo-row memcpys per frame before dispatch (~115 KB/frame at 1080p/30 workers, ~0.5 MB worst case at 4K/64). | Folding snapshots into workers needs an extra ready-barrier — significant complexity for a cost that hasn't shown up in a profile. Measure first. |
+| TEST-P1 | parked | S | `up_usm_pool_effective_threads` (OBS-1): the mutant `n_threads`→`n_threads_pref` survives the suite — the fields diverge only under a deterministic partial spawn, and the RLIMIT_NPROC test asserts bounds only (root-tolerant by design). | Killing it needs pthread_create fault-injection infra (new `--wrap`) for a diagnostics-only getter; not worth the infra now. |
 | SCAL-P1 | parked | L | Static equal-work stripe partition + full per-frame completion barrier (src/usm_pool.c:530-542, src/scaler_zimg.c:1167-1195) makes frame latency `max` over workers; on hybrid P/E-core CPUs or decoder-shared cores, fast workers idle at the barrier every frame. | Partition math itself is balanced (±1-2 rows); the fix is dynamic stripe stealing or heterogeneity-aware sizing — a large change against a deliberately simple, verified-correct design. Revisit with profile evidence on hybrid hardware. |
 | SCAL-P2 | parked | M | Per-worker zimg graph + tmp buffer (+ per-tile dst scratch) grows memory and graph-build time linearly with thread count, up to 64 graphs (src/scaler_zimg.c:732-759). | Independent graphs are what makes the frame path lock-free; bounded by thread caps and stripe floors. Inherent design cost, listed for visibility. |
 | SCAL-P3 | parked | L | zimg pool and USM pool are separate persistent pools sized from the same budget (src/autoupscale.c:558-578, src/scaler_zimg.c:1081-1099): up to 2×64 threads per filter instance that only ever run sequentially within a frame. | Idle cv-blocked threads are cheap; lazy init keeps probe-only cycles free. Merging pools is a large restructuring for modest gain (one fewer wake/barrier round-trip). |

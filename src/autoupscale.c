@@ -362,6 +362,11 @@ struct filter_sys_t
     /* ERR-1: both OBS-5 stat variables were created; gates the periodic
      * var_SetInteger export and the paired var_Destroy at Close(). */
     int                stats_vars_ok;
+
+    /* OBS-1: one-shot log of the USM pool's real worker count, deferred
+     * to after the first apply() because lazy init may shrink it (the
+     * engagement log's threads= reflects neither pool). */
+    int                usm_threads_logged;
 };
 
 /*****************************************************************************
@@ -746,7 +751,7 @@ static int Open( vlc_object_t *p_this )
     msg_Info( p_filter,
               "AutoUpscale engaged: %dx%d -> %dx%d "
               "(backend=%s preset=%d algo=%d usm=%d fps_target=%d "
-              "threads=%d cores=%d mem=%luMB simd=%s)",
+              "threads_budget=%d cores=%d mem=%luMB simd=%s)",
               src_w, src_h, target.width, target.height,
               p_sys->scaler.backend->name,
               preset, algo, usm_pct, p_sys->target_fps,
@@ -934,6 +939,14 @@ static void ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
                   "AutoUpscale: USM pool initialization or dispatch failed; "
                   "sharpening disabled for this playback" );
         p_sys->usm_amount_q8 = 0;
+        return;
+    }
+    if( !p_sys->usm_threads_logged )
+    {
+        p_sys->usm_threads_logged = 1;
+        msg_Info( p_filter,
+                  "AutoUpscale: USM pool running %d worker thread(s)",
+                  up_usm_pool_effective_threads( p_sys->usm_pool ) );
     }
 }
 

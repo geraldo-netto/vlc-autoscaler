@@ -66,6 +66,8 @@
 #  define up_usm_pool_create   USM_PASTE(up_usm_pool_create,   USM_VARIANT)
 #  define up_usm_pool_destroy  USM_PASTE(up_usm_pool_destroy,  USM_VARIANT)
 #  define up_usm_pool_apply    USM_PASTE(up_usm_pool_apply,    USM_VARIANT)
+#  define up_usm_pool_effective_threads \
+          USM_PASTE(up_usm_pool_effective_threads, USM_VARIANT)
    /* ABI-2: cross-check this TU's renamed definitions against the shared
     * variant prototypes — a drift is a compile error here, not silent ABI
     * mismatch at the call boundary. (The pasted _<name> tokens below are
@@ -580,6 +582,11 @@ static void usm_pool_stop_workers(usm_pool_t *p)
         pthread_join(p->workers[i].thread, NULL);
         p->workers[i].thread_started = false;
     }
+}
+
+int up_usm_pool_effective_threads(const usm_pool_t *p)
+{
+    return p ? p->n_threads : 0;
 }
 
 void up_usm_pool_destroy(usm_pool_t *p)

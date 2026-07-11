@@ -467,6 +467,36 @@ static void test_destroy_unused_pool(void)
     END();
 }
 
+/* OBS-1: the query is what callers log instead of the thread count they
+ * asked for, so it must expose the create-time clamp and stay stable
+ * across a fully-spawned apply. */
+static void test_effective_threads_query(void)
+{
+    BEGIN("effective_threads: NULL=0, create clamp visible, stable after apply");
+    CHECK(up_usm_pool_effective_threads(NULL) == 0);
+
+    /* Height 16, stripe_min 8 -> clamped to 2 despite asking for 64. */
+    usm_pool_t *clamped = up_usm_pool_create(64, 100, 16, 0);
+    CHECK(clamped != NULL);
+    if (clamped) {
+        CHECK(up_usm_pool_effective_threads(clamped) == 2);
+        up_usm_pool_destroy(clamped);
+    }
+
+    enum { W = 64, H = 64 };
+    static uint8_t buf[W * H];
+    usm_pool_t *p = up_usm_pool_create(4, W, H, 0);
+    CHECK(p != NULL);
+    if (p) {
+        CHECK(up_usm_pool_effective_threads(p) == 4);
+        CHECK(up_usm_pool_apply(p, buf, W, buf, W,
+                                up_usm_amount_pct_to_q8(30)) == 0);
+        CHECK(up_usm_pool_effective_threads(p) == 4);
+        up_usm_pool_destroy(p);
+    }
+    END();
+}
+
 static void test_apply_null_pool(void)
 {
     BEGIN("apply(NULL, ...) returns -1 cleanly");
@@ -654,6 +684,12 @@ static void test_spawn_pthread_create_fail_clean(void)
     /* -1 (no worker spawned, sticky) or 0 (partial pool ran) are both
      * acceptable; the point is no leak/crash, which ASan enforces. */
     CHECK(rc == -1 || rc == 0);
+    /* OBS-1: after a partial spawn ran, the query reports the workers
+     * that actually exist, never more than requested. */
+    if (rc == 0) {
+        int eff = up_usm_pool_effective_threads(p);
+        CHECK(eff >= 1 && eff <= 64);
+    }
     up_usm_pool_destroy(p);
     free(src); free(dst);
     END();
@@ -688,6 +724,7 @@ int main(void)
     test_barrier_failure_drains_and_sticks();
     test_destroy_null_safe();
     test_destroy_unused_pool();
+    test_effective_threads_query();
     test_apply_null_pool();
     test_apply_invalid_strides();
     test_spawn_pthread_create_fail_clean();

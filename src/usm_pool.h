@@ -97,6 +97,15 @@ int up_usm_pool_apply(usm_pool_t *pool,
 void up_usm_pool_destroy(usm_pool_t *pool);
 
 /*
+ * Effective worker count (OBS-1): the create-time clamped count until
+ * the first apply(); afterwards it also reflects any partial-spawn
+ * shrink from lazy init. Returns 0 for a NULL pool. Callers logging
+ * pool parallelism should query this after the first apply(), not echo
+ * the thread count they asked for.
+ */
+int up_usm_pool_effective_threads(const usm_pool_t *pool);
+
+/*
  * Name of the active SIMD variant, for diagnostic logging. Exactly one
  * strong definition is linked, depending on build mode (ABI-1):
  *   - MULTIVERSION=1: usm_pool_dispatch.c sets it at .so load to the chosen

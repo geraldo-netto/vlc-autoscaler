@@ -36,7 +36,8 @@
     extern int up_usm_pool_apply_##name(usm_pool_t *pool,                     \
                                         uint8_t *dst, int dst_stride,         \
                                         const uint8_t *src, int src_stride,   \
-                                        int amount_q8);
+                                        int amount_q8);                       \
+    extern int up_usm_pool_effective_threads_##name(const usm_pool_t *pool);
 
 UP_USM_POOL_VARIANT_LIST(UP_USM_POOL_DECLARE_VARIANT)
 #undef UP_USM_POOL_DECLARE_VARIANT

@@ -72,6 +72,7 @@ typedef struct {
     void        (*destroy)(usm_pool_t *);
     int         (*apply)  (usm_pool_t *, uint8_t *, int,
                            const uint8_t *, int, int);
+    int         (*effective_threads)(const usm_pool_t *);
 } usm_pool_ops_t;
 
 static usm_pool_ops_t g_ops;
@@ -93,21 +94,24 @@ up_usm_pool_dispatch_init(void)
     if (up_cpu_supports_v4()) {
         g_ops = (usm_pool_ops_t){ up_usm_pool_create_avx512,
                                   up_usm_pool_destroy_avx512,
-                                  up_usm_pool_apply_avx512 };
+                                  up_usm_pool_apply_avx512,
+                                  up_usm_pool_effective_threads_avx512 };
         up_usm_pool_variant_name = "avx512";
         return;
     }
     if (up_cpu_supports_v3()) {
         g_ops = (usm_pool_ops_t){ up_usm_pool_create_avx2,
                                   up_usm_pool_destroy_avx2,
-                                  up_usm_pool_apply_avx2 };
+                                  up_usm_pool_apply_avx2,
+                                  up_usm_pool_effective_threads_avx2 };
         up_usm_pool_variant_name = "avx2";
         return;
     }
 #endif
     g_ops = (usm_pool_ops_t){ up_usm_pool_create_sse2,
                               up_usm_pool_destroy_sse2,
-                              up_usm_pool_apply_sse2 };
+                              up_usm_pool_apply_sse2,
+                              up_usm_pool_effective_threads_sse2 };
     up_usm_pool_variant_name = "sse2";
 }
 
@@ -129,4 +133,9 @@ int up_usm_pool_apply(usm_pool_t *pool,
                       int amount_q8)
 {
     return g_ops.apply(pool, dst, dst_stride, src, src_stride, amount_q8);
+}
+
+int up_usm_pool_effective_threads(const usm_pool_t *pool)
+{
+    return g_ops.effective_threads(pool);
 }

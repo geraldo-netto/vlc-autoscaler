@@ -308,6 +308,35 @@ static void test_content_patterns(void)
     END();
 }
 
+/* OBS-1: the effective-thread query must report the same post-clamp
+ * count through the dispatcher and through every variant entry point. */
+static void test_effective_threads_variants(void)
+{
+    BEGIN("effective_threads consistent across dispatcher and variants");
+    CHECK(up_usm_pool_effective_threads(NULL) == 0);
+
+    /* h=32, stripe_min default 8 -> clamped to 4 despite asking 16. */
+    usm_pool_t *p = up_usm_pool_create(16, 64, 32, 0);
+    CHECK(p && up_usm_pool_effective_threads(p) == 4);
+    up_usm_pool_destroy(p);
+
+    usm_pool_t *ps = up_usm_pool_create_sse2(16, 64, 32, 0);
+    CHECK(ps && up_usm_pool_effective_threads_sse2(ps) == 4);
+    up_usm_pool_destroy_sse2(ps);
+
+    if (has_avx2) {
+        usm_pool_t *pa = up_usm_pool_create_avx2(16, 64, 32, 0);
+        CHECK(pa && up_usm_pool_effective_threads_avx2(pa) == 4);
+        up_usm_pool_destroy_avx2(pa);
+    }
+    if (has_avx512) {
+        usm_pool_t *pz = up_usm_pool_create_avx512(16, 64, 32, 0);
+        CHECK(pz && up_usm_pool_effective_threads_avx512(pz) == 4);
+        up_usm_pool_destroy_avx512(pz);
+    }
+    END();
+}
+
 static void test_dispatcher_init(void)
 {
     /* The dispatcher exposes up_usm_pool_variant_name. Verify it's been
@@ -339,6 +368,7 @@ int main(void)
     printf("\n");
 
     test_dispatcher_init();
+    test_effective_threads_variants();
     test_amount_zero();
     test_typical_resolutions();
     test_amount_sweep();
