@@ -349,6 +349,11 @@ struct filter_sys_t
      * spamming the log every frame (OBS-1). */
     int                process_fail_logged;
 
+    /* One-shot guard for output-pool exhaustion (OBS-2): filter_NewPicture
+     * returning NULL drops the frame; latch so backpressure logs once, not
+     * once per dropped frame. */
+    int                newpic_fail_logged;
+
     /* SYS-2 runtime fallback state. backend_pref is the user's
      * --autoupscale-backend so a forced zimg is respected; fallback_tried
      * makes the swap one-shot. A failed swap leaves scaler.backend NULL
@@ -1108,6 +1113,13 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
     picture_t *p_out = filter_NewPicture( p_filter );
     if( !p_out )
     {
+        if( !p_sys->newpic_fail_logged )
+        {
+            p_sys->newpic_fail_logged = 1;
+            msg_Warn( p_filter,
+                      "AutoUpscale: output picture pool exhausted; "
+                      "dropping frame(s) (this is logged only once)" );
+        }
         p_sys->dropped_count++;
         picture_Release( p_in );
         return NULL;
