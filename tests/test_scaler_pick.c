@@ -67,15 +67,13 @@ static int mock_open_backend(void *context, const void *backend_handle)
 
 /* ---- test framework ---- */
 
-static int g_run = 0, g_fail = 0, g_failed_in_test = 0;
+#include "test_harness.h"
 
-#define BEGIN(name) do { printf("  [....] %s\n", name); g_failed_in_test = 0; } while (0)
-#define END() do { g_run++; if (g_failed_in_test) { g_fail++; } } while (0)
 #define CHECK_EQ_PTR(got, want) do { \
     if ((got) != (want)) { \
         printf("    %s:%d: expected %p, got %p\n", __FILE__, __LINE__, \
                (const void*)(want), (const void*)(got)); \
-        g_failed_in_test = 1; \
+        g_cur_fail = 1; \
     } \
 } while (0)
 #define CHECK_NULL(p)    CHECK_EQ_PTR(p, NULL)
@@ -87,7 +85,7 @@ static int g_run = 0, g_fail = 0, g_failed_in_test = 0;
     if (actual_ != expected_) { \
         printf("    %s:%d: expected %d, got %d\n", __FILE__, __LINE__, \
                expected_, actual_); \
-        g_failed_in_test = 1; \
+        g_cur_fail = 1; \
     } \
 } while (0)
 
@@ -337,7 +335,7 @@ static void test_backend_pref_oob_boundaries(void)
         if (r != ZIMG_TAG) {
             printf("    pref=%d expected AUTO->zimg, got %p\n",
                    oob[i], r);
-            g_failed_in_test = 1;
+            g_cur_fail = 1;
         }
     }
     END();
@@ -425,6 +423,5 @@ int main(void)
     test_null_zimg_supports_in_auto_falls_back();
     test_process_status_contract();
 
-    printf("\n%d tests run, %d failed\n", g_run, g_fail);
-    return g_fail == 0 ? 0 : 1;
+    return test_harness_report();
 }

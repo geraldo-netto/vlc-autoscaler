@@ -34,16 +34,7 @@
 
 /* ---- test framework (same minimal pattern as other suites) ---- */
 
-static int g_run = 0, g_fail = 0, g_failed_in_test = 0;
-
-#define BEGIN(name) do { printf("  [....] %s\n", name); g_failed_in_test = 0; } while (0)
-#define END() do { g_run++; if (g_failed_in_test) { g_fail++; } } while (0)
-#define CHECK(cond) do { \
-    if (!(cond)) { \
-        printf("    %s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond); \
-        g_failed_in_test = 1; \
-    } \
-} while (0)
+#include "test_harness.h"
 
 /* ---- helpers ---- */
 
@@ -373,8 +364,7 @@ int main(void)
     test_variable_sizes_in_succession();
     test_many_pools_alive_simultaneously();
 
-    printf("\n%d tests run, %d failed\n", g_run, g_fail);
     /* If ASan detected leaks they're reported at process exit; the
      * exit code reflects the test pass/fail. */
-    return g_fail == 0 ? 0 : 1;
+    return test_harness_report();
 }

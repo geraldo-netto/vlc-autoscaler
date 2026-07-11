@@ -62,7 +62,6 @@ machine complexity is tracked as PAT-1 (the consolidation is the fix).
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| DUP-2 | open | S | 13 test suites re-declare the identical `g_run/g_fail` + `BEGIN/END/CHECK` mini-harness and epilogue with naming drift (`g_cur_fail` vs `g_failed_in_test` vs `g_current_fail`) — e.g. tests/test_usm_pool.c:63-75, tests/test_lifetime.c:37-46, tests/test_zimg_helpers.c:27-45. | A ~30-line `tests/test_harness.h` removes all copies and stops the drift. |
 | DUP-3 | open | S | Every `#ifdef FUZZ_MAIN` smoke block re-rolls the same xorshift PRNG + iteration loop + arg parsing (~12 copies; e.g. tests/fuzz_copy_plane.c:171-204, tests/fuzz_perfmon.c:132-171); some use shared `up_cli_parse_long`, others hand-roll `strtol`. | A `tests/fuzz_smoke.h` with the PRNG and a `fuzz_smoke_main(argc, argv, default_iters, run_one)` driver keeps per-fuzzer bias code local while deleting the scaffold copies. |
 
 ## architecture/modularity/SOLID

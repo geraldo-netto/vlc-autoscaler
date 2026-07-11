@@ -15,45 +15,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ---------- minimal test harness ---------- */
+#include "test_harness.h"
 
-static int g_tests_run = 0;
-static int g_tests_failed = 0;
-static const char *g_current_test = NULL;
-static int g_current_failed = 0;
-
-#define BEGIN(name) do { \
-        g_current_test = (name); \
-        g_current_failed = 0; \
-        g_tests_run++; \
-    } while (0)
-
-#define END() do { \
-        if (g_current_failed) { \
-            g_tests_failed++; \
-            printf("  [FAIL] %s\n", g_current_test); \
-        } else { \
-            printf("  [ ok ] %s\n", g_current_test); \
-        } \
-    } while (0)
-
-#define CHECK(cond) do { \
-        if (!(cond)) { \
-            printf("    %s:%d: CHECK failed: %s\n", \
-                   __FILE__, __LINE__, #cond); \
-            g_current_failed = 1; \
-        } \
-    } while (0)
-
-#define CHECK_EQ_INT(a, b) do { \
-        long _a = (long)(a); \
-        long _b = (long)(b); \
-        if (_a != _b) { \
-            printf("    %s:%d: CHECK_EQ_INT failed: %s (=%ld) != %s (=%ld)\n", \
-                   __FILE__, __LINE__, #a, _a, #b, _b); \
-            g_current_failed = 1; \
-        } \
-    } while (0)
+#define CHECK_EQ_INT(a, b) CHECK_EQ(a, b)
 
 /* ---------- decide_target_height ---------- */
 
@@ -830,6 +794,5 @@ int main(void)
     test_plan_defensive_branches();
     test_auto_enum_normalization();
 
-    printf("\n%d tests run, %d failed\n", g_tests_run, g_tests_failed);
-    return g_tests_failed == 0 ? 0 : 1;
+    return test_harness_report();
 }

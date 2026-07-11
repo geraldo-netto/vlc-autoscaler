@@ -56,20 +56,7 @@ static void zt_alloc_fail_at(int nth)
     atomic_store_explicit(&g_alloc_fail_at, nth, memory_order_relaxed);
 }
 
-static int g_run = 0, g_fail = 0, g_cur_fail = 0;
-static const char *g_cur = NULL;
-
-#define BEGIN(name) do { g_cur = name; g_cur_fail = 0; g_run++; } while (0)
-#define END() do { \
-        if (g_cur_fail) { g_fail++; printf("  [FAIL] %s\n", g_cur); } \
-        else            { printf("  [ ok ] %s\n", g_cur); } \
-    } while (0)
-#define CHECK(cond) do { \
-        if (!(cond)) { \
-            printf("    %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-            g_cur_fail = 1; \
-        } \
-    } while (0)
+#include "test_harness.h"
 
 struct zcfg {
     uint32_t    chroma;
@@ -994,6 +981,5 @@ int main(void)
     test_run_zimg_failure_leaves_out_free_safe();
     test_pic_alloc_partial_failure();
     test_picture_alloc_bounds();
-    printf("\n%d tests run, %d failed\n", g_run, g_fail);
-    return g_fail == 0 ? 0 : 1;
+    return test_harness_report();
 }

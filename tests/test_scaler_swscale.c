@@ -55,16 +55,7 @@ void sws_freeContext(struct SwsContext *ctx)
     if (ctx) g_free_calls++;
 }
 
-static int g_run, g_fail, g_current_fail;
-
-#define BEGIN(name) do { printf("  [....] %s\n", name); g_current_fail = 0; } while (0)
-#define END() do { g_run++; if (g_current_fail) g_fail++; } while (0)
-#define CHECK(cond) do { \
-    if (!(cond)) { \
-        printf("    %s:%d: %s\n", __FILE__, __LINE__, #cond); \
-        g_current_fail = 1; \
-    } \
-} while (0)
+#include "test_harness.h"
 
 static scaler_ctx_t make_ctx(vlc_fourcc_t chroma, int algo)
 {
@@ -331,6 +322,5 @@ int main(void)
     test_geometry_rejection_recovers();
     test_cropped_plane_forwarding();
     test_close_without_context();
-    printf("\n%d tests run, %d failed\n", g_run, g_fail);
-    return g_fail == 0 ? 0 : 1;
+    return test_harness_report();
 }

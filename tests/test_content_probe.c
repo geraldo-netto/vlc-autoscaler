@@ -16,39 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int g_tests_run = 0;
-static int g_tests_failed = 0;
-static int g_failed_in_test = 0;
-
-#define BEGIN(name) do { \
-    printf("  [....] %s\n", name); \
-    g_failed_in_test = 0; \
-} while (0)
-
-#define END() do { \
-    g_tests_run++; \
-    if (g_failed_in_test) { \
-        printf("  [FAIL] %s\n", "(see above)"); \
-        g_tests_failed++; \
-    } \
-} while (0)
-
-#define CHECK(cond) do { \
-    if (!(cond)) { \
-        printf("    %s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond); \
-        g_failed_in_test = 1; \
-    } \
-} while (0)
-
-#define CHECK_EQ(a, b) do { \
-    long long _a = (long long)(a); \
-    long long _b = (long long)(b); \
-    if (_a != _b) { \
-        printf("    %s:%d: CHECK_EQ failed: %lld != %lld\n", \
-               __FILE__, __LINE__, _a, _b); \
-        g_failed_in_test = 1; \
-    } \
-} while (0)
+#include "test_harness.h"
 
 /* ---------- Squared Laplacian response ---------- */
 
@@ -459,6 +427,5 @@ int main(void)
     test_probe_stride_less_than_width();
     test_fused_metrics_match_references();
 
-    printf("\n%d tests run, %d failed\n", g_tests_run, g_tests_failed);
-    return g_tests_failed == 0 ? 0 : 1;
+    return test_harness_report();
 }
