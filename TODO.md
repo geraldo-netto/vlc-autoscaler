@@ -123,7 +123,6 @@ Test-harness pic leaks are tracked as MEM-1/MEM-3.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| BUILD-7 | open | S | `.github/workflows/ci.yml:124` — `actions/upload-artifact@v4` is tag-pinned while checkout and sonarqube-scan-action are SHA-pinned; inconsistent supply-chain pinning. | Pin by SHA. |
 
 ## observability
 
