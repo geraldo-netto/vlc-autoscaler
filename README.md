@@ -175,6 +175,24 @@ The hint fires once per stream after the fixed warmup and sample windows
 defined in `src/perfmon.h`, so brief codec-startup spikes don't trigger false
 alarms. Set `--autoupscale-target-fps=0` to disable monitoring entirely.
 
+### Exported VLC variables
+
+For external monitoring, the filter publishes live counters as integer object
+variables on its own `filter_t`. They are updated on the same ~5 s tick as the
+periodic `frames=… dropped=… ewma=…` debug line, so they carry no per-frame
+cost. Read them with `var_GetInteger()` from an embedder that holds the filter
+object, or observe them via VLC's variable callbacks.
+
+| Variable                | Meaning                                             |
+| ----------------------- | --------------------------------------------------- |
+| `autoupscale-ewma-us`   | Current EWMA of per-frame processing time, in µs.   |
+| `autoupscale-frames`    | Frames processed since the filter opened.           |
+| `autoupscale-dropped`   | Frames dropped (pool exhaustion or backend failure).|
+
+The variables exist only while the filter instance is open. If VLC cannot
+create them at open time the filter logs a one-shot warning and skips the
+export; playback is unaffected.
+
 ### Threading
 
 The plugin grid-threads zimg, normally as horizontal stripes and with optional

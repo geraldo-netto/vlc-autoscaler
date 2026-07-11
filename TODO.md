@@ -175,7 +175,6 @@ probe verdict, and USM-pool-failure messages are all one-shot latched; periodic 
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| WIRE-1 | open | S | Exported VLC stat variables `autoupscale-ewma-us` / `autoupscale-frames` (`autoupscale.c:657,981`) are write-only — no in-tree consumer reads them (by design, for external monitoring), but the var names are documented nowhere a user would discover them. | Add a one-line README note listing the exported var names (and `autoupscale-dropped` if OBS-4 lands), or drop if unused. |
 
 All 14 `add_integer_with_range` options traced end-to-end to a concrete consumer; both backends
 reachable through `scaler_pick` with AUTO/open/runtime fallback wired; no env vars anywhere.
