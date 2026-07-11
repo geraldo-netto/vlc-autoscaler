@@ -550,6 +550,11 @@ static void ConfigureScaler( scaler_ctx_t *sc,
         msg_Info( p_filter,
                   "AutoUpscale: dst zero-copy DISABLED via "
                   "--autoupscale-zerocopy-dst=0 (using copy-out path)" );
+    if( !sc->zimg.src_zerocopy )
+        msg_Info( p_filter,
+                  "AutoUpscale: src zero-copy DISABLED via "
+                  "--autoupscale-zerocopy-src=0 (using copy-in path, "
+                  "rows-only tiling)" );
 }
 
 /* Create the small USM descriptor when sharpening is requested and the chroma
