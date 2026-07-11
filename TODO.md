@@ -157,7 +157,6 @@ created/set/destroyed in pairs. Documented-and-accepted exceptions: `up_usm_appl
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| DEAD-1 | open | S | `src/scaler_zimg.c:201` — `stripe_worker_t.src_x_start` is written in `init_stripe_worker` (:770) but never read anywhere in src or tests; its comment claims "used by active_region" but `build_stripe_graph` takes the column window from `cell_bounds_t` directly. | Whole-repo grep: only the declaration and the assignment. Delete field + stale comment. |
 
 No other unused functions/macros: every candidate checked has a verified production or test
 consumer.
