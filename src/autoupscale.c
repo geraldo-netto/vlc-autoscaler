@@ -972,7 +972,7 @@ static void LogProbeVerdict( filter_t *p_filter, filter_sys_t *p_sys )
  * warns once and disables USM for the rest of playback so every later
  * frame skips the dead call. */
 static void ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
-                               picture_t *p_out )
+                               const picture_t *p_out )
 {
     if( p_sys->usm_amount_q8 <= 0 || !p_sys->usm_pool
         || p_out->i_planes < 1 || p_sys->usm_skip_sharp )
