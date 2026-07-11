@@ -15,7 +15,6 @@ allocation-size arithmetic overflow-checked at every seam; all format strings li
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| UB-2 | open | S | `tests/test_usm_pool_variants.c:288-298` `check_pattern` mallocs `dst1/dst2/dst3` unchecked and ignores `run_sse2/avx2/avx512` return codes; on OOM or variant pool-create failure `memcmp` reads uninitialized or NULL buffers. | Sibling `fuzz_usm_variants.c:159-182` does this correctly. Add alloc checks + rc checks (fail the test explicitly). |
 
 ## memory management
 
