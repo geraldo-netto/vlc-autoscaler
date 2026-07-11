@@ -66,6 +66,11 @@
 #  define up_usm_pool_create   USM_PASTE(up_usm_pool_create,   USM_VARIANT)
 #  define up_usm_pool_destroy  USM_PASTE(up_usm_pool_destroy,  USM_VARIANT)
 #  define up_usm_pool_apply    USM_PASTE(up_usm_pool_apply,    USM_VARIANT)
+   /* ABI-2: cross-check this TU's renamed definitions against the shared
+    * variant prototypes — a drift is a compile error here, not silent ABI
+    * mismatch at the call boundary. (The pasted _<name> tokens below are
+    * distinct from the object-like macros above, so no re-expansion.) */
+#  include "usm_pool_variants.h"
 #else
    /* Single-baseline build: provide the variant_name symbol that callers
     * (e.g. autoupscale.c's engagement log) expect. The dispatcher provides

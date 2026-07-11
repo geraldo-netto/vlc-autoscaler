@@ -133,7 +133,6 @@ Test-harness pic leaks are tracked as MEM-1/MEM-3.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | ABI-1 | open | S | Plugin `.so` exports every internal symbol with default visibility (verified via `nm`: `up_usm_pool_*`, `scaler_pick`, `scaler_backend_*_impl` all global); generic names can collide in embedders loading with RTLD_GLOBAL. | Add `-fvisibility=hidden` to PLUGIN_CFLAGS (Makefile:69-73); VLC's plugin macros already mark `vlc_entry*` default-visibility. One-flag fix; verify module still loads. |
-| ABI-2 | open | M | The nine `up_usm_pool_{create,destroy,apply}_{sse2,avx2,avx512}` extern prototypes are hand-declared in three files (src/usm_pool_dispatch.c:59-81, tests/test_usm_pool_variants.c:40-63, tests/fuzz_usm_variants.c:27-38) with no compile-time cross-check; a prototype change kept in only some copies compiles per-TU and links (same symbol) → silent ABI mismatch/UB at the call boundary. | usm_pool.h:22-39 documents the hazard only as a comment. Single `usm_pool_variants.h` (X-macro over the variant list generating all decls) makes drift a compile error. Also the only decoupling finding. |
 
 ## build/toolchain hygiene
 

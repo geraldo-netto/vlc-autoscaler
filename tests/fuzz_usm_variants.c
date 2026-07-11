@@ -23,18 +23,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-extern usm_pool_t *up_usm_pool_create_sse2(int, int, int, int);
-extern void        up_usm_pool_destroy_sse2(usm_pool_t *);
-extern int         up_usm_pool_apply_sse2(usm_pool_t *, uint8_t *, int,
-                                          const uint8_t *, int, int);
-extern usm_pool_t *up_usm_pool_create_avx2(int, int, int, int);
-extern void        up_usm_pool_destroy_avx2(usm_pool_t *);
-extern int         up_usm_pool_apply_avx2(usm_pool_t *, uint8_t *, int,
-                                          const uint8_t *, int, int);
-extern usm_pool_t *up_usm_pool_create_avx512(int, int, int, int);
-extern void        up_usm_pool_destroy_avx512(usm_pool_t *);
-extern int         up_usm_pool_apply_avx512(usm_pool_t *, uint8_t *, int,
-                                            const uint8_t *, int, int);
+/* Variant entry points: one shared set of prototypes (ABI-2). */
+#include "../src/usm_pool_variants.h"
 
 /* Bound dimensions to keep memory and time reasonable per iteration.
  * The test suite (test_usm_pool_variants) covers larger sizes deterministically;

@@ -55,30 +55,9 @@
 #  error "usm_pool_dispatch.c is x86-64 only; build with MULTIVERSION=0 elsewhere"
 #endif
 
-/* Forward declarations: each lives in its own variant .o */
-extern usm_pool_t *up_usm_pool_create_sse2(int n_threads, int width, int height,
-                                           int stripe_min_rows);
-extern usm_pool_t *up_usm_pool_create_avx2(int n_threads, int width, int height,
-                                           int stripe_min_rows);
-extern usm_pool_t *up_usm_pool_create_avx512(int n_threads, int width, int height,
-                                             int stripe_min_rows);
-
-extern void up_usm_pool_destroy_sse2(usm_pool_t *pool);
-extern void up_usm_pool_destroy_avx2(usm_pool_t *pool);
-extern void up_usm_pool_destroy_avx512(usm_pool_t *pool);
-
-extern int up_usm_pool_apply_sse2(usm_pool_t *pool,
-                                  uint8_t *dst, int dst_stride,
-                                  const uint8_t *src, int src_stride,
-                                  int amount_q8);
-extern int up_usm_pool_apply_avx2(usm_pool_t *pool,
-                                  uint8_t *dst, int dst_stride,
-                                  const uint8_t *src, int src_stride,
-                                  int amount_q8);
-extern int up_usm_pool_apply_avx512(usm_pool_t *pool,
-                                    uint8_t *dst, int dst_stride,
-                                    const uint8_t *src, int src_stride,
-                                    int amount_q8);
+/* Variant entry points: one shared set of prototypes (ABI-2); each
+ * definition lives in its own variant .o. */
+#include "usm_pool_variants.h"
 
 /* Picked variant name, exported for diagnostic logging from autoupscale.c. */
 const char *up_usm_pool_variant_name = "uninitialized";

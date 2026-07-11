@@ -25,17 +25,16 @@
  * src/usm_pool_dispatch.c hand-forwards every public symbol to one of
  * three SIMD-baseline-compiled variants (sse2/avx2/avx512). It does NOT
  * use IFUNC/target_clones, so adding a new public function here without
- * also adding a forwarding shim and three extern decls in
- * usm_pool_dispatch.c will produce an unresolved symbol at .so load.
+ * also adding a forwarding shim in usm_pool_dispatch.c and an entry in
+ * usm_pool_variants.h's declaration macro will produce an unresolved
+ * symbol at .so load.
  *
  * Conversely, deleting a function here without deleting it from the
  * dispatcher will produce three orphaned symbols and a linker error.
  *
- * The SAME applies when changing the prototype: keep the three extern
- * decls in usm_pool_dispatch.c in sync.
- *
- * tests/test_usm_pool_variants.c and tests/fuzz_usm_variants.c also
- * declare extern prototypes for the variant suffixes; update those too.
+ * Prototype changes are covered: all variant-suffix declarations live
+ * only in usm_pool_variants.h, and usm_pool.c includes it under
+ * -DUSM_VARIANT, so declaration/definition drift is a compile error.
  */
 
 #ifndef AUTOUPSCALE_USM_POOL_H

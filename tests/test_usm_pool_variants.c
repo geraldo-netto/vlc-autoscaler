@@ -35,31 +35,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Forward declarations for the variant entry points.
- * These live in the per-variant .o files (built with -DUSM_VARIANT=...). */
-extern usm_pool_t *up_usm_pool_create_sse2(int n_threads, int width, int height,
-                                           int stripe_min_rows);
-extern void        up_usm_pool_destroy_sse2(usm_pool_t *pool);
-extern int         up_usm_pool_apply_sse2(usm_pool_t *pool,
-                                          uint8_t *dst, int dst_stride,
-                                          const uint8_t *src, int src_stride,
-                                          int amount_q8);
-
-extern usm_pool_t *up_usm_pool_create_avx2(int n_threads, int width, int height,
-                                           int stripe_min_rows);
-extern void        up_usm_pool_destroy_avx2(usm_pool_t *pool);
-extern int         up_usm_pool_apply_avx2(usm_pool_t *pool,
-                                          uint8_t *dst, int dst_stride,
-                                          const uint8_t *src, int src_stride,
-                                          int amount_q8);
-
-extern usm_pool_t *up_usm_pool_create_avx512(int n_threads, int width, int height,
-                                             int stripe_min_rows);
-extern void        up_usm_pool_destroy_avx512(usm_pool_t *pool);
-extern int         up_usm_pool_apply_avx512(usm_pool_t *pool,
-                                            uint8_t *dst, int dst_stride,
-                                            const uint8_t *src, int src_stride,
-                                            int amount_q8);
+/* Variant entry points: one shared set of prototypes (ABI-2). The
+ * definitions live in the per-variant .o files (built with -DUSM_VARIANT). */
+#include "../src/usm_pool_variants.h"
 
 static int g_run = 0, g_fail = 0, g_cur_fail = 0;
 static const char *g_cur = NULL;

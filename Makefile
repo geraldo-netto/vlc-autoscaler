@@ -156,22 +156,22 @@ USM_POOL_CFLAGS := $(subst -O2,-O3,$(PLUGIN_CFLAGS))
 # Each variant is the SAME usm_pool.c compiled at its own -march level
 # with USM_VARIANT macro renaming the public symbols. We pass the level
 # AFTER USM_POOL_CFLAGS so it overrides any earlier -march from MARCH_FLAG.
-$(BUILD)/usm_pool_sse2.o: src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
+$(BUILD)/usm_pool_sse2.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h | $(BUILD)
 	$(CC) $(USM_POOL_CFLAGS) -march=x86-64    -DUSM_VARIANT=sse2   -c -o $@ $<
-$(BUILD)/usm_pool_avx2.o: src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
+$(BUILD)/usm_pool_avx2.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h | $(BUILD)
 	$(CC) $(USM_POOL_CFLAGS) -march=x86-64-v3 -DUSM_VARIANT=avx2   -c -o $@ $<
-$(BUILD)/usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
+$(BUILD)/usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h | $(BUILD)
 	$(CC) $(USM_POOL_CFLAGS) -march=x86-64-v4 -DUSM_VARIANT=avx512 -c -o $@ $<
 
 # Dispatcher must be at the lowest baseline so it runs on ANY CPU. It just
 # does CPU-feature checks and indirect calls — no SIMD work itself.
-$(BUILD)/usm_pool_dispatch.o: src/usm_pool_dispatch.c src/usm_pool.h src/cpu_level.h | $(BUILD)
+$(BUILD)/usm_pool_dispatch.o: src/usm_pool_dispatch.c src/usm_pool.h src/usm_pool_variants.h src/cpu_level.h | $(BUILD)
 	$(CC) $(PLUGIN_CFLAGS) -march=x86-64 -c -o $@ $<
 else
 USM_OBJS := $(BUILD)/usm_pool.o
 # Single-baseline build: same -O3 reasoning as the multi-versioned case.
 USM_POOL_CFLAGS := $(subst -O2,-O3,$(PLUGIN_CFLAGS))
-$(BUILD)/usm_pool.o: src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
+$(BUILD)/usm_pool.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h | $(BUILD)
 	$(CC) $(USM_POOL_CFLAGS) -c -o $@ $<
 endif
 
@@ -335,11 +335,11 @@ $(BUILD)/fuzz_picture_view: tests/fuzz_picture_view.c tests/cli_parse.h src/pict
 # libFuzzer variant fuzzer: needs the three SIMD .o files compiled with the
 # same FUZZ_CFLAGS (libFuzzer + ASan + UBSan). Each variant TU is at its
 # own -march level via -DUSM_VARIANT=<name>.
-$(BUILD)/fuzz_lf_usm_pool_sse2.o:   src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
+$(BUILD)/fuzz_lf_usm_pool_sse2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -march=x86-64    -DUSM_VARIANT=sse2   -c -o $@ $<
-$(BUILD)/fuzz_lf_usm_pool_avx2.o:   src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
+$(BUILD)/fuzz_lf_usm_pool_avx2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -march=x86-64-v3 -DUSM_VARIANT=avx2   -c -o $@ $<
-$(BUILD)/fuzz_lf_usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
+$(BUILD)/fuzz_lf_usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -march=x86-64-v4 -DUSM_VARIANT=avx512 -c -o $@ $<
 
 $(BUILD)/fuzz_usm_variants: tests/fuzz_usm_variants.c \
@@ -432,11 +432,11 @@ $(BUILD)/fuzz_picture_view_smoke: tests/fuzz_picture_view.c tests/cli_parse.h sr
 # Cross-variant smoke fuzzer: needs the same three SIMD .o files as the
 # variant-equivalence test. Built with clang because the smoke fuzzer
 # infra is clang-based; clang's -DUSM_VARIANT path is identical to gcc's.
-$(BUILD)/fuzz_usm_pool_sse2.o:   src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
+$(BUILD)/fuzz_usm_pool_sse2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -march=x86-64    -DUSM_VARIANT=sse2   -c -o $@ $<
-$(BUILD)/fuzz_usm_pool_avx2.o:   src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
+$(BUILD)/fuzz_usm_pool_avx2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -march=x86-64-v3 -DUSM_VARIANT=avx2   -c -o $@ $<
-$(BUILD)/fuzz_usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
+$(BUILD)/fuzz_usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h | $(BUILD)
 	$(CLANG) $(SMOKE_CFLAGS) -march=x86-64-v4 -DUSM_VARIANT=avx512 -c -o $@ $<
 
 $(BUILD)/fuzz_usm_variants_smoke: tests/fuzz_usm_variants.c \
@@ -858,13 +858,13 @@ $(BUILD)/test_usm_pool: tests/test_usm_pool.c $(BUILD)/usm_pool_test.o | $(BUILD
 # dispatcher's variant_name symbol. Each variant .o is the same usm_pool.c
 # compiled at a different -march level. CPU feature gating in the test
 # itself skips the AVX2/AVX-512 variants when not supported by the runner.
-$(BUILD)/test_usm_pool_sse2.o:   src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
+$(BUILD)/test_usm_pool_sse2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -march=x86-64    -DUSM_VARIANT=sse2   -c -o $@ $<
-$(BUILD)/test_usm_pool_avx2.o:   src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
+$(BUILD)/test_usm_pool_avx2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -march=x86-64-v3 -DUSM_VARIANT=avx2   -c -o $@ $<
-$(BUILD)/test_usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h | $(BUILD)
+$(BUILD)/test_usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -march=x86-64-v4 -DUSM_VARIANT=avx512 -c -o $@ $<
-$(BUILD)/test_usm_pool_dispatch.o: src/usm_pool_dispatch.c src/usm_pool.h src/cpu_level.h | $(BUILD)
+$(BUILD)/test_usm_pool_dispatch.o: src/usm_pool_dispatch.c src/usm_pool.h src/usm_pool_variants.h src/cpu_level.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -march=x86-64 -c -o $@ $<
 
 $(BUILD)/test_usm_pool_variants: tests/test_usm_pool_variants.c \
