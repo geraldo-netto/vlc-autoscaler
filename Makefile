@@ -52,7 +52,14 @@ ifneq ($(filter $(PLUGIN_GOALS),$(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)),)
 endif
 
 # --------- common flags ---------
-WARN := -D_GNU_SOURCE -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes
+# PORT-1: pin the language dialect on every compile so the built code is
+# checked against the same C11 the static analyzer uses (cppcheck --std=c11),
+# not the compiler's version-dependent default GNU dialect. `-D_GNU_SOURCE`
+# (below) keeps the POSIX/GNU library surface the pthread/affinity/aligned_alloc
+# code relies on. `$(WARN)` is referenced by every *_CFLAGS, so this one line
+# covers plugin, test, fuzz, smoke, stress, bench, coverage, and zimg builds.
+CSTD := -std=c11
+WARN := $(CSTD) -D_GNU_SOURCE -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes
 
 # CPU baseline. Defaults to `native` because this plugin is a source
 # distribution: every user builds it on the same machine they run it on.

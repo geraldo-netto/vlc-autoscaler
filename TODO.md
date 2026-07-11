@@ -121,7 +121,6 @@ speculative pattern-work the project explicitly rejects.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| PORT-1 | open | S | No `-std=` on any compiler-flag var (only cppcheck pins `--std=c11`, Makefile:812); the plugin builds in the compiler's default GNU dialect, which drifts across toolchain versions (gcc 15 → gnu23 changes `bool`/keyword rules) with no CI signal, and GNU-isms go undiagnosed. | Code already relies on C11 (`_Static_assert`, `alignas`, `<stdatomic.h>`, `aligned_alloc`). Add `-std=c11` (or explicit `gnu11`) to the shared CFLAGS to match cppcheck. |
 | PORT-2 | open | S | `src/scaler_zimg.c:112` guards `pin_worker_to_cpu` on `__linux__` and unconditionally uses `CPU_ALLOC*`/`CPU_*_S`/`pthread_setaffinity_np`, but `src/threading.h:54` guards the same capability on `UP_HAVE_CPU_AFFINITY` (`CPU_ALLOC && CPU_ALLOC_SIZE && !UP_NO_CPU_AFFINITY`) with a fallback. | A Linux libc defining `__linux__` without the `CPU_ALLOC*` family compiles threading.h but fails to compile scaler_zimg.c. Key scaler_zimg.c off the same capability macro. Untested: no target builds scaler_zimg.c with affinity forced off (threading.h has `test_threading_noaffinity`, scaler_zimg.c has no analogue). |
 
 ## error handling
