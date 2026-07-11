@@ -929,15 +929,21 @@ static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
     /* Column tiling uses per-worker tile dst scratch, not the shared p->dst. */
     size_t dst_mb = (p->plan.dst_zerocopy || p->plan.col_tiled) ? 0
         : (plane_buffer_bytes(&p->dst) >> 20);
+    /* OBS-5: every cell owns a persistent zimg graph tmp buffer; at high thread
+     * counts this dominates the reported scratch, so account for it here. */
+    size_t tmp_bytes = 0;
+    for (int i = 0; i < p->plan.n_threads; i++)
+        tmp_bytes += p->workers[i].tmp_size;
     msg_Info(log_obj,
              "zimg: %d worker thread%s (grid %dx%d), %dx%d -> %dx%d, "
-             "scratch %zu MB (src %s, dst %s)",
+             "scratch %zu MB (src %s, dst %s), graph-tmp %zu MB",
              p->plan.n_threads, p->plan.n_threads == 1 ? "" : "s",
              p->plan.n_rows, p->plan.n_cols,
              p->src_w, p->src_h, p->dst_w, p->dst_h,
              src_mb + dst_mb,
              p->plan.src_zerocopy ? "zero-copy" : "copy",
-             p->plan.col_tiled ? "tiled+copy" : (p->plan.dst_zerocopy ? "zero-copy" : "copy"));
+             p->plan.col_tiled ? "tiled+copy" : (p->plan.dst_zerocopy ? "zero-copy" : "copy"),
+             tmp_bytes >> 20);
 }
 
 /*
