@@ -112,7 +112,6 @@ UB-1 (perfmon signed shift) is also a portability item; tracked once under undef
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| ERR-1 | open | S | `src/autoupscale.c:706-707` — the two OBS-5 `var_Create` return values are unchecked; on failure the periodic `var_SetInteger` calls (autoupscale.c:934-936) silently operate on a nonexistent variable. | Harmless in VLC 3 but a swallowed failure; check and skip stats export on failure. |
 | ERR-2 | open | S | `tests/fuzz_usm_variants.c:126-131` `run_sse2_reference` ignores `up_usm_pool_apply_sse2`'s return; if the reference apply fails while variant applies succeed, the harness compares the 0xCC poison baseline against real output and reports a bogus "variant divergence" instead of the actual failure. | Return/abort on reference failure so the report names the real culprit. |
 
 src/ otherwise clean end-to-end: `scaler_process_status_t` honored by every producer/consumer;

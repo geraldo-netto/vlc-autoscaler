@@ -358,6 +358,10 @@ struct filter_sys_t
     /* OBS-3: periodic long-run visibility (frames processed/dropped + EWMA). */
     uint64_t           dropped_count;
     int64_t            next_stats_ns;
+
+    /* ERR-1: both OBS-5 stat variables were created; gates the periodic
+     * var_SetInteger export and the paired var_Destroy at Close(). */
+    int                stats_vars_ok;
 };
 
 /*****************************************************************************
@@ -635,6 +639,30 @@ static void ClampConfig( int *preset, int *algo, int *backend, int *usm, int *sk
     if( *skip < 0 ) *skip = 0;
 }
 
+/* OBS-5: expose performance and frame stats via VLC variables.
+ * ERR-1: on failure the export is disabled rather than var_SetInteger
+ * silently operating on a nonexistent variable; a partial pair is
+ * rolled back so Close() can gate both var_Destroy calls together.
+ * Returns 1 when both variables exist. */
+static int CreateStatsVars( filter_t *p_filter )
+{
+    if( var_Create( p_filter, "autoupscale-ewma-us",
+                    VLC_VAR_INTEGER ) != VLC_SUCCESS )
+        goto fail;
+    if( var_Create( p_filter, "autoupscale-frames",
+                    VLC_VAR_INTEGER ) != VLC_SUCCESS )
+    {
+        var_Destroy( p_filter, "autoupscale-ewma-us" );
+        goto fail;
+    }
+    return 1;
+fail:
+    msg_Warn( p_filter,
+              "AutoUpscale: stat variable creation failed; "
+              "autoupscale-ewma-us/-frames export disabled" );
+    return 0;
+}
+
 static int Open( vlc_object_t *p_this )
 {
     filter_t *p_filter = (filter_t *)p_this;
@@ -707,9 +735,7 @@ static int Open( vlc_object_t *p_this )
     InitProbeAndPerfmon( p_sys, p_filter, chroma, algo, usm_pct );
     SetOutputFormat( p_filter, chroma, target );
 
-    /* OBS-5: Expose performance and frame stats via VLC variables */
-    var_Create( p_filter, "autoupscale-ewma-us", VLC_VAR_INTEGER );
-    var_Create( p_filter, "autoupscale-frames", VLC_VAR_INTEGER );
+    p_sys->stats_vars_ok = CreateStatsVars( p_filter );
 
     p_filter->p_sys           = p_sys;
     p_filter->pf_video_filter = Filter;
@@ -934,9 +960,12 @@ static void MaybeLogStats( filter_t *p_filter, filter_sys_t *p_sys,
 
     /* OBS-5: exported stat variables ride the same tick — string-keyed
      * var_SetInteger takes the object var lock, too heavy per frame. */
-    var_SetInteger( p_filter, "autoupscale-ewma-us",
-                    (int64_t)up_perfmon_ewma_us( &p_sys->perfmon ) );
-    var_SetInteger( p_filter, "autoupscale-frames", p_sys->frame_count );
+    if( p_sys->stats_vars_ok )
+    {
+        var_SetInteger( p_filter, "autoupscale-ewma-us",
+                        (int64_t)up_perfmon_ewma_us( &p_sys->perfmon ) );
+        var_SetInteger( p_filter, "autoupscale-frames", p_sys->frame_count );
+    }
 }
 
 /* Record one frame's elapsed work into the perfmon and emit the one-time
@@ -1070,10 +1099,14 @@ static void Close( vlc_object_t *p_this )
         if( p_sys->scaler.backend )
             p_sys->scaler.backend->close( &p_sys->scaler );
         up_usm_pool_destroy( p_sys->usm_pool );
+
+        /* OBS-5: pair the var_Create in Open(); ERR-1 gates both on the
+         * pair having been created successfully. */
+        if( p_sys->stats_vars_ok )
+        {
+            var_Destroy( p_filter, "autoupscale-ewma-us" );
+            var_Destroy( p_filter, "autoupscale-frames" );
+        }
         free( p_sys );
     }
-
-    /* OBS-5: pair the var_Create in Open(). */
-    var_Destroy( p_filter, "autoupscale-ewma-us" );
-    var_Destroy( p_filter, "autoupscale-frames" );
 }
