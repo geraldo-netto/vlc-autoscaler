@@ -40,7 +40,9 @@ jobs:
         run: make info
 
       - name: Build the VLC plugin (gcc, -Werror)
-        run: make plugin EXTRA_CFLAGS=-Werror
+        run: |
+          make plugin EXTRA_CFLAGS=-Werror
+          make check-visibility EXTRA_CFLAGS=-Werror
 
       # BUILD-4: also compile the shipped plugin under clang so clang-only
       # warnings and codegen don't go untested. -Wno-unreachable-code-generic-
@@ -66,6 +68,7 @@ jobs:
         run: |
           make clean
           make plugin MULTIVERSION=1 EXTRA_CFLAGS=-Werror
+          make check-visibility MULTIVERSION=1 EXTRA_CFLAGS=-Werror
           make clean
 
       - name: Unit tests (ASan + UBSan) + complexity gate

@@ -132,7 +132,6 @@ Test-harness pic leaks are tracked as MEM-1/MEM-3.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| ABI-1 | open | S | Plugin `.so` exports every internal symbol with default visibility (verified via `nm`: `up_usm_pool_*`, `scaler_pick`, `scaler_backend_*_impl` all global); generic names can collide in embedders loading with RTLD_GLOBAL. | Add `-fvisibility=hidden` to PLUGIN_CFLAGS (Makefile:69-73); VLC's plugin macros already mark `vlc_entry*` default-visibility. One-flag fix; verify module still loads. |
 
 ## build/toolchain hygiene
 

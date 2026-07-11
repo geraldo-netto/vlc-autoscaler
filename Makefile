@@ -80,7 +80,12 @@ ifneq ($(MARCH),)
 endif
 
 COMMON_CFLAGS := -O2 $(MARCH_FLAG) -fPIC -DPIC $(WARN) -MMD -MP -fstack-protector-strong -D_FORTIFY_SOURCE=2 -flto $(EXTRA_CFLAGS)
-PLUGIN_CFLAGS := $(COMMON_CFLAGS) -DMODULE_STRING=\"autoupscale\" \
+# ABI-1: hide internal symbols (up_*, scaler_*) so generic names cannot
+# collide in embedders loading plugins with RTLD_GLOBAL. VLC's plugin
+# macros mark the vlc_entry* points visibility("default") themselves;
+# `make check-visibility` asserts nothing else leaks.
+PLUGIN_CFLAGS := $(COMMON_CFLAGS) -fvisibility=hidden \
+                 -DMODULE_STRING=\"autoupscale\" \
                  -D__PLUGIN__ $(VLC_CFLAGS) $(SWS_CFLAGS)
 PLUGIN_LDFLAGS := -shared -flto $(EXTRA_LDFLAGS)
 PLUGIN_LIBS    := $(VLC_LIBS) $(SWS_LIBS) -lpthread
@@ -177,7 +182,7 @@ endif
 
 PLUGIN_OBJS += $(USM_OBJS)
 
-.PHONY: all plugin test check fuzz fuzz-smoke fuzz-seam analyze scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
+.PHONY: all plugin test check check-visibility fuzz fuzz-smoke fuzz-seam analyze scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
 
 all: plugin
 
@@ -199,6 +204,18 @@ $(BUILD)/$(PLUGIN).so: $(PLUGIN_OBJS) | $(BUILD)
 
 $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CC) $(PLUGIN_CFLAGS) -c -o $@ $<
+
+# ABI-1 regression gate: the .so must export only VLC's vlc_entry* plugin
+# entry points. Any other defined dynamic symbol is a leak of an internal
+# name into embedders' global namespaces.
+check-visibility: $(BUILD)/$(PLUGIN).so
+	@bad=$$(nm -D --defined-only $< | awk '$$2 != "U" {print $$NF}' \
+	        | grep -v '^vlc_entry' || true); \
+	 if [ -n "$$bad" ]; then \
+	     echo "check-visibility FAILED — unexpected exported symbols:"; \
+	     echo "$$bad"; exit 1; \
+	 fi; \
+	 echo "check-visibility OK: only vlc_entry* exported"
 
 # --------- unit tests ---------
 # `test` runs the suites only; `check` adds the lizard complexity gate.
