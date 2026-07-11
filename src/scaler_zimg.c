@@ -543,7 +543,8 @@ static zimg_filter_graph *build_stripe_graph(
     const int act_left     = c->cols.src_start;
     const int act_width    = c->cols.src_end - c->cols.src_start;
     const int dst_w        = c->cols.dst_end - c->cols.dst_start;
-    zimg_image_format src_fmt, dst_fmt;
+    zimg_image_format src_fmt;
+    zimg_image_format dst_fmt;
     zimg_image_format_default(&src_fmt, ZIMG_API_VERSION);
     zimg_image_format_default(&dst_fmt, ZIMG_API_VERSION);
 
@@ -1305,7 +1306,8 @@ static scaler_process_status_t zimg_process(scaler_ctx_t *ctx,
     if (!p) return SCALER_PROCESS_FATAL;
     if (p->pool_broken) return SCALER_PROCESS_FATAL;
 
-    up_picture_view_t src_view, dst_view;
+    up_picture_view_t src_view;
+    up_picture_view_t dst_view;
     if (!zimg_frame_views_init(ctx, src, dst, &src_view, &dst_view)) {
         zimg_warn_bad_geometry(p);
         return SCALER_PROCESS_TRANSIENT;

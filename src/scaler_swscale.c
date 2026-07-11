@@ -125,7 +125,8 @@ static scaler_process_status_t sws_process( scaler_ctx_t *ctx,
 
     const up_picture_region_t src_region = up_scaler_src_region(ctx);
     const up_picture_region_t dst_region = up_scaler_dst_region(ctx);
-    up_picture_view_t src_view, dst_view;
+    up_picture_view_t src_view;
+    up_picture_view_t dst_view;
     if( !up_picture_view_init( &src_view, src, ctx->chroma, &src_region )
      || !up_picture_view_init( &dst_view, dst, ctx->chroma, &dst_region ) )
     {
