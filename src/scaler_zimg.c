@@ -363,7 +363,7 @@ static inline void set_const_buf_plane(zimg_image_buffer_const *b, int idx,
  * cross-worker contention and no barrier — the copy folds into the same
  * dispatch as the resample instead of running as a serial main-thread pre-pass.
  */
-static void worker_copy_in_stripe(stripe_worker_t *w)
+static void worker_copy_in_stripe(const stripe_worker_t *w)
 {
     const int rows = w->cell.src_y_end - w->cell.src_y_start;
     up_copy_plane(
@@ -394,7 +394,7 @@ static void worker_copy_in_stripe(stripe_worker_t *w)
  * worker -> no barrier; the copy-out parallelizes instead of running as a
  * serial main-thread post-pass.
  */
-static void worker_copy_out_stripe(stripe_worker_t *w)
+static void worker_copy_out_stripe(const stripe_worker_t *w)
 {
     const int rows = w->cell.dst_y_end - w->cell.dst_y_start;
     up_copy_plane(
@@ -423,7 +423,7 @@ static void worker_copy_out_stripe(stripe_worker_t *w)
  * w->dst (origin 0,0; tile pitch); copy it into the VLC dst sub-rectangle at
  * [dst_x_start, dst_y_start). Disjoint cells -> no barrier.
  */
-static void worker_copy_out_tile(stripe_worker_t *w)
+static void worker_copy_out_tile(const stripe_worker_t *w)
 {
     const int rows = w->cell.dst_y_end - w->cell.dst_y_start;
     const int cx   = w->cell.dst_x_start;
@@ -450,7 +450,7 @@ static void worker_copy_out_tile(stripe_worker_t *w)
 /* Place this worker's resampled output: a column tile copies its private dst
  * scratch into the VLC dst sub-rect; a plain stripe copies out when dst is not
  * zero-copy (else the graph already wrote VLC's picture). */
-static void worker_emit_output(stripe_worker_t *w)
+static void worker_emit_output(const stripe_worker_t *w)
 {
     if (w->col_tiled)     worker_copy_out_tile(w);    /* SCAL-3 */
     else if (w->copy_out) worker_copy_out_stripe(w);  /* PERF-5 */
