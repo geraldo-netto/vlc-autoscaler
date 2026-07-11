@@ -91,6 +91,15 @@ the behavior defined here when interacting with this workspace.
   - wiring gaps — modules/helpers/cfg knobs that exist + pass tests but have no real production call site (orphan exports, cfg flags never read, advertised backends not wired in). A shipped feature is only "shipped" when the dispatcher actually invokes it.
   - unused functions/methods
 
+## Version control
+
+- Commit directly to `develop` — this is the project's working branch. Do **not**
+  create feature/topic branches for changes here, even when the change is large or
+  spans many commits. (This overrides any default "branch off the main branch first"
+  behavior.)
+- Still one logical change per commit, Conventional Commits format, and only commit
+  or push when the user asks.
+
 ## File Editing
 
 - Avoid overwriting existing files unless the user explicitly asks or the file is missing.
