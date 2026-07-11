@@ -123,8 +123,10 @@ typedef struct usm_worker_s {
     uint64_t        seen_gen;
 
     /* Per-worker constants set at lazy_init. */
-    int        y_start, y_end;
-    int        width, height;
+    int        y_start;
+    int        y_end;
+    int        width;
+    int        height;
     uint8_t   *scratch;       /* 5*width: 3 rolling rows + 2 halo snapshots */
 
     /* Per-frame state set by main thread before the dispatch. The gate
@@ -205,7 +207,8 @@ static int usm_worker_stripe_is_flat(const usm_worker_t *w)
 struct usm_pool_s {
     int            n_threads;       /* effective count after lazy_init may shrink */
     int            n_threads_pref;  /* user preference, before clamp */
-    int            width, height;
+    int            width;
+    int            height;
 
     usm_worker_t  *workers;
 

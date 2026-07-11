@@ -158,7 +158,8 @@ typedef struct
     int      dst_x_start;   /* luma column start (dst), copy-out placement */
     int      src_w;         /* luma TILE width (src) */
     int      dst_w;         /* luma TILE width (dst) */
-    unsigned sub_w, sub_h;
+    unsigned sub_w;
+    unsigned sub_h;
 } worker_cell_geom_t;
 
 /* Per-worker state. */
@@ -246,7 +247,8 @@ typedef struct
     bool              pool_broken;
 
     int               yv12_swap_uv;
-    unsigned          sub_w, sub_h;
+    unsigned          sub_w;
+    unsigned          sub_h;
 
     /* SCAL-3/PAT-1: worker grid + zero-copy modes, resolved atomically by
      * the pure up_zimg_resolve_io_plan (zimg_helpers.h) and stored verbatim.
@@ -277,7 +279,10 @@ typedef struct
      * scratch setup. */
     plane_buffer_t    src;
     plane_buffer_t    dst;
-    int               src_w, src_h, dst_w, dst_h;
+    int               src_w;
+    int               src_h;
+    int               dst_w;
+    int               dst_h;
 
     /* Lazy-init state. `done` is set by zimg_lazy_init() after the worker
      * pool, scratch, and per-cell graphs are constructed successfully.
@@ -581,7 +586,8 @@ static zimg_filter_graph *build_stripe_graph(
 static int zimg_supports(vlc_fourcc_t chroma, int algo)
 {
     (void)algo;
-    unsigned sw, sh;
+    unsigned sw;
+    unsigned sh;
     int swap;
     return ChromaToZimg(chroma, &sw, &sh, &swap);
 }
@@ -1024,7 +1030,8 @@ static int zimg_open(scaler_ctx_t *ctx)
         return -1;
     }
 
-    unsigned sub_w, sub_h;
+    unsigned sub_w;
+    unsigned sub_h;
     int swap;
     if (!ChromaToZimg(ctx->chroma, &sub_w, &sub_h, &swap))
         return -1;

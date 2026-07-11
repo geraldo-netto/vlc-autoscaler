@@ -32,11 +32,15 @@ typedef struct scaler_ctx_s
 {
     const scaler_backend_t *backend;
     void                   *priv;       /* backend-private state */
-    int                     src_w, src_h;
+    int                     src_w;
+    int                     src_h;
     /* VLC 3 pictures do not reliably retain the negotiated crop metadata. */
-    unsigned                src_coded_w, src_coded_h;
-    unsigned                src_x_offset, src_y_offset;
-    int                     dst_w, dst_h;
+    unsigned                src_coded_w;
+    unsigned                src_coded_h;
+    unsigned                src_x_offset;
+    unsigned                src_y_offset;
+    int                     dst_w;
+    int                     dst_h;
     int                     algo;
     int                     threads_pref; /* 0 = auto; >0 = explicit */
     int                     pin_cpus;   /* SCAL-4: 1 = pin each scaler worker

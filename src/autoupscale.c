@@ -437,7 +437,8 @@ static void ResolveInputDims( const filter_t *p_filter,
  * free; up__clamp_even already does the same for dst. */
 static void EvenAlignSrcDims( vlc_fourcc_t chroma, int *src_w, int *src_h )
 {
-    unsigned sub_w, sub_h;
+    unsigned sub_w;
+    unsigned sub_h;
     int yv12_swap;
     if( up_chroma_to_zimg( chroma, &sub_w, &sub_h, &yv12_swap ) )
     {
@@ -458,7 +459,8 @@ static void EvenAlignSrcDims( vlc_fourcc_t chroma, int *src_w, int *src_h )
 static void EvenAlignSrcOffsets( vlc_fourcc_t chroma,
                                  unsigned *x_offset, unsigned *y_offset )
 {
-    unsigned sub_w, sub_h;
+    unsigned sub_w;
+    unsigned sub_h;
     int yv12_swap;
     if( up_chroma_to_zimg( chroma, &sub_w, &sub_h, &yv12_swap ) )
     {
@@ -757,7 +759,8 @@ static int Open( vlc_object_t *p_this )
     if( CheckCpuLevel( p_this ) != VLC_SUCCESS )
         return VLC_EGENERIC;
 
-    int src_w, src_h;
+    int src_w;
+    int src_h;
     ResolveInputDims( p_filter, &src_w, &src_h );
 
     EvenAlignSrcDims( p_filter->fmt_in.video.i_chroma, &src_w, &src_h );
