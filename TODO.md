@@ -16,7 +16,6 @@ allocation-size arithmetic overflow-checked at every seam; all format strings li
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | UB-2 | open | S | `tests/test_usm_pool_variants.c:288-298` `check_pattern` mallocs `dst1/dst2/dst3` unchecked and ignores `run_sse2/avx2/avx512` return codes; on OOM or variant pool-create failure `memcmp` reads uninitialized or NULL buffers. | Sibling `fuzz_usm_variants.c:159-182` does this correctly. Add alloc checks + rc checks (fail the test explicitly). |
-| UB-3 | open | S | `tests/test_scaler_zimg.c` — `test_full_write`, `test_determinism`, `test_zerocopy_matches_copyout`, `test_src_zerocopy_matches_copy`, `test_pin_cpus_matches` declare `zt_pic_t a, b;` uninitialized and unconditionally `zt_pic_free()` them; when `run_zimg` (tests/test_scaler_zimg.c:94-116) fails its first `zt_pic_alloc` it returns -2 without touching `*out` → `free()` of indeterminate pointers. | OOM-only trigger. `run_zimg_asymmetric_pitch`/`run_zimg_cropped` callers zero-init and are safe. Same fix locus as MEM-1: make `zt_pic_alloc`/`run_zimg` error contract clean (zero-init + free-on-error). |
 
 ## memory management
 

@@ -118,6 +118,7 @@ static int run_zimg(const struct zcfg *c, int src_zc, int dst_zc,
                     uint8_t dst_init, uint32_t seed, zt_pic_t *out)
 {
     zt_pic_t src;
+    memset(out, 0, sizeof *out);
     if (zt_pic_alloc(&src, c->chroma, c->sw, c->sh) != 0) return -2;
     if (zt_pic_alloc(out, c->chroma, c->dw, c->dh) != 0) {
         zt_pic_free(&src);
@@ -159,6 +160,7 @@ static int run_zimg_asymmetric_pitch(const struct zcfg *c, int src_zc,
                                      int dst_zc, uint32_t seed, zt_pic_t *out)
 {
     zt_pic_t src = {0};
+    memset(out, 0, sizeof *out);
     if (zt_pic_alloc(&src, c->chroma, c->sw, c->sh) != 0) return -2;
     if (zt_pic_alloc(out, c->chroma, c->dw, c->dh) != 0
             || restride_plane(&src, 2, 64) != 0
@@ -801,6 +803,7 @@ static int run_zimg_threads_in(const struct zcfg *c, int threads, int smooth,
                                uint32_t seed, zt_pic_t *out)
 {
     zt_pic_t src;
+    memset(out, 0, sizeof *out);
     if (zt_pic_alloc(&src, c->chroma, c->sw, c->sh) != 0) return -2;
     if (zt_pic_alloc(out, c->chroma, c->dw, c->dh) != 0) {
         zt_pic_free(&src);
@@ -867,6 +870,7 @@ static void test_tiling_matches_untiled(void)
 static int run_zimg_pinned(const struct zcfg *c, uint32_t seed, zt_pic_t *out)
 {
     zt_pic_t src;
+    memset(out, 0, sizeof *out);
     if (zt_pic_alloc(&src, c->chroma, c->sw, c->sh) != 0) return -2;
     if (zt_pic_alloc(out, c->chroma, c->dw, c->dh) != 0) {
         zt_pic_free(&src);
@@ -905,6 +909,28 @@ static void test_pin_cpus_matches(void)
         zt_pic_free(&a);
         zt_pic_free(&b);
     }
+    END();
+}
+
+/* UB-3: every run_* helper must leave *out defined and free-safe on ANY
+ * failure return — including the src-alloc failure that returns before out
+ * is ever touched. Callers declare zt_pic_t uninitialized and free it
+ * unconditionally, so a stale *out would be free() of an indeterminate
+ * pointer. FAIL_AT 1 = src plane 0 (out untouched), 4 = out plane 0. */
+static void test_run_zimg_failure_leaves_out_free_safe(void)
+{
+    BEGIN("run_zimg alloc failure leaves out zeroed and free-safe");
+    static const int FAIL_AT[] = { 1, 4 };
+    for (size_t i = 0; i < sizeof FAIL_AT / sizeof *FAIL_AT; i++) {
+        zt_pic_t out;
+        memset(&out, 0xAA, sizeof out);
+        zt_alloc_fail_at(FAIL_AT[i]);
+        CHECK(run_zimg(&CFGS[0], 1, 1, 0x00, 0xF00Du, &out) == -2);
+        for (int k = 0; k < 3; k++)
+            CHECK(out.buf[k] == NULL);
+        zt_pic_free(&out);
+    }
+    zt_alloc_fail_at(0);
     END();
 }
 
@@ -961,6 +987,7 @@ int main(void)
     test_barrier_failure_drains_and_sticks();
     test_pin_cpus_matches();
     test_tiling_matches_untiled();
+    test_run_zimg_failure_leaves_out_free_safe();
     test_pic_alloc_partial_failure();
     test_picture_alloc_bounds();
     printf("\n%d tests run, %d failed\n", g_run, g_fail);

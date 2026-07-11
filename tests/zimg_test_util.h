@@ -52,18 +52,18 @@ static inline void zt_pic_free(zt_pic_t *tp)
 
 /* Allocate a 3-plane YUV picture for `chroma` at w x h. Pitch is 64-aligned;
  * chroma planes are subsampled per the chroma. Returns 0 on success, -1 if
- * the chroma is unsupported or any allocation fails (already-allocated
- * planes are freed, so failure never leaks and *tp stays free-safe). */
+ * the chroma is unsupported or any allocation fails. Every failure with a
+ * non-NULL tp leaves *tp zeroed with no planes owned, so an unconditional
+ * zt_pic_free afterwards is always defined behavior. */
 static inline int zt_pic_alloc(zt_pic_t *tp, uint32_t chroma, int w, int h)
 {
     unsigned sw, sh;
     int swap;
-    if (tp == NULL || w <= 0 || h <= 0
-            || w > UP_MAX_DIM || h > UP_MAX_DIM)
-        return -1;
+    if (tp == NULL) return -1;
+    memset(tp, 0, sizeof *tp);
+    if (w <= 0 || h <= 0 || w > UP_MAX_DIM || h > UP_MAX_DIM) return -1;
     if (!up_chroma_to_zimg(chroma, &sw, &sh, &swap)) return -1;
 
-    memset(tp, 0, sizeof *tp);
     tp->pic.i_planes = 3;
     tp->pic.format.i_chroma = chroma;
     tp->pic.format.i_width = (unsigned)w;
@@ -80,7 +80,11 @@ static inline int zt_pic_alloc(zt_pic_t *tp, uint32_t chroma, int w, int h)
         int pitch = zt_align_up(pw[k]);
         size_t sz = (size_t)pitch * (size_t)ph[k];
         tp->buf[k] = aligned_alloc(ZT_ALIGN, sz);
-        if (!tp->buf[k]) { zt_pic_free(tp); return -1; }
+        if (!tp->buf[k]) {
+            zt_pic_free(tp);
+            memset(tp, 0, sizeof *tp);
+            return -1;
+        }
         plane_t *p = &tp->pic.p[k];
         p->p_pixels        = tp->buf[k];
         p->i_pitch         = pitch;
