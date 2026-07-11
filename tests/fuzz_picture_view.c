@@ -191,7 +191,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
 static int smoke_iter(long i)
 {
-    uint8_t data[32];
+    uint8_t data[32] = { 0 };
     if (i == 0)
         LLVMFuzzerTestOneInput(data, 0);
     fuzz_smoke_fill(data, sizeof data);
