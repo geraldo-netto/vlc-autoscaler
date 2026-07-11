@@ -9,12 +9,18 @@
  *
  *   1. it never invokes UB (signed overflow, divide-by-zero, INT_MIN/-1) —
  *      enforced by the UBSan build, and
- *   2. its output contract holds for ANY input:
+ *   2. its output contract holds for ANY input — checked as INDEPENDENT
+ *      properties, not against a re-implementation (REL-4: the old mirror
+ *      oracle was tautological):
  *        - *rows >= 1 and *cols >= 1, and
- *        - rows*cols <= max(1, n_threads)  (computed in 64-bit, so the check
- *          itself can't overflow), and
- *        - the grid maximizes active workers within the row/column limits,
- *          preferring more row stripes on ties.
+ *        - rows*cols <= the thread budget clamped to [1, UP_TILE_THREADS_MAX]
+ *          (computed in 64-bit, so the check itself can't overflow), and
+ *        - the stripe/tile floors hold: rows > 1 only if every stripe gets
+ *          stripe_min dst rows, cols > 1 only if every tile gets col_min dst
+ *          columns, and col_min <= 0 disables column tiling outright, and
+ *        - monotonicity: one more thread never shrinks rows*cols.
+ *      The exact maximize-workers/prefer-rows selection is deliberately NOT
+ *      re-derived here; the deterministic suites pin representative grids.
  *
  * Production only ever passes small positive values (n_threads <= 64,
  * stripe_min/col_min are positive constants), but the contract must hold for
@@ -32,37 +38,38 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int oracle_axis_limit(int extent, int minimum,
-                             int fallback, int budget)
+static long long clamped_budget(int n_threads)
 {
-    int limit = minimum > 0 ? extent / minimum : fallback;
-    if (limit < 1) limit = 1;
-    if (limit > budget) limit = budget;
-    return limit;
+    long long b = n_threads < 1 ? 1 : n_threads;
+    return b > UP_TILE_THREADS_MAX ? UP_TILE_THREADS_MAX : b;
 }
 
-static void oracle_grid(int n_threads, int dst_w, int dst_h,
-                        int stripe_min, int col_min,
-                        int *rows, int *cols)
+static int grid_shape_ok(int rows, int cols, long long budget)
 {
-    int budget = n_threads;
-    if (budget < 1) budget = 1;
-    if (budget > UP_TILE_THREADS_MAX) budget = UP_TILE_THREADS_MAX;
-    int row_limit = oracle_axis_limit(dst_h, stripe_min, budget, budget);
-    int col_limit = oracle_axis_limit(dst_w, col_min, 1, budget);
-    int best_cells = 0;
-    *rows = 1;
-    *cols = 1;
-    for (int r = 1; r <= row_limit; r++) {
-        int c = col_limit;
-        if (c > budget / r) c = budget / r;
-        int cells = r * c;
-        if (cells > best_cells || (cells == best_cells && r > *rows)) {
-            best_cells = cells;
-            *rows = r;
-            *cols = c;
-        }
-    }
+    /* 64-bit product so the comparison itself can't overflow. */
+    return rows >= 1 && cols >= 1 && (long long)rows * cols <= budget;
+}
+
+/* Floor semantics, stated directly from the contract: splitting an axis is
+ * legal only when every resulting stripe/tile still gets its minimum dst
+ * extent; a non-positive col_min disables column tiling outright. */
+static int grid_floors_ok(int rows, int cols, int dst_w, int dst_h,
+                          int stripe_min, int col_min)
+{
+    if (stripe_min > 0 && rows > 1 && (long long)rows * stripe_min > dst_h)
+        return 0;
+    if (col_min <= 0)
+        return cols == 1;
+    return cols == 1 || (long long)cols * col_min <= dst_w;
+}
+
+static long long grid_cells(int n_threads, int dst_w, int dst_h,
+                            int stripe_min, int col_min)
+{
+    int rows, cols;
+    up_decide_tile_grid(n_threads, dst_w, dst_h, stripe_min, col_min,
+                        &rows, &cols);
+    return (long long)rows * cols;
 }
 
 static int check_grid(int n_threads, int dst_w, int dst_h,
@@ -71,31 +78,18 @@ static int check_grid(int n_threads, int dst_w, int dst_h,
     int rows = -999, cols = -999;
     up_decide_tile_grid(n_threads, dst_w, dst_h, stripe_min, col_min,
                         &rows, &cols);
+    long long cells = (long long)rows * cols;
 
-    if (rows < 1 || cols < 1) {
-        fprintf(stderr, "FAIL: non-positive grid rows=%d cols=%d for "
+    int bad = !grid_shape_ok(rows, cols, clamped_budget(n_threads))
+           || !grid_floors_ok(rows, cols, dst_w, dst_h, stripe_min, col_min)
+           /* Monotonicity: one more thread never shrinks the grid. */
+           || (n_threads > INT_MIN
+               && grid_cells(n_threads - 1, dst_w, dst_h,
+                             stripe_min, col_min) > cells);
+    if (bad) {
+        fprintf(stderr, "FAIL: grid=%dx%d violates contract for "
                 "n=%d dw=%d dh=%d sm=%d cm=%d\n",
                 rows, cols, n_threads, dst_w, dst_h, stripe_min, col_min);
-        return 1;
-    }
-    /* rows*cols must not exceed the (clamped) thread budget. 64-bit so the
-     * comparison can't itself overflow for extreme rows/cols. */
-    long long cells = (long long)rows * (long long)cols;
-    long long budget = (n_threads < 1) ? 1 : (long long)n_threads;
-    if (cells > budget) {
-        fprintf(stderr, "FAIL: too many cells rows*cols=%lld > budget=%lld "
-                "for n=%d dw=%d dh=%d sm=%d cm=%d\n",
-                cells, budget, n_threads, dst_w, dst_h, stripe_min, col_min);
-        return 1;
-    }
-    int expected_rows, expected_cols;
-    oracle_grid(n_threads, dst_w, dst_h, stripe_min, col_min,
-                &expected_rows, &expected_cols);
-    if (rows != expected_rows || cols != expected_cols) {
-        fprintf(stderr, "FAIL: grid=%dx%d expected=%dx%d "
-                "for n=%d dw=%d dh=%d sm=%d cm=%d\n",
-                rows, cols, expected_rows, expected_cols,
-                n_threads, dst_w, dst_h, stripe_min, col_min);
         return 1;
     }
     return 0;
