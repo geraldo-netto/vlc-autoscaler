@@ -189,13 +189,26 @@ endif
 
 PLUGIN_OBJS += $(USM_OBJS)
 
-.PHONY: all plugin test check check-visibility fuzz fuzz-smoke fuzz-seam analyze scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
+.PHONY: all plugin abi-layout-check test check check-visibility fuzz fuzz-smoke fuzz-seam analyze scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
 
 all: plugin
 
 # --------- plugin ---------
-plugin: $(BUILD)/$(PLUGIN).so
+plugin: $(BUILD)/$(PLUGIN).so abi-layout-check
 	@chmod 0644 $<
+
+# ABI-1: the unit/coverage tests compile production sources (scaler_swscale.c,
+# picture_view.h) against the hand-written layouts in tests/stubs/. abi_assert.c
+# static-asserts those field names/types against the REAL VLC headers (no
+# -Itests/stubs on the path), so an upstream rename/retype fails the build
+# instead of silently diverging the stub-built tests from the shipped .so.
+# Syntax-only — emits no object; runs on every plugin build (VLC headers are
+# already required there).
+.PHONY: abi-layout-check
+abi-layout-check:
+	@$(CC) $(WARN) -fsyntax-only $(VLC_CFLAGS) \
+	    -D__PLUGIN__ -DMODULE_STRING=\"autoupscale\" tests/abi_assert.c
+	@echo "  [ok] tests/stubs layout matches real VLC headers"
 
 $(BUILD)/$(PLUGIN).so: $(PLUGIN_OBJS) | $(BUILD)
 	@echo "  CPU baseline:    -march=$(MARCH)$(if $(filter native,$(MARCH)), (build-host ISA),$(if $(filter x86-64-v4,$(MARCH)), (Intel Skylake-X 2017+ / AMD Zen 4 2022+),$(if $(filter x86-64-v3,$(MARCH)), (Intel Haswell 2013+ / AMD Zen 1 2017+),$(if $(filter x86-64,$(MARCH)), (Linux x86-64 / SSE2 baseline),))))"

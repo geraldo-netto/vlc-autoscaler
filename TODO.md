@@ -146,7 +146,6 @@ are all balanced on every path.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| ABI-1 | open | M | `tests/stubs/` hand-duplicate VLC struct layouts (`plane_t`/`video_format_t`/`picture_t`, `vlc_fourcc_t`, `VLC_CODEC_*`, swscale API) and `tests/test_scaler_swscale.c:8` `#include`s the production `.c` compiled against those fake headers (`-Itests/stubs`). Nothing pins the stub field names/types to real VLC 3.0. | Current stubs match VLC 3.0 field-for-field — this is drift *risk*, not a present mismatch: an upstream rename keeps unit/coverage green while the shipped `.so` diverges. Mitigate with a tiny TU compiled against real VLC headers that `_Static_assert`s `sizeof`/`offsetof` of the touched fields. |
 
 ## build/toolchain hygiene
 
