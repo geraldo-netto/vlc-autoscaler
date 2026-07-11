@@ -1292,8 +1292,7 @@ static scaler_process_status_t zimg_note_alignment_drift(zimg_priv_t *p)
 
 static scaler_process_status_t zimg_process(scaler_ctx_t *ctx,
                                             const picture_t *src,
-                                            /* cppcheck-suppress constParameterCallback */
-                                            picture_t *dst)
+                                            const picture_t *dst)
 {
     zimg_priv_t *p = ctx->priv;
     if (!p) return SCALER_PROCESS_FATAL;

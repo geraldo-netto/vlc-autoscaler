@@ -114,12 +114,11 @@ static int sws_plane_index( vlc_fourcc_t chroma, int plane )
     return plane == 1 ? 2 : 1;
 }
 
-/* dst is the output frame; the vtable keeps it non-const even though only
- * pixel storage (not the picture_t itself) is written. */
+/* dst is the output frame. The picture_t itself is only read; the pixel
+ * storage it points to is written through the plane view, so dst is const. */
 static scaler_process_status_t sws_process( scaler_ctx_t *ctx,
                                             const picture_t *src,
-                                            /* cppcheck-suppress constParameterCallback */
-                                            picture_t *dst )
+                                            const picture_t *dst )
 {
     sws_priv_t *p = ctx->priv;
     if( !p ) return SCALER_PROCESS_FATAL;

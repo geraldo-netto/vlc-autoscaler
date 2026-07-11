@@ -108,7 +108,8 @@ struct scaler_backend_s
     /* Process one frame. TRANSIENT drops only this frame; FATAL means the
      * backend is unusable and the caller may replace it. */
     scaler_process_status_t (*process)( scaler_ctx_t *ctx,
-                                        const picture_t *src, picture_t *dst );
+                                        const picture_t *src,
+                                        const picture_t *dst );
 
     /* Tear down priv. Always safe to call after open() success. */
     void (*close)  ( scaler_ctx_t *ctx );
