@@ -95,6 +95,16 @@ static int check_grid(int n_threads, int dst_w, int dst_h,
     return 0;
 }
 
+/* Field-wise: memcmp would read the struct's trailing padding, which is
+ * indeterminate in stack locals and flips with build flags. */
+static int plans_equal(const up_zimg_io_plan_t *a, const up_zimg_io_plan_t *b)
+{
+    return a->n_rows == b->n_rows && a->n_cols == b->n_cols
+        && a->n_threads == b->n_threads && a->col_tiled == b->col_tiled
+        && a->src_zerocopy == b->src_zerocopy
+        && a->dst_zerocopy == b->dst_zerocopy;
+}
+
 /* PAT-1 plan invariants: cols collapse without src zero-copy, tiling
  * forces dst copy-out, counts stay consistent, and the resolver is a
  * fixed point of its own output flags. */
@@ -120,7 +130,7 @@ static int check_plan(int n_threads, int dst_w, int dst_h,
     again.src_zerocopy = p1.src_zerocopy;
     again.dst_zerocopy = p1.dst_zerocopy;
     up_zimg_resolve_io_plan(&again, &p2);
-    bad = bad || memcmp(&p1, &p2, sizeof p1) != 0;
+    bad = bad || !plans_equal(&p1, &p2);
 
     if (bad) {
         fprintf(stderr, "FAIL: io plan invariant broke for n=%d dw=%d "
