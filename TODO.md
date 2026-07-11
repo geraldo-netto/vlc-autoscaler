@@ -114,7 +114,6 @@ speculative pattern-work the project explicitly rejects.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| REL-1 | open | M | `src/autoupscale.c:433` (`EvenAlignSrcDims`) even-aligns only the src **dimensions**, never the crop **offsets**, so an odd `i_x_offset`/`i_y_offset` on a 4:2:0/4:2:2 source floors the chroma anchor in `up_picture_plane_extent` (`picture_view.h:124`) and shifts chroma ~½ luma-pel vs luma (color fringing on saturated edges). | Not OOB — extent stays in-bounds; purely a content-registration shift. Same on both backends (shared picture_view), so byte-identity tests don't catch it. Fix: also drop `src_x_offset`/`src_y_offset` to even on subsampled axes. Untested — `zt_ctx_init` always uses zero offset. |
 
 ## portability/standards conformance
 

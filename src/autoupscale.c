@@ -441,6 +441,27 @@ static void EvenAlignSrcDims( vlc_fourcc_t chroma, int *src_w, int *src_h )
     }
 }
 
+/* REL-1: subsampled chroma planes anchor their crop origin at
+ * offset >> subsample, floored in up_picture_plane_extent. An odd luma
+ * i_x_offset/i_y_offset (VP9/AV1 allow them with 4:2:0/4:2:2) therefore
+ * floors the chroma anchor and shifts chroma ~half a luma pel against luma —
+ * visible colour fringing on saturated edges, identical on both backends
+ * (shared picture_view), so the byte-identity tests don't flag it. Drop the
+ * crop offset to even on each subsampled axis, the same alignment
+ * EvenAlignSrcDims applies to the crop dimensions. Rounding down only ever
+ * decreases the offset, so offset+width stays within the coded plane. */
+static void EvenAlignSrcOffsets( vlc_fourcc_t chroma,
+                                 unsigned *x_offset, unsigned *y_offset )
+{
+    unsigned sub_w, sub_h;
+    int yv12_swap;
+    if( up_chroma_to_zimg( chroma, &sub_w, &sub_h, &yv12_swap ) )
+    {
+        if( sub_w ) *x_offset &= ~1u;
+        if( sub_h ) *y_offset &= ~1u;
+    }
+}
+
 /* Opaque-chroma rejection + backend selection. Logs the reason and returns
  * NULL when this filter cannot run on the input — Open() turns NULL into
  * VLC_EGENERIC. */
@@ -544,6 +565,7 @@ static void ConfigureScaler( scaler_ctx_t *sc,
     sc->src_coded_h  = p_filter->fmt_in.video.i_height;
     sc->src_x_offset = p_filter->fmt_in.video.i_x_offset;
     sc->src_y_offset = p_filter->fmt_in.video.i_y_offset;
+    EvenAlignSrcOffsets( chroma, &sc->src_x_offset, &sc->src_y_offset );
     sc->dst_w        = target.width;
     sc->dst_h        = target.height;
     sc->algo         = algo;
