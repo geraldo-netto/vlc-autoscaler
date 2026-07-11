@@ -100,7 +100,6 @@ improves clarity" rule.
 | REL-3 | open | S | `tests/fuzz_scaler_seam.c:152-154` — `dw` and `threads` decode the same input bytes (`data + 9`), and `dh` (`data + 12`) overlaps `dw`'s last byte, so destination width and thread count are deterministically coupled and cannot be explored independently. | Likely copy-paste offset; re-layout the 16-byte input (or grow it) so each field has its own bytes. Note: existing corpus seeds encode the coupled layout — re-derive or keep both decoders versioned. |
 | REL-4 | open | S | `tests/fuzz_decide_tile_grid.c:35-66` — `oracle_grid()` is a near-verbatim reimplementation of `up_decide_tile_grid` (same clamps, loop, tie rule), so the expected-grid comparison is tautological; only the independent contract checks provide signal. | Replace the mirror oracle with property checks only (cells ≤ budget, rows/cols bounds, monotonicity), or an intentionally different brute-force search. |
 | REL-5 | open | S | `src/autoupscale.c:1009-1014` — `Filter()` increments `dropped_count` on dead-backend and process-failure paths but not when `filter_NewPicture` fails, so OBS-3 stats and exported variables undercount drops under allocation pressure. | One increment on the NewPicture-fail path. |
-| REL-6 | open | M | `src/scaler_zimg.c:1303-1305` + `src/autoupscale.c:1030-1031` — a zero-copy graph built on the first frame returns TRANSIENT for every later frame whose buffer drifts off 32-byte alignment; TRANSIENT never triggers swscale fallback, so a permanent allocator change mid-stream drops all remaining frames, with no zimg-side log (not covered by `preflight_warned`) and only the generic one-shot Filter() warning misattributing the cause. | Add a consecutive-TRANSIENT counter that escalates to FATAL (letting the existing fallback engage) and a one-shot alignment-drift message. In-source comment documents the drop-per-frame tradeoff but not the forever case. |
 | REL-7 | open | S | `tests/test_scaler_swscale.c:313-319` `test_close_without_context` asserts `g_free_calls == 4`, a global accumulated by earlier tests; reordering or adding an open/close pair anywhere breaks this unrelated test. | Snapshot the counter at test start and assert the delta. |
 
 ## portability/standards conformance
@@ -150,8 +149,8 @@ Test-harness pic leaks are tracked as MEM-1/MEM-3.
 | OBS-2 | open | S | `src/autoupscale.c:964-991` `TryBackendFallback` returns silently when a FATAL zimg failure occurs but fallback is suppressed by forced `--autoupscale-backend=1`; user sees only the generic one-shot "backend failed to process a frame" with no hint that the forced-backend setting suppressed recovery and all remaining frames will drop. | One-shot msg_Err naming the forced-backend suppression. |
 | OBS-3 | open | S | `src/autoupscale.c:549-552` — `zerocopy-dst=0` gets a `msg_Info` ("dst zero-copy DISABLED") but `zerocopy-src=0` gets no equivalent (only the conditional grid-change warn in scaler_zimg.c:1113-1117, which fires only when column tiling was planned); asymmetric visibility for symmetric safety knobs. | Mirror the msg_Info. |
 
-The missing alignment-drift log is folded into REL-6 (same fix). No log-spam risks found:
-all repeated-path messages are one-shot latched; periodic stats are msg_Dbg on a 5 s tick.
+No log-spam risks found: all repeated-path messages are one-shot latched; periodic stats
+are msg_Dbg on a 5 s tick.
 
 ## wiring gaps
 

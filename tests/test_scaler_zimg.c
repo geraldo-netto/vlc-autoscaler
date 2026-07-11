@@ -542,6 +542,50 @@ static void test_all_algos(void)
     END();
 }
 
+/* REL-6: a permanent storage-alignment change after the zero-copy
+ * graphs are built must escalate from per-frame TRANSIENT drops to
+ * FATAL (streak of 30), so the caller's fallback can engage instead of
+ * dropping every remaining frame. The drifted frames are never
+ * processed, only rejected, so the +16 pointer shift is never read. */
+static void test_alignment_drift_escalates_to_fatal(void)
+{
+    BEGIN("persistent alignment drift escalates to FATAL (REL-6)");
+    zt_pic_t src = {0}, dst = {0};
+    int ok = zt_pic_alloc(&src, VLC_CODEC_I420, 640, 360) == 0
+          && zt_pic_alloc(&dst, VLC_CODEC_I420, 1280, 720) == 0;
+    scaler_ctx_t ctx;
+    zt_ctx_init(&ctx, VLC_CODEC_I420, 640, 360, 1280, 720, 2, 1);
+    CHECK(ok);
+    if (ok && ctx.backend->open(&ctx) == 0) {
+        zt_pic_fill(&src, 0x5150u);
+        CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+              == SCALER_PROCESS_OK);
+
+        uint8_t *saved[3];
+        for (int i = 0; i < 3; i++) {
+            saved[i] = src.pic.p[i].p_pixels;
+            src.pic.p[i].p_pixels += 16;   /* break 32-byte alignment */
+        }
+        int transients = 0;
+        scaler_process_status_t st = SCALER_PROCESS_OK;
+        for (int f = 0; f < 64 && st != SCALER_PROCESS_FATAL; f++) {
+            st = ctx.backend->process(&ctx, &src.pic, &dst.pic);
+            if (st == SCALER_PROCESS_TRANSIENT) transients++;
+        }
+        CHECK(st == SCALER_PROCESS_FATAL);
+        CHECK(transients == 29);  /* ZIMG_DRIFT_FATAL_STREAK - 1 drops */
+        for (int i = 0; i < 3; i++)
+            src.pic.p[i].p_pixels = saved[i];
+        /* Escalation poisons the backend for good. */
+        CHECK(ctx.backend->process(&ctx, &src.pic, &dst.pic)
+              == SCALER_PROCESS_FATAL);
+        ctx.backend->close(&ctx);
+    }
+    zt_pic_free(&src);
+    zt_pic_free(&dst);
+    END();
+}
+
 static void test_transient_preflight_recovers(void)
 {
     BEGIN("malformed frame is transient; same backend accepts the next frame");
@@ -868,6 +912,7 @@ int main(void)
     test_rows_only_transition_preserves_dst_mode();
     test_supports();
     test_all_algos();
+    test_alignment_drift_escalates_to_fatal();
     test_transient_preflight_recovers();
     test_open_rejects_unsupported();
     test_extreme_ratio_no_crash();

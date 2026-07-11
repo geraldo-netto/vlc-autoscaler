@@ -248,6 +248,11 @@ typedef struct
     int               worker_budget;  /* up_threads_decide result at open;
                                        * first-frame plan re-resolve input */
 
+    /* REL-6: consecutive frames rejected for alignment drift; a full
+     * streak escalates to FATAL. drift_warned latches the one-shot log. */
+    int               drift_streak;
+    bool              drift_warned;
+
     /* SCAL-4/5: pin workers only to exact IDs in the allowed CPU set. */
     bool              pin_cpus;
     up_cpu_topology_t cpu_topology;
@@ -1253,6 +1258,32 @@ static void zimg_warn_bad_geometry(zimg_priv_t *p)
                  "(planes, extent, or crop); dropping frame(s)");
 }
 
+/* REL-6: zero-copy graphs are built for the first frame's storage
+ * alignment; a drifted later frame is dropped (TRANSIENT). A persistent
+ * streak means the allocator changed for good — without escalation every
+ * remaining frame would drop silently, since TRANSIENT never engages the
+ * swscale fallback. Warn once, and after a full streak return FATAL so
+ * the fallback (which accepts any valid alignment) can take over. */
+#define ZIMG_DRIFT_FATAL_STREAK 30
+
+static scaler_process_status_t zimg_note_alignment_drift(zimg_priv_t *p)
+{
+    if (!p->drift_warned) {
+        p->drift_warned = true;
+        if (p->log_obj_saved)
+            msg_Warn((vlc_object_t *)p->log_obj_saved,
+                     "AutoUpscale: zimg: picture storage drifted from the "
+                     "alignment the zero-copy graphs were built for; "
+                     "dropping frame(s), failing over after %d consecutive "
+                     "misses", ZIMG_DRIFT_FATAL_STREAK);
+    }
+    if (++p->drift_streak >= ZIMG_DRIFT_FATAL_STREAK) {
+        p->pool_broken = true;
+        return SCALER_PROCESS_FATAL;
+    }
+    return SCALER_PROCESS_TRANSIENT;
+}
+
 static scaler_process_status_t zimg_process(scaler_ctx_t *ctx,
                                             const picture_t *src,
                                             picture_t *dst)
@@ -1268,7 +1299,8 @@ static scaler_process_status_t zimg_process(scaler_ctx_t *ctx,
     }
     zimg_prepare_first_frame_io(p, ctx, &src_view, &dst_view);
     if (!zimg_frame_io_safe(p, &src_view, &dst_view))
-        return SCALER_PROCESS_TRANSIENT;
+        return zimg_note_alignment_drift(p);
+    p->drift_streak = 0;
     if (zimg_ensure_lazy_init(p) != 0) return SCALER_PROCESS_FATAL;
 
     /* Per-frame plane pointers. On each side the graph touches the VLC
