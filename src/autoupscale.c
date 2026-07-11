@@ -734,7 +734,7 @@ static int CheckCpuLevel( vlc_object_t *p_this )
 /* CX-1: the one-shot "engaged" diagnostic. Every value but preset/cores/mem_mb
  * is already on p_sys by the time Open reaches this point, so the banner needs
  * no wide parameter list. Extracted from Open() to cut its physical length. */
-static void LogEngaged( filter_t *p_filter, filter_sys_t *p_sys,
+static void LogEngaged( filter_t *p_filter, const filter_sys_t *p_sys,
                         int preset, int cores, unsigned long mem_mb )
 {
     const scaler_ctx_t *sc = &p_sys->scaler;
@@ -840,7 +840,7 @@ static inline int64_t monotonic_ns(void)
  * verbosity suppresses level-2 warnings; we want the advisory visible
  * without users having to pass --verbose=1.
  */
-static void EmitPerfAdvisory( filter_t *p_filter, filter_sys_t *p_sys )
+static void EmitPerfAdvisory( filter_t *p_filter, const filter_sys_t *p_sys )
 {
     long ewma_us   = (long)up_perfmon_ewma_us( &p_sys->perfmon );
     long budget_us = (long)up_perfmon_budget_us( &p_sys->perfmon );
