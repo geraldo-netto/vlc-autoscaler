@@ -216,7 +216,10 @@ typedef struct {
     int y_group_pixels[3];
 } crop_case_t;
 
+/* storage escapes into pic->p[i].p_pixels (non-const plane_t field) and dst
+ * pictures ARE written through it later — const here would need a cast. */
 static void init_crop_picture(picture_t *pic,
+                              // cppcheck-suppress constParameter
                               uint8_t storage[4][CROP_STORAGE_BYTES],
                               const crop_case_t *c, int width, int height,
                               int x_offset, int y_offset)

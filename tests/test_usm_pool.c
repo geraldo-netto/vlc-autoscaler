@@ -471,10 +471,10 @@ static void test_effective_threads_query(void)
     }
 
     enum { W = 64, H = 64 };
-    static uint8_t buf[W * H];
     usm_pool_t *p = up_usm_pool_create(4, W, H, 0);
     CHECK(p != NULL);
     if (p) {
+        static uint8_t buf[W * H];
         CHECK(up_usm_pool_effective_threads(p) == 4);
         CHECK(up_usm_pool_apply(p, buf, W, buf, W,
                                 up_usm_amount_pct_to_q8(30)) == 0);
