@@ -221,6 +221,11 @@ struct usm_pool_s {
     bool           lazy_init_done;
     bool           lazy_init_failed;
     bool           pool_broken;
+
+    /* PERF-1: with a single stripe there is no pool. The worker slot is set up
+     * as usual, but no gate is initialized and no thread spawned; usm_pool_run
+     * sweeps the stripe on the calling thread. */
+    bool           inline_run;
 };
 
 /* ===========================================================================
@@ -335,7 +340,7 @@ static int usm_pool_alloc_scratch(usm_pool_t *p)
     return p->scratch ? 0 : -1;
 }
 
-static int usm_pool_spawn_worker(usm_pool_t *p, int i)
+static void usm_pool_init_worker_slot(usm_pool_t *p, int i)
 {
     usm_worker_t *w = &p->workers[i];
     w->gate       = &p->gate;
@@ -347,6 +352,12 @@ static int usm_pool_spawn_worker(usm_pool_t *p, int i)
     /* y_start/y_end are assigned solely by usm_pool_repartition_stripes
      * after the spawn loop; a worker cannot read them before the first
      * dispatch bumps the generation. */
+}
+
+static int usm_pool_spawn_worker(usm_pool_t *p, int i)
+{
+    usm_worker_t *w = &p->workers[i];
+    usm_pool_init_worker_slot(p, i);
 
     if (pthread_create(&w->thread, NULL, usm_worker_main, w) != 0)
         return -1;
@@ -402,10 +413,25 @@ static int usm_pool_spawn_all(usm_pool_t *p)
     return 0;
 }
 
+/* PERF-1: one stripe means no parallelism to buy. Spawning a thread only to
+ * hand it the whole plane costs a broadcast, a sem round-trip and a thread —
+ * ~7 us per dispatch, measured — and the auto thread policy resolves to 1 on
+ * every machine with <= 7 cores. Set the slot up, skip the gate and the spawn,
+ * and sweep on the calling thread. */
+static int usm_pool_init_inline(usm_pool_t *p)
+{
+    usm_pool_init_worker_slot(p, 0);
+    usm_pool_repartition_stripes(p->workers, 1, p->height);
+    p->n_threads = 1;
+    p->inline_run = true;
+    return 0;
+}
+
 static int usm_pool_lazy_init(usm_pool_t *p)
 {
     if (usm_pool_alloc_scratch(p) != 0) return -1;
     if (usm_pool_alloc_workers(p) != 0) return -1;
+    if (p->n_threads_pref == 1) return usm_pool_init_inline(p);
     if (usm_pool_init_gate(p) != 0) return -1;
     return usm_pool_spawn_all(p);
 }
@@ -501,6 +527,12 @@ static void usm_pool_stop_workers(usm_pool_t *p);
 
 static int usm_pool_run(usm_pool_t *p)
 {
+    /* PERF-1: single stripe — sweep it here, skip the gate entirely. */
+    if (p->inline_run) {
+        usm_worker_run(&p->workers[0]);
+        return 0;
+    }
+
     up_pool_gate_lock(&p->gate);
     up_pool_gate_arm_locked(&p->gate, p->n_threads);
     up_pool_gate_unlock_broadcast(&p->gate);

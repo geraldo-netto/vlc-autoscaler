@@ -262,6 +262,11 @@ typedef struct
     int               worker_budget;  /* up_threads_decide result at open;
                                        * first-frame plan re-resolve input */
 
+    /* PERF-1: a one-cell grid has no pool. The cell is constructed as usual
+     * (graph, tmp, scratch) but no gate is initialized and no thread spawned;
+     * zimg_dispatch_and_wait runs it on the calling thread. */
+    bool              inline_run;
+
     /* REL-6: consecutive frames rejected for alignment drift; a full
      * streak escalates to FATAL. `warned` latches the one-shot log. */
     struct {
@@ -468,15 +473,11 @@ static void worker_emit_output(const stripe_worker_t *w)
     else if (w->copy_out) worker_copy_out_stripe(w);  /* PERF-5 */
 }
 
-static void *worker_main(void *arg)
+/* One cell's whole frame: copy-in, resample, emit. Runs on a worker thread,
+ * or on the main thread directly when the pool holds a single cell (PERF-1). */
+static void zimg_worker_run(stripe_worker_t *w)
 {
-    stripe_worker_t *w = (stripe_worker_t *)arg;
-    for (;;)
     {
-        if (!up_pool_gate_wait_for_go(w->gate, &w->seen_gen,
-                                      &w->should_exit))
-            break;
-
         if (w->copy_in) worker_copy_in_stripe(w);  /* PERF-1: parallel copy-in */
 
         /* Zero-init buffer descriptors. Upstream zimg's API contract
@@ -518,7 +519,18 @@ static void *worker_main(void *arg)
         w->err_code = rc;               /* OBS-1: keep the code for the log */
 
         worker_emit_output(w);
+    }
+}
 
+static void *worker_main(void *arg)
+{
+    stripe_worker_t *w = (stripe_worker_t *)arg;
+    for (;;)
+    {
+        if (!up_pool_gate_wait_for_go(w->gate, &w->seen_gen,
+                                      &w->should_exit))
+            break;
+        zimg_worker_run(w);
         up_pool_gate_worker_done(w->gate);
     }
     return NULL;
@@ -792,6 +804,13 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
     if (build_worker_graph_and_tmp(w, p, c, sub_w, sub_h, filt) != 0)
         return -1;
 
+    /* PERF-1: a single-cell grid runs on the main thread. Spawning a worker
+     * only to hand it the whole frame costs a broadcast, a sem round-trip and
+     * a thread — ~7 us per dispatch, measured — for zero parallelism, and the
+     * auto thread policy resolves to 1 on every machine with <= 7 cores. */
+    if (p->inline_run)
+        return 0;
+
     if (pthread_create(&w->thread, NULL, worker_main, w) != 0) {
         return -1;
     }
@@ -998,9 +1017,12 @@ static int zimg_lazy_init(zimg_priv_t *p)
         memset(p->workers, 0, total);
     }
 
+    /* PERF-1: with one cell there is no pool — no gate, no thread. */
+    p->inline_run = (p->plan.n_threads == 1);
+
     /* Gate must be live before construct_workers spawns threads, since
      * each worker blocks on the cv immediately (seen_gen == generation). */
-    if (up_pool_gate_init(&p->gate) != 0) return -1;
+    if (!p->inline_run && up_pool_gate_init(&p->gate) != 0) return -1;
 
     int constructed = 0;
     /* ARCH-1: the worker-construction chain reads only src/dst geometry, all
@@ -1148,8 +1170,31 @@ static void point_workers_planes(zimg_priv_t *p,
  * Dispatch all workers and wait for completion.
  * A barrier or worker failure poisons the backend, so both are fatal.
  */
+static scaler_process_status_t zimg_check_worker_results(zimg_priv_t *p)
+{
+    for (int i = 0; i < p->plan.n_threads; i++) {
+        if (p->workers[i].result != 0) {
+            p->pool_broken = true;
+            if (p->lazy.log_obj)
+                msg_Err((vlc_object_t *)p->lazy.log_obj,
+                        "AutoUpscale: zimg graph processing failed on worker "
+                        "%d (libzimg error %d); pool poisoned (logged once)",
+                        i, (int)p->workers[i].err_code);
+            return SCALER_PROCESS_FATAL;
+        }
+    }
+    return SCALER_PROCESS_OK;
+}
+
 static scaler_process_status_t zimg_dispatch_and_wait(zimg_priv_t *p)
 {
+    /* PERF-1: single cell — run it here, skip the gate entirely. */
+    if (p->inline_run) {
+        p->workers[0].result = 0;
+        zimg_worker_run(&p->workers[0]);
+        return zimg_check_worker_results(p);
+    }
+
     /* Wake side: arm the barrier and reset results inside the gate's
      * critical section, so a worker that wakes sees pending already
      * armed and its result already reset. */
@@ -1172,18 +1217,7 @@ static scaler_process_status_t zimg_dispatch_and_wait(zimg_priv_t *p)
         zimg_stop_workers(p);
         return SCALER_PROCESS_FATAL;
     }
-    for (int i = 0; i < p->plan.n_threads; i++) {
-        if (p->workers[i].result != 0) {
-            p->pool_broken = true;
-            if (p->lazy.log_obj)
-                msg_Err((vlc_object_t *)p->lazy.log_obj,
-                        "AutoUpscale: zimg graph processing failed on worker "
-                        "%d (libzimg error %d); pool poisoned (logged once)",
-                        i, (int)p->workers[i].err_code);
-            return SCALER_PROCESS_FATAL;
-        }
-    }
-    return SCALER_PROCESS_OK;
+    return zimg_check_worker_results(p);
 }
 
 /*

@@ -41,7 +41,6 @@ under `cv_inited`/`sem_inited`; both barrier-failure paths join before `picture_
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| PERF-1 | open | S | No `n_threads == 1` fast path in either pool (`src/usm_pool.c:502-512`, `src/scaler_zimg.c:1141-1150`, gate `src/threading.h:320-373`): with a single worker the frame still arms the barrier, broadcasts, and blocks in `sem_wait` for a full thread round-trip. | Measured gate cost 6.79 µs/dispatch at N=1 (essentially N-independent, 6.2-8.5 µs for N=1..8) — ~13-14 µs/frame of pure sync across the two pools for zero parallelism, plus 2 needlessly spawned threads per filter instance. `up_threads_decide(AUTO, cores)` returns 1 for every core count ≤ 7, i.e. the whole mainstream desktop. Fix: run the single worker's fn inline on the main thread and skip the spawn. |
 | PERF-2 | open | S | USM pool's only work cap is `height / USM_STRIPE_MIN_ROWS(8)` = 135 workers at 1080p (`src/usm_pool.c:88-90,431-433`), so it takes whatever `up_threads_decide` gives; the pass is memory-bandwidth-bound and stops scaling ~4× earlier. | Measured 1080p in-place USM: N=1 322 µs, N=8 58.6, **N=10 51.1 (knee)**, N=14 59.3, N=30 76.5. 4K plateaus at N=8..12. Auto picks 14 on a 32-core box (+16% vs optimum) and 30 on a 64-core box (+50%) while spawning 3× the threads. Fix: raise the effective USM stripe floor (~96-128 rows) or cap USM threads at ~12. |
 
 Otherwise clean: zero steady-state per-frame allocations; no per-frame graph rebuilds; default aligned

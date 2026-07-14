@@ -19,6 +19,7 @@
 #include "barrier_fault_inject.h"
 #include "prng.h"   /* DUP-2: shared xorshift32 */
 
+#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
@@ -299,6 +300,55 @@ static void test_create_clamps_huge_thread_count(void)
     CHECK(run_compare_inplace(INT_MAX, W, H,
                               up_usm_amount_pct_to_q8(30), 0x4d) == 0);
     CHECK(max_aligned_alloc_size() <= (size_t)UP_THREADS_MAX * 4096);
+    END();
+}
+
+/* PERF-1: a single-stripe pool must not spawn a thread at all — the whole
+ * point is to skip the broadcast + sem round-trip (~7 us/dispatch, measured)
+ * that buys nothing with one worker. Counting /proc/self/task entries proves
+ * it directly; the byte-identity checks below prove the inline sweep produces
+ * exactly what the threaded pool would have. */
+static long live_thread_count(void)
+{
+    DIR *d = opendir("/proc/self/task");
+    if (!d) return -1;
+    long n = 0;
+    for (const struct dirent *e = readdir(d); e; e = readdir(d))
+        if (e->d_name[0] != '.') n++;
+    closedir(d);
+    return n;
+}
+
+static void test_single_thread_runs_inline(void)
+{
+    BEGIN("n_threads=1 sweeps on the calling thread, spawning none (PERF-1)");
+    enum { W = 256, H = 128 };
+    const int amount = up_usm_amount_pct_to_q8(30);
+    static uint8_t buf[W * H];
+
+    const long before = live_thread_count();
+    usm_pool_t *p = up_usm_pool_create(1, W, H, 0);
+    CHECK(p != NULL);
+    if (!p) { END(); return; }
+
+    /* The pool is lazy: the first apply is what would have spawned. Run
+     * several frames — the inline slot must be reusable. */
+    for (int frame = 0; frame < 3; frame++)
+        CHECK(up_usm_pool_apply(p, buf, W, buf, W, amount) == 0);
+
+    CHECK(up_usm_pool_effective_threads(p) == 1);
+    const long during = live_thread_count();
+    if (before > 0 && during > 0)
+        CHECK(during == before);   /* no worker thread was created */
+
+    up_usm_pool_destroy(p);
+    CHECK(live_thread_count() == before);
+
+    /* And the inline sweep is byte-identical to the threaded pool's output
+     * (both already match the single-threaded oracle). */
+    CHECK(run_compare(1, 640, 360, amount, 0x51) == 0);
+    CHECK(run_compare_inplace(1, 640, 360, amount, 0x52) == 0);
+    CHECK(run_compare(1, 63, 17, amount, 0x53) == 0);   /* odd dims */
     END();
 }
 
@@ -693,6 +743,7 @@ int main(void)
     test_inplace_matches_oracle();
     test_barrier_post_failure_poisons_pool();
     test_create_clamps_huge_thread_count();
+    test_single_thread_runs_inline();
     test_inplace_stride_mismatch_rejected();
     test_aggressive_100pct();
 
