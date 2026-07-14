@@ -310,6 +310,7 @@ typedef struct {
     atomic_int      pending;      /* live workers this dispatch */
     sem_t           all_done;     /* posted once when pending hits 0 */
     atomic_bool     post_failed;  /* CON-2: last finisher's post failed */
+    atomic_bool     sync_failed;  /* ERR-1: pthread gate operation failed */
     bool            cv_inited;    /* destroy guards for partial init */
     bool            sem_inited;
 } up_pool_gate_t;
@@ -320,6 +321,7 @@ static inline int up_pool_gate_init(up_pool_gate_t *g)
     g->exit_requested = false;
     atomic_init(&g->pending, 0);
     atomic_init(&g->post_failed, false);
+    atomic_init(&g->sync_failed, false);
     g->cv_inited  = false;
     g->sem_inited = false;
     if (pthread_mutex_init(&g->lock, NULL) != 0) return -1;
@@ -352,9 +354,9 @@ static inline bool up_pool_gate_ready(const up_pool_gate_t *g)
     return g->cv_inited;
 }
 
-static inline void up_pool_gate_lock(up_pool_gate_t *g)
+static inline int up_pool_gate_lock(up_pool_gate_t *g)
 {
-    pthread_mutex_lock(&g->lock);
+    return pthread_mutex_lock(&g->lock);
 }
 
 /* Arm the done-barrier for n workers and open the gate. Caller holds the
@@ -365,30 +367,78 @@ static inline void up_pool_gate_arm_locked(up_pool_gate_t *g, int n)
     g->generation++;
 }
 
-static inline void up_pool_gate_unlock_broadcast(up_pool_gate_t *g)
+static inline int up_pool_gate_unlock_broadcast(up_pool_gate_t *g)
 {
-    pthread_cond_broadcast(&g->cv);
-    pthread_mutex_unlock(&g->lock);
+    const int broadcast_rc = pthread_cond_broadcast(&g->cv);
+    const int unlock_rc = pthread_mutex_unlock(&g->lock);
+    if (broadcast_rc == 0 && unlock_rc == 0) return 0;
+    atomic_store_explicit(&g->sync_failed, true, memory_order_release);
+    return -1;
+}
+
+/* pthread_cond_wait reacquires the mutex before acting on cancellation.
+ * Recovery can therefore cancel an otherwise unwakeable waiter only when a
+ * cleanup handler releases that reacquired lock. */
+static inline void up__pool_gate_cancel_unlock(void *arg)
+{
+    (void)pthread_mutex_unlock((pthread_mutex_t *)arg);
+}
+
+static inline void up__pool_gate_report_worker_failure(up_pool_gate_t *g)
+{
+    atomic_store_explicit(&g->sync_failed, true, memory_order_release);
+    (void)sem_post(&g->all_done);
+}
+
+static inline int up__pool_gate_wait_locked(up_pool_gate_t *g,
+                                            const uint64_t *seen_gen)
+{
+    while (g->generation == *seen_gen && !g->exit_requested) {
+        const int rc = pthread_cond_wait(&g->cv, &g->lock);
+        if (rc != 0) return rc;
+    }
+    return 0;
 }
 
 /*
- * Worker side: block until a new dispatch (returns true) or an exit
- * request with no unseen generation (returns false). An unseen dispatch
+ * Worker side: block until a new dispatch (returns 1), an exit request with
+ * no unseen generation (returns 0), or a pthread gate failure (returns -1).
+ * An unseen dispatch
  * is completed before exit so fatal-barrier recovery can join without
  * leaving a partly-written frame. The exit flag lives in the gate and is
  * read under the gate lock; up_pool_gate_request_exit sets it under the
- * same lock before broadcasting.
+ * same lock before broadcasting. Deferred cancellation is enabled only while
+ * blocked here and is disabled again before returning, so owner work cannot be
+ * interrupted between its acquire/release invariants.
  */
-static inline bool up_pool_gate_wait_for_go(up_pool_gate_t *g,
-                                            uint64_t *seen_gen)
+static inline int up_pool_gate_wait_for_go(up_pool_gate_t *g,
+                                           uint64_t *seen_gen)
 {
-    pthread_mutex_lock(&g->lock);
-    while (g->generation == *seen_gen && !g->exit_requested)
-        pthread_cond_wait(&g->cv, &g->lock);
-    bool run = g->generation != *seen_gen;
-    *seen_gen = g->generation;
-    pthread_mutex_unlock(&g->lock);
-    return run;
+    if (pthread_mutex_lock(&g->lock) != 0) {
+        up__pool_gate_report_worker_failure(g);
+        return -1;
+    }
+
+    int wait_rc = 0;
+    int result = -1;
+    pthread_cleanup_push(up__pool_gate_cancel_unlock, &g->lock);
+    wait_rc = pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    if (wait_rc == 0) wait_rc = up__pool_gate_wait_locked(g, seen_gen);
+    const int cancel_rc = pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+    if (wait_rc == 0 && cancel_rc != 0) wait_rc = cancel_rc;
+    if (wait_rc == 0) {
+        const bool run = g->generation != *seen_gen;
+        *seen_gen = g->generation;
+        result = run ? 1 : 0;
+    } else {
+        up__pool_gate_report_worker_failure(g);
+    }
+    if (pthread_mutex_unlock(&g->lock) != 0) {
+        up__pool_gate_report_worker_failure(g);
+        result = -1;
+    }
+    pthread_cleanup_pop(0);
+    return result;
 }
 
 /*
@@ -401,13 +451,19 @@ static inline bool up_pool_gate_wait_for_go(up_pool_gate_t *g,
  * Idempotent: a pool that poisons itself mid-playback and is closed later
  * calls it twice.
  */
-static inline void up_pool_gate_request_exit(up_pool_gate_t *g)
+static inline int up_pool_gate_request_exit(up_pool_gate_t *g)
 {
-    if (!up_pool_gate_ready(g)) return;
-    pthread_mutex_lock(&g->lock);
+    if (!up_pool_gate_ready(g)) return 0;
+    if (pthread_mutex_lock(&g->lock) != 0) {
+        atomic_store_explicit(&g->sync_failed, true, memory_order_release);
+        return -1;
+    }
     g->exit_requested = true;
-    pthread_cond_broadcast(&g->cv);
-    pthread_mutex_unlock(&g->lock);
+    const int broadcast_rc = pthread_cond_broadcast(&g->cv);
+    const int unlock_rc = pthread_mutex_unlock(&g->lock);
+    if (broadcast_rc == 0 && unlock_rc == 0) return 0;
+    atomic_store_explicit(&g->sync_failed, true, memory_order_release);
+    return -1;
 }
 
 /* How many times the last finisher retries a failed post before giving up.
@@ -445,8 +501,10 @@ static inline void up_pool_gate_worker_done(up_pool_gate_t *g)
  * recorded post failure, or no post at all within the timeout (CONC-1). */
 static inline int up_pool_gate_wait_all(up_pool_gate_t *g)
 {
+    if (atomic_load_explicit(&g->sync_failed, memory_order_acquire)) return -1;
     if (up_sem_wait_timeout(&g->all_done, UP_POOL_BARRIER_TIMEOUT_MS) != 0)
         return -1;
+    if (atomic_load_explicit(&g->sync_failed, memory_order_acquire)) return -1;
     if (atomic_exchange_explicit(&g->post_failed, false,
                                  memory_order_acquire))
         return -1;

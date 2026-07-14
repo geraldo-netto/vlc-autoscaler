@@ -124,7 +124,6 @@ problem; another business/domain pattern would add structure without a domain ne
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| ERR-1 | open | M | `up_worker_pool_stop` detects `up_pool_gate_request_exit` failure but then unconditionally joins (`src/worker_pool.h:233-243`). If the failed mutex/condition path leaves idle workers asleep (`src/threading.h:421-433`), the join can hang indefinitely. | Add a wake-independent stop fallback, such as cancellation with a condition-wait cleanup handler that unlocks the reacquired mutex, and join only after a proven termination path. |
 
 No separate row for the unchecked `pthread_join` result: with internally created,
 joinable workers its specified failures require an invariant violation. Any ERR-1

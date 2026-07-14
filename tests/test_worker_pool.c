@@ -83,6 +83,7 @@ typedef struct {
     int  spawn_calls;
     int  finalize_n;          /* -1 until finalize runs */
     atomic_int total_runs;
+    atomic_int run_cancel_enabled;
 } fake_pool_t;
 
 static fake_worker_t *fake_slots(fake_pool_t *f)
@@ -116,6 +117,13 @@ static void fake_release(void *owner, int i)
 static void fake_run(void *owner, int i)
 {
     fake_pool_t *f = (fake_pool_t *)owner;
+    if (!f->pool.inline_run) {
+        int old_state = PTHREAD_CANCEL_ENABLE;
+        if (pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old_state) != 0
+            || old_state != PTHREAD_CANCEL_DISABLE)
+            atomic_store_explicit(&f->run_cancel_enabled, 1,
+                                  memory_order_relaxed);
+    }
     atomic_fetch_add_explicit(&fake_slots(f)[i].runs, 1,
                               memory_order_relaxed);
     atomic_fetch_add_explicit(&f->total_runs, 1, memory_order_relaxed);
@@ -175,6 +183,7 @@ static void fake_init(fake_pool_t *f, const up_worker_pool_ops_t *ops,
     f->construct_fail_at = -1;
     f->finalize_n        = -1;
     atomic_init(&f->total_runs, 0);
+    atomic_init(&f->run_cancel_enabled, 0);
     up_worker_pool_config(&f->pool, ops, f, n_pref, sizeof(fake_worker_t));
     fault_reset();
 }
@@ -186,6 +195,7 @@ static void check_run_counts(fake_pool_t *f, int expected)
     for (int i = 0; i < n; i++)
         CHECK_EQ(atomic_load(&fake_slots(f)[i].runs), expected);
     CHECK_EQ(atomic_load(&f->total_runs), n * expected);
+    CHECK_EQ(atomic_load(&f->run_cancel_enabled), 0);
 }
 
 static long live_thread_count(void)
@@ -420,16 +430,15 @@ static void test_bare_ops(void)
 }
 
 /*
- * REGRESSION (CON-2 / RES-2): a broken completion barrier must poison the pool
+ * REGRESSION (ERR-1 / CON-2 / RES-2): a pthread gate failure must poison the pool
  * AND stop its threads. Leaving up to UP_THREADS_MAX workers parked on the gate
  * for the rest of playback — holding their graphs and scratch while every later
  * frame short-circuits — is the retention-after-permanent-failure this pool
- * exists to prevent. The injected fault suppresses the wake broadcast and fails
- * the barrier wait together, exactly as the real pools' harness does.
+ * exists to prevent. Exercise both checked pthread failures on the dispatch
+ * path: taking the gate lock and broadcasting the armed generation.
  */
-static void test_barrier_failure_poisons_and_stops(void)
+static void check_gate_failure_poisons_and_stops(void (*inject)(void))
 {
-    BEGIN("broken barrier: dispatch fails, pool poisoned, threads joined");
     fake_pool_t f;
     fake_init(&f, &partial_ops, 3);
     CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
@@ -437,7 +446,7 @@ static void test_barrier_failure_poisons_and_stops(void)
     const long with_workers = live_thread_count();
     CHECK(with_workers >= 3);
 
-    barrier_fault_inject_next_dispatch();
+    inject();
     CHECK_EQ(up_worker_pool_dispatch(&f.pool), -1);
     CHECK_EQ(barrier_fault_injection_consumed(), 1);
     CHECK_EQ(up_worker_pool_broken(&f.pool), 1);
@@ -448,6 +457,42 @@ static void test_barrier_failure_poisons_and_stops(void)
     up_worker_pool_poison(&f.pool);
     up_worker_pool_destroy(&f.pool);
     CHECK_EQ(f.release_calls, 3);
+}
+
+static void test_gate_failures_poison_and_stop(void)
+{
+    BEGIN("pthread gate failures: dispatch fails, pool poisoned, threads joined");
+    check_gate_failure_poisons_and_stops(barrier_fault_inject_next_mutex_lock);
+    check_gate_failure_poisons_and_stops(barrier_fault_inject_next_dispatch);
+    END();
+}
+
+/* The failure can occur inside stop itself, after workers are already asleep.
+ * Neither a failed lock nor a failed broadcast may strand the subsequent join. */
+static void check_exit_failure_cancels_and_stops(void (*inject)(void))
+{
+    fake_pool_t f;
+    fake_init(&f, &partial_ops, 3);
+    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
+
+    const long with_workers = live_thread_count();
+    CHECK(with_workers >= 3);
+    inject();
+    up_worker_pool_poison(&f.pool);
+
+    CHECK_EQ(barrier_fault_injection_consumed(), 1);
+    CHECK_EQ(await_thread_count(with_workers - 3), with_workers - 3);
+    CHECK_EQ(pthread_mutex_trylock(&f.pool.gate.lock), 0);
+    CHECK_EQ(pthread_mutex_unlock(&f.pool.gate.lock), 0);
+    up_worker_pool_destroy(&f.pool);
+    CHECK_EQ(f.release_calls, 3);
+}
+
+static void test_exit_failures_cancel_and_stop(void)
+{
+    BEGIN("pthread exit failures: cancellation prevents stuck joins");
+    check_exit_failure_cancels_and_stops(barrier_fault_inject_next_mutex_lock);
+    check_exit_failure_cancels_and_stops(barrier_fault_inject_next_dispatch);
     END();
 }
 
@@ -479,7 +524,8 @@ int main(void)
     test_alloc_failure();
     test_worker_count_bounds();
     test_bare_ops();
-    test_barrier_failure_poisons_and_stops();
+    test_gate_failures_poison_and_stop();
+    test_exit_failures_cancel_and_stop();
     test_destroy_without_start();
 
     return test_harness_report();

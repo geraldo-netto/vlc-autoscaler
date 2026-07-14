@@ -117,7 +117,8 @@ TEST_CFLAGS  := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefin
 TEST_LDFLAGS := -fsanitize=address,undefined
 # The done barrier waits with a deadline (CONC-1), so sem_timedwait is the
 # call the fault injector intercepts.
-BARRIER_WRAP_LDFLAGS := -Wl,--wrap=sem_timedwait -Wl,--wrap=sem_post -Wl,--wrap=pthread_cond_broadcast
+BARRIER_WRAP_LDFLAGS := -Wl,--wrap=sem_timedwait -Wl,--wrap=sem_post \
+	-Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_cond_broadcast
 # test_threading fault-injects pthread_cond_init to exercise gate-init cleanup.
 THREADING_WRAP_LDFLAGS := -Wl,--wrap=pthread_cond_init $(BARRIER_WRAP_LDFLAGS)
 USM_POOL_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc

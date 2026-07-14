@@ -167,8 +167,13 @@ static inline void *up__pool_worker_main(void *arg)
 {
     up_pool_thread_t *t = (up_pool_thread_t *)arg;
     up_worker_pool_t *p = t->pool;
+    if (pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL) != 0) {
+        up__pool_gate_report_worker_failure(&p->gate);
+        return NULL;
+    }
     for (;;) {
-        if (!up_pool_gate_wait_for_go(&p->gate, &t->seen_gen)) break;
+        const int gate_rc = up_pool_gate_wait_for_go(&p->gate, &t->seen_gen);
+        if (gate_rc <= 0) break;
         p->ops->run(p->owner, t->index);
         up_pool_gate_worker_done(&p->gate);
     }
@@ -229,12 +234,26 @@ static inline int up__pool_construct_all(up_worker_pool_t *p)
     return built;
 }
 
+static inline void up__pool_cancel_started(up_worker_pool_t *p)
+{
+    for (int i = 0; i < p->n_pref; i++) {
+        if (!p->threads[i].started) continue;
+        if (pthread_cancel(p->threads[i].thread) != 0) p->broken = true;
+    }
+}
+
 /* Tell every started worker to finish any unseen generation, then exit, and
- * reap them. Safe on a pool that never started or already stopped. */
+ * reap them. If the gate itself cannot issue that wake, deferred cancellation
+ * is the independent termination path; threading.h releases the mutex that
+ * pthread_cond_wait reacquires before running cancellation cleanup. Safe on a
+ * pool that never started or already stopped. */
 static inline void up_worker_pool_stop(up_worker_pool_t *p)
 {
     if (p->threads == NULL) return;
-    up_pool_gate_request_exit(&p->gate);
+    if (up_pool_gate_request_exit(&p->gate) != 0) {
+        p->broken = true;
+        up__pool_cancel_started(p);
+    }
     for (int i = 0; i < p->n_pref; i++) {
         if (!p->threads[i].started) continue;
         pthread_join(p->threads[i].thread, NULL);
@@ -355,10 +374,16 @@ static inline int up_worker_pool_dispatch(up_worker_pool_t *p)
         return 0;
     }
 
-    up_pool_gate_lock(&p->gate);
+    if (up_pool_gate_lock(&p->gate) != 0) {
+        up_worker_pool_poison(p);
+        return -1;
+    }
     up_pool_gate_arm_locked(&p->gate, p->n_workers);
     if (p->ops->arm) p->ops->arm(p->owner, p->n_workers);
-    up_pool_gate_unlock_broadcast(&p->gate);
+    if (up_pool_gate_unlock_broadcast(&p->gate) != 0) {
+        up_worker_pool_poison(p);
+        return -1;
+    }
 
     if (up_pool_gate_wait_all(&p->gate) == 0) return 0;
 

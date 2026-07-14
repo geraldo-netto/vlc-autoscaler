@@ -339,7 +339,7 @@ typedef struct {
 static void *gate_worker_main(void *arg)
 {
     gate_worker_t *w = (gate_worker_t *)arg;
-    while (up_pool_gate_wait_for_go(w->gate, &w->seen_gen)) {
+    while (up_pool_gate_wait_for_go(w->gate, &w->seen_gen) > 0) {
         atomic_fetch_add_explicit(&w->runs, 1, memory_order_relaxed);
         up_pool_gate_worker_done(w->gate);
     }
@@ -367,13 +367,13 @@ static void test_pool_gate_dispatch_cycles(void)
         gate_worker_start(&ws[i], &gate);
 
     for (int gen = 0; gen < M; gen++) {
-        up_pool_gate_lock(&gate);
+        CHECK_EQ(up_pool_gate_lock(&gate), 0);
         up_pool_gate_arm_locked(&gate, N);
-        up_pool_gate_unlock_broadcast(&gate);
+        CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
         CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
     }
 
-    up_pool_gate_request_exit(&gate);
+    CHECK_EQ(up_pool_gate_request_exit(&gate), 0);
     for (int i = 0; i < N; i++) {
         pthread_join(ws[i].thread, NULL);
         CHECK_EQ(atomic_load(&ws[i].runs), M);
@@ -382,6 +382,23 @@ static void test_pool_gate_dispatch_cycles(void)
     up_pool_gate_destroy(&gate);
     up_pool_gate_destroy(&gate);  /* double destroy must be a no-op */
     CHECK_EQ(up_pool_gate_ready(&gate), 0);
+    END();
+}
+
+static void test_pool_gate_cancel_releases_wait_lock(void)
+{
+    BEGIN("pool gate: cancelling a waiter releases the gate lock");
+    up_pool_gate_t gate;
+    CHECK_EQ(up_pool_gate_init(&gate), 0);
+
+    static gate_worker_t w;
+    gate_worker_start(&w, &gate);
+    CHECK_EQ(pthread_cancel(w.thread), 0);
+    CHECK_EQ(pthread_join(w.thread, NULL), 0);
+    CHECK_EQ(pthread_mutex_trylock(&gate.lock), 0);
+    CHECK_EQ(pthread_mutex_unlock(&gate.lock), 0);
+
+    up_pool_gate_destroy(&gate);
     END();
 }
 
@@ -400,10 +417,10 @@ static void test_pool_gate_exit_completes_unseen(void)
 
     /* Arm a dispatch AND request exit before the worker even starts: it
      * must run the unseen generation exactly once, then exit. */
-    up_pool_gate_lock(&gate);
+    CHECK_EQ(up_pool_gate_lock(&gate), 0);
     up_pool_gate_arm_locked(&gate, 1);
-    up_pool_gate_unlock_broadcast(&gate);
-    up_pool_gate_request_exit(&gate);
+    CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
+    CHECK_EQ(up_pool_gate_request_exit(&gate), 0);
 
     CHECK_EQ(pthread_create(&w.thread, NULL, gate_worker_main, &w), 0);
     CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
@@ -511,14 +528,28 @@ static void test_pool_gate_wait_times_out(void)
     struct timespec t0;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    up_pool_gate_lock(&gate);
+    CHECK_EQ(up_pool_gate_lock(&gate), 0);
     up_pool_gate_arm_locked(&gate, 1);      /* one worker owed... */
-    up_pool_gate_unlock_broadcast(&gate);   /* ...and none exists */
+    CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0); /* ...and none exists */
 
     CHECK_EQ(up_pool_gate_wait_all(&gate), -1);
     const long waited = elapsed_ms(&t0);
     CHECK(waited >= UP_POOL_BARRIER_TIMEOUT_MS / 2);   /* it really waited */
     CHECK(waited < 10 * UP_POOL_BARRIER_TIMEOUT_MS);   /* and it really returned */
+
+    up_pool_gate_destroy(&gate);
+    END();
+}
+
+static void test_pool_gate_wait_error_is_reported(void)
+{
+    BEGIN("pool gate: a semaphore wait error breaks the dispatch");
+    up_pool_gate_t gate;
+    CHECK_EQ(up_pool_gate_init(&gate), 0);
+
+    barrier_fault_inject_next_sem_wait();
+    CHECK_EQ(up_pool_gate_wait_all(&gate), -1);
+    CHECK_EQ(barrier_fault_injection_consumed(), 1);
 
     up_pool_gate_destroy(&gate);
     END();
@@ -541,13 +572,13 @@ static void test_pool_gate_post_retry_recovers(void)
     gate_worker_start(&w, &gate);
 
     barrier_fault_inject_sem_post_failures(UP_POOL_POST_RETRIES - 1);
-    up_pool_gate_lock(&gate);
+    CHECK_EQ(up_pool_gate_lock(&gate), 0);
     up_pool_gate_arm_locked(&gate, 1);
-    up_pool_gate_unlock_broadcast(&gate);
+    CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
     CHECK_EQ(up_pool_gate_wait_all(&gate), 0);   /* retry got the post through */
     CHECK_EQ(atomic_load(&w.runs), 1);
 
-    up_pool_gate_request_exit(&gate);
+    CHECK_EQ(up_pool_gate_request_exit(&gate), 0);
     pthread_join(w.thread, NULL);
     up_pool_gate_destroy(&gate);
     END();
@@ -569,19 +600,19 @@ static void test_pool_gate_post_failure_survives_retries(void)
     gate_worker_start(&w, &gate);
 
     barrier_fault_inject_next_sem_post();   /* fails every retry */
-    up_pool_gate_lock(&gate);
+    CHECK_EQ(up_pool_gate_lock(&gate), 0);
     up_pool_gate_arm_locked(&gate, 1);
-    up_pool_gate_unlock_broadcast(&gate);
+    CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
     CHECK_EQ(up_pool_gate_wait_all(&gate), -1);
     CHECK_EQ(atomic_load(&w.runs), 1);      /* the worker DID run... */
     /* ...the accounting is what we can no longer trust. One-shot: the flag is
      * consumed, so a clean dispatch afterwards succeeds again. */
-    up_pool_gate_lock(&gate);
+    CHECK_EQ(up_pool_gate_lock(&gate), 0);
     up_pool_gate_arm_locked(&gate, 1);
-    up_pool_gate_unlock_broadcast(&gate);
+    CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
     CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
 
-    up_pool_gate_request_exit(&gate);
+    CHECK_EQ(up_pool_gate_request_exit(&gate), 0);
     pthread_join(w.thread, NULL);
     up_pool_gate_destroy(&gate);
     END();
@@ -595,13 +626,13 @@ static void test_pool_gate_request_exit_guards(void)
 {
     BEGIN("gate request_exit: no-op on an uninitialized gate, idempotent");
     up_pool_gate_t gate = { 0 };
-    up_pool_gate_request_exit(&gate);   /* never inited: must not touch lock */
+    CHECK_EQ(up_pool_gate_request_exit(&gate), 0);
     CHECK_EQ(gate.exit_requested, 0);
 
     CHECK_EQ(up_pool_gate_init(&gate), 0);
-    up_pool_gate_request_exit(&gate);
+    CHECK_EQ(up_pool_gate_request_exit(&gate), 0);
     CHECK_EQ(gate.exit_requested, 1);
-    up_pool_gate_request_exit(&gate);   /* idempotent */
+    CHECK_EQ(up_pool_gate_request_exit(&gate), 0);   /* idempotent */
     CHECK_EQ(gate.exit_requested, 1);
     up_pool_gate_destroy(&gate);
     END();
@@ -630,12 +661,14 @@ int main(void)
     test_detect_cores_invariants();
 #endif
     test_pool_gate_dispatch_cycles();
+    test_pool_gate_cancel_releases_wait_lock();
     test_pool_gate_exit_completes_unseen();
     test_pool_gate_post_failure_reported();
     test_pool_gate_request_exit_guards();
     test_pool_gate_post_retry_recovers();
     test_pool_gate_post_failure_survives_retries();
     test_pool_gate_wait_times_out();
+    test_pool_gate_wait_error_is_reported();
     test_detect_then_decide();
     test_explicit_at_max_boundary();
 

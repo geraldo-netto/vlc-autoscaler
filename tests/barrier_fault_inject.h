@@ -14,6 +14,9 @@ static atomic_int g_fail_next_sem_wait;
 static atomic_int g_fail_sem_post_left;    /* consecutive posts still to fail */
 static atomic_int g_sem_post_burst_woke;   /* real post already issued */
 static atomic_int g_suppress_next_broadcast;
+static atomic_int g_fail_next_broadcast;
+static atomic_int g_fail_next_mutex_lock;
+static pthread_t  g_mutex_lock_target;
 
 /* The done barrier waits with a deadline (CONC-1), so that is the call to
  * intercept — EINVAL stands in for a destroyed/corrupt semaphore. */
@@ -68,10 +71,24 @@ static inline void barrier_fault_inject_next_sem_post(void)
 int __real_pthread_cond_broadcast(pthread_cond_t *cond);
 int __wrap_pthread_cond_broadcast(pthread_cond_t *cond)
 {
+    if (atomic_exchange_explicit(&g_fail_next_broadcast, 0,
+                                 memory_order_relaxed))
+        return EINVAL;
     if (atomic_exchange_explicit(&g_suppress_next_broadcast, 0,
                                  memory_order_relaxed))
         return 0;
     return __real_pthread_cond_broadcast(cond);
+}
+
+int __real_pthread_mutex_lock(pthread_mutex_t *mutex);
+int __wrap_pthread_mutex_lock(pthread_mutex_t *mutex)
+{
+    if (atomic_load_explicit(&g_fail_next_mutex_lock, memory_order_acquire)
+        && pthread_equal(pthread_self(), g_mutex_lock_target)
+        && atomic_exchange_explicit(&g_fail_next_mutex_lock, 0,
+                                    memory_order_relaxed))
+        return EINVAL;
+    return __real_pthread_mutex_lock(mutex);
 }
 
 /* Swallow the next dispatch's wake WITHOUT failing the wait: no worker runs,
@@ -85,13 +102,27 @@ static inline void barrier_fault_inject_lose_next_wake(void)
 
 static inline void barrier_fault_inject_next_dispatch(void)
 {
-    barrier_fault_inject_lose_next_wake();
+    atomic_store_explicit(&g_fail_next_broadcast, 1, memory_order_relaxed);
+}
+
+static inline void barrier_fault_inject_next_mutex_lock(void)
+{
+    g_mutex_lock_target = pthread_self();
+    atomic_store_explicit(&g_fail_next_mutex_lock, 1, memory_order_release);
+}
+
+static inline void barrier_fault_inject_next_sem_wait(void)
+{
     atomic_store_explicit(&g_fail_next_sem_wait, 1, memory_order_relaxed);
 }
 
 static inline int barrier_fault_injection_consumed(void)
 {
     return atomic_load_explicit(&g_suppress_next_broadcast,
+                                memory_order_relaxed) == 0
+        && atomic_load_explicit(&g_fail_next_broadcast,
+                                memory_order_relaxed) == 0
+        && atomic_load_explicit(&g_fail_next_mutex_lock,
                                 memory_order_relaxed) == 0
         && atomic_load_explicit(&g_fail_next_sem_wait,
                                 memory_order_relaxed) == 0;
