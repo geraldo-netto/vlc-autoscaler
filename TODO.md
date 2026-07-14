@@ -106,7 +106,6 @@ problem; another business/domain pattern would add structure without a domain ne
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| REL-2 | open | S | `scripts/bench_matrix.sh:23-27` lacks `pipefail` and never validates the sample count, so a failed benchmark process can be hidden by `cut` and a “median” can be emitted from incomplete/non-numeric data. | Capture each run explicitly, require exactly three numeric samples, and fail the matrix on any benchmark failure. |
 
 ## portability/standards conformance
 
