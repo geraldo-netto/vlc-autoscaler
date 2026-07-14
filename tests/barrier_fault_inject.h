@@ -16,11 +16,12 @@ static atomic_int g_interrupt_every_sem_wait;
 static atomic_int g_sem_clockwait_seen;
 static atomic_int g_sem_clockwait_wrong_clock;
 static atomic_int g_fail_sem_post_left;    /* consecutive posts still to fail */
-static atomic_int g_sem_post_burst_woke;   /* real post already issued */
 static atomic_int g_suppress_next_broadcast;
 static atomic_int g_fail_next_broadcast;
 static atomic_int g_fail_next_mutex_lock;
+static atomic_int g_fail_next_worker_mutex_lock;
 static pthread_t  g_mutex_lock_target;
+static pthread_t  g_mutex_lock_excluded;
 
 static inline int barrier_fault_injected_wait_errno(void)
 {
@@ -68,23 +69,15 @@ int __wrap_sem_trywait(sem_t *sem)
 }
 #endif
 
-/*
- * CON-2: emulate sem_post's only real failure mode, EOVERFLOW — the count is
- * already at SEM_VALUE_MAX, so it stays positive and the waiter still wakes,
- * but no further post can land. The finisher retries the post
- * (UP_POOL_POST_RETRIES), and a real EOVERFLOW fails every one of them: inject
- * a burst, not a single failure, or the retry would paper over the fault the
- * test is asserting on. One real post per burst does the waking.
- */
+/* A failed attempt must not create an extra synthetic post: a transient burst
+ * eventually posts exactly once on its successful retry, while a persistent
+ * burst exercises the bounded no-post recovery path deterministically. */
 int __real_sem_post(sem_t *sem);
 int __wrap_sem_post(sem_t *sem)
 {
     if (atomic_load_explicit(&g_fail_sem_post_left, memory_order_relaxed) > 0) {
         atomic_fetch_sub_explicit(&g_fail_sem_post_left, 1,
                                   memory_order_relaxed);
-        if (!atomic_exchange_explicit(&g_sem_post_burst_woke, 1,
-                                      memory_order_relaxed))
-            (void)__real_sem_post(sem);
         errno = EOVERFLOW;
         return -1;
     }
@@ -96,7 +89,6 @@ int __wrap_sem_post(sem_t *sem)
  * a real EOVERFLOW, which no retry can clear. */
 static inline void barrier_fault_inject_sem_post_failures(int n)
 {
-    atomic_store_explicit(&g_sem_post_burst_woke, 0, memory_order_relaxed);
     atomic_store_explicit(&g_fail_sem_post_left, n, memory_order_relaxed);
 }
 
@@ -125,6 +117,12 @@ int __wrap_pthread_mutex_lock(pthread_mutex_t *mutex)
         && atomic_exchange_explicit(&g_fail_next_mutex_lock, 0,
                                     memory_order_relaxed))
         return EINVAL;
+    if (atomic_load_explicit(&g_fail_next_worker_mutex_lock,
+                             memory_order_acquire)
+        && !pthread_equal(pthread_self(), g_mutex_lock_excluded)
+        && atomic_exchange_explicit(&g_fail_next_worker_mutex_lock, 0,
+                                    memory_order_relaxed))
+        return EINVAL;
     return __real_pthread_mutex_lock(mutex);
 }
 
@@ -146,6 +144,13 @@ static inline void barrier_fault_inject_next_mutex_lock(void)
 {
     g_mutex_lock_target = pthread_self();
     atomic_store_explicit(&g_fail_next_mutex_lock, 1, memory_order_release);
+}
+
+static inline void barrier_fault_inject_next_worker_mutex_lock(void)
+{
+    g_mutex_lock_excluded = pthread_self();
+    atomic_store_explicit(&g_fail_next_worker_mutex_lock, 1,
+                          memory_order_release);
 }
 
 static inline void barrier_fault_inject_next_sem_wait(void)
@@ -179,6 +184,8 @@ static inline int barrier_fault_injection_consumed(void)
         && atomic_load_explicit(&g_fail_next_broadcast,
                                 memory_order_relaxed) == 0
         && atomic_load_explicit(&g_fail_next_mutex_lock,
+                                memory_order_relaxed) == 0
+        && atomic_load_explicit(&g_fail_next_worker_mutex_lock,
                                 memory_order_relaxed) == 0
         && atomic_load_explicit(&g_fail_next_sem_wait,
                                 memory_order_relaxed) == 0

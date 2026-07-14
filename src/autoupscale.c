@@ -935,32 +935,33 @@ static void LogProbeVerdict( filter_t *p_filter, filter_sys_t *p_sys )
  * pool's OBS-2)
  * warns once and disables USM for the rest of playback so every later
  * frame skips the dead call. */
-static void ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
-                               const picture_t *p_out )
+static int ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
+                              const picture_t *p_out )
 {
     if( p_sys->usm_amount_q8 <= 0 || !p_sys->usm_pool
         || p_out->i_planes < 1 || p_sys->usm_skip_sharp )
-        return;
+        return UP_USM_APPLY_OK;
 
     const scaler_ctx_t *sc = &p_sys->scaler;
     up_picture_view_t view;
     const up_picture_region_t region = up_scaler_dst_region(sc);
     if( !up_picture_view_init( &view, p_out, sc->chroma, &region ) )
-        return;
+        return UP_USM_APPLY_OK;
 
     uint8_t *pixels = view.plane[0].pixels;
     const int pitch = view.plane[0].pitch;
-    if( up_usm_pool_apply(
+    const int status = up_usm_pool_apply(
             p_sys->usm_pool,
             pixels, pitch,
             pixels, pitch,        /* in-place */
-            p_sys->usm_amount_q8 ) != 0 )
+            p_sys->usm_amount_q8 );
+    if( status != UP_USM_APPLY_OK )
     {
         msg_Info( p_filter,   /* OBS-2: msg_Warn is suppressed by default */
                   "AutoUpscale: USM pool initialization or dispatch failed; "
                   "sharpening disabled for this playback" );
         p_sys->usm_amount_q8 = 0;
-        return;
+        return status;
     }
     if( !p_sys->usm_threads_logged )
     {
@@ -969,6 +970,7 @@ static void ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
                   "AutoUpscale: USM pool running %d worker thread(s)",
                   up_usm_pool_effective_threads( p_sys->usm_pool ) );
     }
+    return UP_USM_APPLY_OK;
 }
 
 /* OBS-3: every OBS_STATS_INTERVAL_NS, log a one-line long-run summary so
@@ -1027,6 +1029,25 @@ static void RecordDrop( filter_t *p_filter, filter_sys_t *p_sys )
 {
     p_sys->dropped_count++;
     MaybeLogStats( p_filter, p_sys, monotonic_ns() );
+}
+
+static picture_t *FinishScaledFrame( filter_t *p_filter, filter_sys_t *p_sys,
+                                     picture_t *p_in, picture_t *p_out,
+                                     int64_t t_start )
+{
+    if( ApplyUsmIfEnabled( p_filter, p_sys, p_out )
+        == UP_USM_APPLY_OUTPUT_UNCERTAIN )
+    {
+        RecordDrop( p_filter, p_sys );
+        picture_Release( p_out );
+        picture_Release( p_in );
+        return NULL;
+    }
+
+    RecordPerf( p_filter, p_sys, t_start, monotonic_ns() );
+    picture_CopyProperties( p_out, p_in );
+    picture_Release( p_in );
+    return p_out;
 }
 
 /* SYS-2: one-shot runtime fallback to swscale after the active backend
@@ -1137,12 +1158,7 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
         return NULL;
     }
 
-    ApplyUsmIfEnabled( p_filter, p_sys, p_out );
-    RecordPerf( p_filter, p_sys, t_start, monotonic_ns() );
-
-    picture_CopyProperties( p_out, p_in );
-    picture_Release( p_in );
-    return p_out;
+    return FinishScaledFrame( p_filter, p_sys, p_in, p_out, t_start );
 }
 
 /*****************************************************************************

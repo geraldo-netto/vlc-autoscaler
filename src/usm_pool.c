@@ -500,8 +500,9 @@ int up_usm_pool_apply(usm_pool_t *p,
                       int amount_q8)
 {
     if (usm_pool_validate_args(p, dst, dst_stride, src, src_stride) != 0)
-        return -1;
-    if (up_worker_pool_broken(&p->pool)) return -1;
+        return UP_USM_APPLY_FAILED_UNCHANGED;
+    if (up_worker_pool_broken(&p->pool))
+        return UP_USM_APPLY_FAILED_UNCHANGED;
 
     amount_q8 = up_usm__clamp_amount_q8(amount_q8);
 
@@ -509,13 +510,15 @@ int up_usm_pool_apply(usm_pool_t *p,
     if (amount_q8 == 0) {
         up_usm__apply_identity(dst, dst_stride, src, src_stride,
                                p->width, p->height);
-        return 0;
+        return UP_USM_APPLY_OK;
     }
 
-    if (up_worker_pool_ensure_started(&p->pool) != 0) return -1;
+    if (up_worker_pool_ensure_started(&p->pool) != 0)
+        return UP_USM_APPLY_FAILED_UNCHANGED;
 
     usm_pool_set_per_frame(p, dst, dst_stride, src, src_stride, amount_q8);
-    return up_worker_pool_dispatch(&p->pool);
+    return up_worker_pool_dispatch(&p->pool) == 0
+        ? UP_USM_APPLY_OK : UP_USM_APPLY_OUTPUT_UNCERTAIN;
 }
 
 int up_usm_pool_effective_threads(const usm_pool_t *p)

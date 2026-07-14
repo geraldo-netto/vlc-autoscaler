@@ -262,9 +262,8 @@ static void test_inplace_matches_oracle(void)
     END();
 }
 
-/* CON-2 end-to-end: a sem_post failure on the done barrier (emulated
- * EOVERFLOW — the wake still happens) must fail that dispatch and
- * poison the pool, never hang or silently succeed. */
+/* CON-2 end-to-end: a persistent sem_post failure on the done barrier must
+ * fail that dispatch and poison the pool, never hang or silently succeed. */
 static void test_barrier_post_failure_poisons_pool(void)
 {
     BEGIN("done-barrier sem_post failure poisons the pool (CON-2)");
@@ -277,9 +276,11 @@ static void test_barrier_post_failure_poisons_pool(void)
     if (p) {
         CHECK(up_usm_pool_apply(p, buf, W, buf, W, amount) == 0);
         barrier_fault_inject_next_sem_post();
-        CHECK(up_usm_pool_apply(p, buf, W, buf, W, amount) == -1);
+        CHECK_EQ(up_usm_pool_apply(p, buf, W, buf, W, amount),
+                 UP_USM_APPLY_OUTPUT_UNCERTAIN);
         /* Sticky: the pool stays broken. */
-        CHECK(up_usm_pool_apply(p, buf, W, buf, W, amount) == -1);
+        CHECK_EQ(up_usm_pool_apply(p, buf, W, buf, W, amount),
+                 UP_USM_APPLY_FAILED_UNCHANGED);
         up_usm_pool_destroy(p);
     }
     END();
@@ -683,7 +684,10 @@ static void test_apply_lazy_init_alloc_failure_sticky(void)
     BEGIN("apply: injected lazy-init allocation failure is sticky");
     enum { W = 8, H = 8 };
     const uint8_t src[W * H] = {0};
-    uint8_t dst[W * H] = {0};
+    uint8_t dst[W * H];
+    uint8_t unchanged[W * H];
+    memset(dst, 0xA5, sizeof dst);
+    memcpy(unchanged, dst, sizeof dst);
     usm_pool_t *p = up_usm_pool_create(1, W, H, 0);
     CHECK(p != NULL);
     if (!p) { END(); return; }
@@ -693,13 +697,15 @@ static void test_apply_lazy_init_alloc_failure_sticky(void)
     fail_next_aligned_alloc();
 
     int rc1 = up_usm_pool_apply(p, dst, W, src, W, amount);
-    CHECK(rc1 == -1);
+    CHECK(rc1 == UP_USM_APPLY_FAILED_UNCHANGED);
+    CHECK(memcmp(dst, unchanged, sizeof dst) == 0);
     CHECK(aligned_alloc_failure_consumed());
     CHECK(aligned_alloc_call_count() == calls_before + 1);
 
     unsigned calls_after_failure = aligned_alloc_call_count();
     int rc2 = up_usm_pool_apply(p, dst, W, src, W, amount);
-    CHECK(rc2 == -1);
+    CHECK(rc2 == UP_USM_APPLY_FAILED_UNCHANGED);
+    CHECK(memcmp(dst, unchanged, sizeof dst) == 0);
     CHECK(aligned_alloc_call_count() == calls_after_failure);
 
     up_usm_pool_destroy(p);
@@ -733,16 +739,60 @@ static void test_barrier_failure_drains_and_sticks(void)
     CHECK(up_usm_pool_apply(pool, inplace, W, inplace, W, amount) == 0);
     memcpy(inplace, src, bytes);
     barrier_fault_inject_next_dispatch();
-    CHECK(up_usm_pool_apply(pool, inplace, W, inplace, W, amount) == -1);
+    CHECK(up_usm_pool_apply(pool, inplace, W, inplace, W, amount)
+          == UP_USM_APPLY_OUTPUT_UNCERTAIN);
     CHECK(memcmp(inplace, expected, bytes) == 0);
     CHECK(barrier_fault_injection_consumed());
 
     memset(inplace, 0xA5, bytes);
-    CHECK(up_usm_pool_apply(pool, inplace, W, src, W, 0) == -1);
+    CHECK(up_usm_pool_apply(pool, inplace, W, src, W, 0)
+          == UP_USM_APPLY_FAILED_UNCHANGED);
     for (size_t i = 0; i < bytes; i++) CHECK(inplace[i] == 0xA5);
 
     up_usm_pool_destroy(pool);
     free(src); free(expected); free(inplace); free(workspace);
+    END();
+}
+
+static void test_worker_gate_failure_marks_output_uncertain(void)
+{
+    BEGIN("worker gate failure marks partially written output uncertain");
+    enum { W = 64, H = 64 };
+    const uint8_t src[W * H] = {0};
+    uint8_t dst[W * H];
+    uint8_t unchanged[W * H];
+    memset(dst, 0xA5, sizeof dst);
+    memcpy(unchanged, dst, sizeof dst);
+
+    usm_pool_t *pool = up_usm_pool_create(4, W, H, 0);
+    CHECK(pool != NULL);
+    if (!pool) { END(); return; }
+
+    barrier_fault_inject_next_worker_mutex_lock();
+    CHECK(up_usm_pool_apply(pool, dst, W, src, W,
+                            up_usm_amount_pct_to_q8(30))
+          == UP_USM_APPLY_OUTPUT_UNCERTAIN);
+    CHECK(barrier_fault_injection_consumed());
+
+    size_t written = 0;
+    size_t untouched = 0;
+    size_t unexpected = 0;
+    for (size_t i = 0; i < sizeof dst; i++) {
+        if (dst[i] == 0) written++;
+        else if (dst[i] == 0xA5) untouched++;
+        else unexpected++;
+    }
+    CHECK(written > 0);
+    CHECK(untouched > 0);
+    CHECK(unexpected == 0);
+
+    memset(dst, 0xA5, sizeof dst);
+    CHECK(up_usm_pool_apply(pool, dst, W, src, W,
+                            up_usm_amount_pct_to_q8(30))
+          == UP_USM_APPLY_FAILED_UNCHANGED);
+    CHECK(memcmp(dst, unchanged, sizeof dst) == 0);
+
+    up_usm_pool_destroy(pool);
     END();
 }
 
@@ -817,6 +867,7 @@ int main(void)
     test_create_stripe_min_rows_boundaries();
     test_apply_lazy_init_alloc_failure_sticky();
     test_barrier_failure_drains_and_sticks();
+    test_worker_gate_failure_marks_output_uncertain();
     test_destroy_null_safe();
     test_destroy_unused_pool();
     test_effective_threads_query();

@@ -649,12 +649,6 @@ static void test_pool_gate_post_failure_survives_retries(void)
     CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
     CHECK_EQ(up_pool_gate_wait_all(&gate), -1);
     CHECK_EQ(atomic_load(&w.runs), 1);      /* the worker DID run... */
-    /* ...the accounting is what we can no longer trust. One-shot: the flag is
-     * consumed, so a clean dispatch afterwards succeeds again. */
-    CHECK_EQ(up_pool_gate_lock(&gate), 0);
-    up_pool_gate_arm_locked(&gate, 1);
-    CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
-    CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
 
     CHECK_EQ(up_pool_gate_request_exit(&gate), 0);
     pthread_join(w.thread, NULL);

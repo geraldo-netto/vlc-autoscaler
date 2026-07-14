@@ -45,6 +45,10 @@
 
 typedef struct usm_pool_s usm_pool_t;
 
+#define UP_USM_APPLY_OK                 0
+#define UP_USM_APPLY_FAILED_UNCHANGED  -1
+#define UP_USM_APPLY_OUTPUT_UNCERTAIN  -2
+
 /*
  * Create a USM pool sized for width * height frames with up to
  * n_threads workers. n_threads is clamped to [1, height/stripe_min_rows]
@@ -67,11 +71,13 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
  * snapshots each stripe's two boundary halo rows before dispatch so
  * neighbouring workers never read a row another worker is writing
  * (SYS-4). Same-base/different-stride calls are rejected; other partial
- * overlap (different base pointers whose ranges overlap) is unsupported. Returns 0 on
- * success, -1 if the pool is NULL, the strides are too small or
- * mismatched while aliased, lazy thread spawn fails, or the completion
- * barrier fails. A barrier failure drains and joins the workers before
- * returning and leaves the pool in a sticky failed state.
+ * overlap (different base pointers whose ranges overlap) is unsupported.
+ * Returns UP_USM_APPLY_OK on success,
+ * UP_USM_APPLY_FAILED_UNCHANGED when validation or lazy initialization fails
+ * before dst is touched, and UP_USM_APPLY_OUTPUT_UNCERTAIN when dispatch fails
+ * after workers may have written dst. The latter drains and joins the workers,
+ * leaves the pool in a sticky failed state, and requires the caller to discard
+ * the destination frame.
  *
  * (Convention matches the rest of the project: 0 = success, negative
  * = failure. Was inverted in earlier versions; flipped 2026-05.)
