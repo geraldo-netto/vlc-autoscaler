@@ -77,7 +77,6 @@ the maximum CCN is 10.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| DUP-1 | open | M | Supported-chroma and subsampling knowledge is repeated across `up_chroma_has_y_plane` / `up_chroma_subsample` (`src/chroma_classify.h:104-144`), the picture layout table (`src/picture_view.h:62-99`), and backend maps (`src/scaler_swscale.c:43-58`, `src/scaler_zimg_chroma.h:37-59`). | A format addition can enable probing/USM while leaving crop/view/backend handling inconsistent. Centralize a neutral chroma descriptor and derive predicates/adapters from it. |
 | DUP-2 | open | S | `k_stats_vars` is the advertised single source of stat-variable names (`src/autoupscale.c:639-647`), but `MaybeLogStats` repeats the same three strings at `:995-1002`. | Use indexed descriptors containing the name and value source, or at minimum index `k_stats_vars` in the export calls. |
 
 ## architecture/modularity/SOLID

@@ -5,13 +5,15 @@
 #include <vlc_common.h>
 #include <vlc_picture.h>
 
+#include "chroma_classify.h"
+
 #include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
-#define UP_PICTURE_VIEW_MAX_PLANES 4
+#define UP_PICTURE_VIEW_MAX_PLANES UP_CHROMA_MAX_PLANES
 
 typedef struct
 {
@@ -39,15 +41,7 @@ typedef struct
     int height;
 } up_picture_region_t;
 
-typedef struct
-{
-    vlc_fourcc_t chroma;
-    uint8_t plane_count;
-    uint8_t x_group_pixels[UP_PICTURE_VIEW_MAX_PLANES];
-    uint8_t x_group_bytes[UP_PICTURE_VIEW_MAX_PLANES];
-    uint8_t y_group_pixels[UP_PICTURE_VIEW_MAX_PLANES];
-    uint8_t pixel_pitch[UP_PICTURE_VIEW_MAX_PLANES];
-} up_picture_format_layout_t;
+typedef up_chroma_descriptor_t up_picture_format_layout_t;
 
 typedef struct
 {
@@ -62,40 +56,7 @@ typedef struct
 static inline const up_picture_format_layout_t *
 up_picture_format_layout(vlc_fourcc_t chroma)
 {
-    static const up_picture_format_layout_t layouts[] = {
-        { VLC_CODEC_I420, 3, { 1, 2, 2, 0 }, { 1, 1, 1, 0 },
-          { 1, 2, 2, 0 },
-          { 1, 1, 1, 0 } },
-        { VLC_CODEC_YV12, 3, { 1, 2, 2, 0 }, { 1, 1, 1, 0 },
-          { 1, 2, 2, 0 },
-          { 1, 1, 1, 0 } },
-        { VLC_CODEC_I422, 3, { 1, 2, 2, 0 }, { 1, 1, 1, 0 },
-          { 1, 1, 1, 0 },
-          { 1, 1, 1, 0 } },
-        { VLC_CODEC_I444, 3, { 1, 1, 1, 0 }, { 1, 1, 1, 0 },
-          { 1, 1, 1, 0 },
-          { 1, 1, 1, 0 } },
-        { VLC_CODEC_NV12, 2, { 1, 2, 0, 0 }, { 1, 2, 0, 0 },
-          { 1, 2, 0, 0 },
-          { 1, 1, 0, 0 } },
-        { VLC_CODEC_NV21, 2, { 1, 2, 0, 0 }, { 1, 2, 0, 0 },
-          { 1, 2, 0, 0 },
-          { 1, 1, 0, 0 } },
-        { VLC_CODEC_RGB24, 1, { 1, 0, 0, 0 }, { 3, 0, 0, 0 },
-          { 1, 0, 0, 0 },
-          { 3, 0, 0, 0 } },
-        { VLC_CODEC_RGBA,  1, { 1, 0, 0, 0 }, { 4, 0, 0, 0 },
-          { 1, 0, 0, 0 },
-          { 4, 0, 0, 0 } },
-        { VLC_CODEC_BGRA,  1, { 1, 0, 0, 0 }, { 4, 0, 0, 0 },
-          { 1, 0, 0, 0 },
-          { 4, 0, 0, 0 } },
-    };
-    const size_t count = sizeof layouts / sizeof layouts[0];
-    for (size_t i = 0; i < count; ++i)
-        if (layouts[i].chroma == chroma)
-            return &layouts[i];
-    return NULL;
+    return up_chroma_descriptor((uint32_t)chroma);
 }
 
 /* Pixel-space window plus the plane's group/pitch layout — everything

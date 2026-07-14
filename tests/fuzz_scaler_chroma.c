@@ -5,9 +5,9 @@
  *****************************************************************************
  * Many VLC-touching helpers are too tangled with `picture_t` /
  * `filter_t` / `var_InheritInteger` to fuzz without an absurd mocking
- * effort. But the chroma->subsample mapping in scaler_zimg.c is pure:
- * it takes a 32-bit fourcc and writes (sub_w, sub_h, yv12_swap) into
- * caller-provided ints, returning 1 on success or 0 on rejection.
+ * effort. But the descriptor-to-zimg adapter is pure: it takes a 32-bit
+ * fourcc and writes (sub_w, sub_h, yv12_swap) into caller-provided ints,
+ * returning 1 on success or 0 on rejection.
  *
  * That makes it a perfect fuzz target. We pulled it out into
  * src/scaler_zimg_chroma.h so the production path and this fuzzer
@@ -20,14 +20,13 @@
  *     contract.
  *
  *   - Known-unsupported chromas (NV12/NV21/RGB/packed/opaque) are
- *     rejected. Catches regressions where someone naively adds
- *     "case VLC_CODEC_NV12: *sub_w=1; *sub_h=1;" without realizing
- *     zimg can't consume semi-planar formats — that would crash at
- *     runtime on the first NV12 frame.
+ *     rejected without changing the outputs. Catches regressions where
+ *     the shared descriptor admits a layout zimg cannot consume — that
+ *     would crash at runtime on the first semi-planar frame.
  *
  *   - Random fourccs from xorshift never produce inconsistent state:
- *     rc=0 means outputs are NOT promised; rc=1 means outputs are
- *     all set to documented values.
+ *     rc=0 leaves every output untouched; rc=1 sets them all to
+ *     documented values.
  *
  *   - NULL output pointers are rejected without crashing.
  *
@@ -39,7 +38,7 @@
  *
  *   - Cross-property: NO chroma accepted by up_chroma_to_zimg is
  *     opaque. Catches a regression where an opaque hwaccel surface
- *     fourcc accidentally got added to the supported list.
+ *     descriptor accidentally became zimg-compatible.
  *
  * Build (smoke):
  *   cc -O2 -g -fsanitize=address,undefined -DFUZZ_MAIN \
@@ -102,6 +101,11 @@ static const uint32_t known_unsupported[] = {
 
 /* ---- invariant checks ---- */
 
+static bool outputs_untouched(unsigned sw, unsigned sh, int swap)
+{
+    return sw == 0xDEAD && sh == 0xBEEF && swap == 0xCAFE;
+}
+
 static void check_known_supported(void)
 {
     for (size_t i = 0; i < N_SUPPORTED; i++) {
@@ -128,11 +132,15 @@ static void check_known_supported(void)
 static void check_known_unsupported(void)
 {
     for (size_t i = 0; i < N_UNSUPPORTED; i++) {
-        unsigned sw, sh;
-        int swap;
+        unsigned sw = 0xDEAD, sh = 0xBEEF;
+        int swap = 0xCAFE;
         int rc = up_chroma_to_zimg(known_unsupported[i], &sw, &sh, &swap);
         if (rc != 0) {
             FAIL("known unsupported 0x%08x accepted (rc=%d)",
+                 known_unsupported[i], rc);
+        }
+        if (!outputs_untouched(sw, sh, swap)) {
+            FAIL("known unsupported 0x%08x changed outputs (rc=%d)",
                  known_unsupported[i], rc);
         }
     }
@@ -192,15 +200,16 @@ static void check_cross_properties(uint32_t fourcc)
 static void check_random_fourcc(uint32_t fourcc)
 {
     /* For any fourcc, the function must not crash and must return 0 or 1.
-     * Pre-fill outputs with sentinels; for rc=0 we don't assert anything
-     * about output values (function may or may not write them); for rc=1
-     * we already check ranges in check_cross_properties. */
+     * Pre-fill outputs with sentinels to verify all-or-nothing writes. */
     unsigned sw = 0xDEAD;
     unsigned sh = 0xBEEF;
     int swap = 0xCAFE;
     int rc = up_chroma_to_zimg(fourcc, &sw, &sh, &swap);
     if (rc != 0 && rc != 1) {
         FAIL("0x%08x produced invalid rc=%d", fourcc, rc);
+    }
+    if (rc == 0 && !outputs_untouched(sw, sh, swap)) {
+        FAIL("0x%08x rejected but outputs were written (rc=%d)", fourcc, rc);
     }
     /* If rc=1, all three outputs must have been written. We can detect a
      * "wrote some but not all" bug because the sentinels are distinct. */
@@ -211,10 +220,9 @@ static void check_random_fourcc(uint32_t fourcc)
     }
 }
 
-/* up_chroma_to_zimg derives its shifts from up_chroma_subsample, so any
- * chroma zimg accepts must report the same (sub_w, sub_h) through the generic
- * mapping — and the generic one must additionally cover the semi-planar 4:2:0
- * pair that zimg rejects. */
+/* Both adapters derive their shifts from the shared descriptor, so any chroma
+ * zimg accepts must report the same (sub_w, sub_h) through the generic adapter.
+ * The generic adapter additionally covers the semi-planar 4:2:0 pair. */
 static void check_zimg_agrees_with_subsample(uint32_t fourcc)
 {
     unsigned zw, zh, gw = 0, gh = 0;

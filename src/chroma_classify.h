@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
- * chroma_classify.h - pure chroma-fourcc classification helpers
+ * chroma_classify.h - shared software-chroma metadata and classification
  *****************************************************************************
- * Two small predicates for chroma fourccs:
+ * up_chroma_descriptor(c) is the source of truth for every software format
+ * the plugin accepts: pixel layout, plane count/order, subsampling, and
+ * per-plane byte geometry. Picture views and both scaler
+ * adapters derive their format handling from this table.
  *
  *   up_chroma_is_opaque(c) - true if c is a hardware/opaque GPU surface
  *     format (VAAPI, VDPAU, D3D9/11, MMAL, CoreVideo). The autoupscale
@@ -19,12 +22,9 @@
  *     chroma planes causes visible colour fringing on edges.
  *
  *   up_chroma_subsample(c, &sub_w, &sub_h) - the chroma subsample shift
- *     exponents (0 = full rate, 1 = half rate) on each axis. This is the
- *     single source of truth for subsampling: scaler_zimg_chroma.h derives
- *     its (sub_w, sub_h) from it, and picture_view.h's per-plane group
- *     table must agree with it (tests/test_chroma_classify.c asserts that).
- *     Unlike the zimg mapping it covers the semi-planar NV12/NV21 too -
- *     they are 4:2:0 whether or not zimg can consume them.
+ *     exponents (0 = full rate, 1 = half rate) on each axis. Unlike the zimg
+ *     adapter it covers semi-planar NV12/NV21 too: they are 4:2:0 whether or
+ *     not zimg can consume them.
  *
  *   up_chroma_align_crop_even(c, w, h, x, y) - round a crop window down to
  *     even on each subsampled axis. Any NULL argument is skipped.
@@ -62,6 +62,110 @@
     ( ((uint32_t)(a)) | ( ((uint32_t)(b)) << 8 ) \
       | ( ((uint32_t)(c)) << 16 ) | ( ((uint32_t)(d)) << 24 ) )
 #endif
+
+#define UP_CHROMA_MAX_PLANES 4
+
+typedef enum {
+    UP_CHROMA_LAYOUT_INVALID = 0,
+    UP_CHROMA_LAYOUT_YUV420P,
+    UP_CHROMA_LAYOUT_YUV422P,
+    UP_CHROMA_LAYOUT_YUV444P,
+    UP_CHROMA_LAYOUT_NV12,
+    UP_CHROMA_LAYOUT_NV21,
+    UP_CHROMA_LAYOUT_RGB24,
+    UP_CHROMA_LAYOUT_RGBA,
+    UP_CHROMA_LAYOUT_BGRA,
+} up_chroma_layout_t;
+
+typedef struct {
+    uint32_t chroma;
+    up_chroma_layout_t layout;
+    uint8_t plane_count;
+    uint8_t sub_w;
+    uint8_t sub_h;
+    bool uv_planes_swapped;
+    uint8_t x_group_pixels[UP_CHROMA_MAX_PLANES];
+    uint8_t x_group_bytes[UP_CHROMA_MAX_PLANES];
+    uint8_t y_group_pixels[UP_CHROMA_MAX_PLANES];
+    uint8_t pixel_pitch[UP_CHROMA_MAX_PLANES];
+} up_chroma_descriptor_t;
+
+static const up_chroma_descriptor_t up_chroma_descriptors[] = {
+    { UP_FOURCC('I','4','2','0'), UP_CHROMA_LAYOUT_YUV420P,
+      3, 1, 1, false,
+      { 1, 2, 2, 0 }, { 1, 1, 1, 0 },
+      { 1, 2, 2, 0 }, { 1, 1, 1, 0 } },
+    { UP_FOURCC('Y','V','1','2'), UP_CHROMA_LAYOUT_YUV420P,
+      3, 1, 1, true,
+      { 1, 2, 2, 0 }, { 1, 1, 1, 0 },
+      { 1, 2, 2, 0 }, { 1, 1, 1, 0 } },
+    { UP_FOURCC('I','4','2','2'), UP_CHROMA_LAYOUT_YUV422P,
+      3, 1, 0, false,
+      { 1, 2, 2, 0 }, { 1, 1, 1, 0 },
+      { 1, 1, 1, 0 }, { 1, 1, 1, 0 } },
+    { UP_FOURCC('I','4','4','4'), UP_CHROMA_LAYOUT_YUV444P,
+      3, 0, 0, false,
+      { 1, 1, 1, 0 }, { 1, 1, 1, 0 },
+      { 1, 1, 1, 0 }, { 1, 1, 1, 0 } },
+    { UP_FOURCC('N','V','1','2'), UP_CHROMA_LAYOUT_NV12,
+      2, 1, 1, false,
+      { 1, 2, 0, 0 }, { 1, 2, 0, 0 },
+      { 1, 2, 0, 0 }, { 1, 1, 0, 0 } },
+    { UP_FOURCC('N','V','2','1'), UP_CHROMA_LAYOUT_NV21,
+      2, 1, 1, false,
+      { 1, 2, 0, 0 }, { 1, 2, 0, 0 },
+      { 1, 2, 0, 0 }, { 1, 1, 0, 0 } },
+    { UP_FOURCC('R','V','2','4'), UP_CHROMA_LAYOUT_RGB24,
+      1, 0, 0, false,
+      { 1, 0, 0, 0 }, { 3, 0, 0, 0 },
+      { 1, 0, 0, 0 }, { 3, 0, 0, 0 } },
+    { UP_FOURCC('R','G','B','A'), UP_CHROMA_LAYOUT_RGBA,
+      1, 0, 0, false,
+      { 1, 0, 0, 0 }, { 4, 0, 0, 0 },
+      { 1, 0, 0, 0 }, { 4, 0, 0, 0 } },
+    { UP_FOURCC('B','G','R','A'), UP_CHROMA_LAYOUT_BGRA,
+      1, 0, 0, false,
+      { 1, 0, 0, 0 }, { 4, 0, 0, 0 },
+      { 1, 0, 0, 0 }, { 4, 0, 0, 0 } },
+};
+
+#define UP_CHROMA_DESCRIPTOR_COUNT \
+    (sizeof up_chroma_descriptors / sizeof up_chroma_descriptors[0])
+
+static inline const up_chroma_descriptor_t *
+up_chroma_descriptor(uint32_t c)
+{
+    for (size_t i = 0; i < UP_CHROMA_DESCRIPTOR_COUNT; i++)
+        if (up_chroma_descriptors[i].chroma == c)
+            return &up_chroma_descriptors[i];
+    return NULL;
+}
+
+static inline bool up_chroma_layout_has_y(up_chroma_layout_t layout)
+{
+    switch (layout) {
+        case UP_CHROMA_LAYOUT_YUV420P:
+        case UP_CHROMA_LAYOUT_YUV422P:
+        case UP_CHROMA_LAYOUT_YUV444P:
+        case UP_CHROMA_LAYOUT_NV12:
+        case UP_CHROMA_LAYOUT_NV21:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static inline bool up_chroma_layout_is_planar(up_chroma_layout_t layout)
+{
+    switch (layout) {
+        case UP_CHROMA_LAYOUT_YUV420P:
+        case UP_CHROMA_LAYOUT_YUV422P:
+        case UP_CHROMA_LAYOUT_YUV444P:
+            return true;
+        default:
+            return false;
+    }
+}
 
 /*
  * Hardware/opaque chroma fourccs. Update when VLC adds a new hwaccel
@@ -103,18 +207,8 @@ static inline bool up_chroma_is_opaque(uint32_t c)
  */
 static inline bool up_chroma_has_y_plane(uint32_t c)
 {
-    /* A flat switch keeps new chroma mappings easy to audit. */
-    switch (c) {
-        case UP_FOURCC('I','4','2','0'):  /* planar 4:2:0 */
-        case UP_FOURCC('Y','V','1','2'):  /* planar 4:2:0, V/U swap */
-        case UP_FOURCC('N','V','1','2'):  /* semi-planar 4:2:0 */
-        case UP_FOURCC('N','V','2','1'):  /* semi-planar 4:2:0, V/U swap */
-        case UP_FOURCC('I','4','2','2'):  /* planar 4:2:2 */
-        case UP_FOURCC('I','4','4','4'):  /* planar 4:4:4 */
-            return true;
-        default:
-            return false;
-    }
+    const up_chroma_descriptor_t *desc = up_chroma_descriptor(c);
+    return desc != NULL && up_chroma_layout_has_y(desc->layout);
 }
 
 /*
@@ -127,20 +221,12 @@ static inline bool up_chroma_subsample(uint32_t c,
 {
     if (sub_w == NULL || sub_h == NULL)
         return false;
-    /* A flat switch keeps new chroma mappings easy to audit. */
-    switch (c) {
-        case UP_FOURCC('I','4','2','0'):  /* planar 4:2:0 */
-        case UP_FOURCC('Y','V','1','2'):  /* planar 4:2:0, V/U swap */
-        case UP_FOURCC('N','V','1','2'):  /* semi-planar 4:2:0 */
-        case UP_FOURCC('N','V','2','1'):  /* semi-planar 4:2:0, V/U swap */
-            *sub_w = 1; *sub_h = 1; return true;
-        case UP_FOURCC('I','4','2','2'):  /* planar 4:2:2 */
-            *sub_w = 1; *sub_h = 0; return true;
-        case UP_FOURCC('I','4','4','4'):  /* planar 4:4:4 */
-            *sub_w = 0; *sub_h = 0; return true;
-        default:
-            return false;
-    }
+    const up_chroma_descriptor_t *desc = up_chroma_descriptor(c);
+    if (desc == NULL || !up_chroma_layout_has_y(desc->layout))
+        return false;
+    *sub_w = desc->sub_w;
+    *sub_h = desc->sub_h;
+    return true;
 }
 
 /*

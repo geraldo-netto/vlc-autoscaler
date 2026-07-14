@@ -137,13 +137,10 @@ static void fuzz_touch_view(const fuzz_picture_t *test,
 
 static void fuzz_run_one(const uint8_t *data, size_t size)
 {
-    static const vlc_fourcc_t formats[] = {
-        VLC_CODEC_I420, VLC_CODEC_YV12, VLC_CODEC_I422, VLC_CODEC_I444,
-        VLC_CODEC_NV12, VLC_CODEC_NV21, VLC_CODEC_RGB24,
-        VLC_CODEC_RGBA, VLC_CODEC_BGRA,
-    };
     fuzz_input_t input = { data, size, 0 };
-    const vlc_fourcc_t chroma = formats[fuzz_take(&input) % 9u];
+    const size_t format_index = fuzz_take(&input) % UP_CHROMA_DESCRIPTOR_COUNT;
+    const vlc_fourcc_t chroma =
+        (vlc_fourcc_t)up_chroma_descriptors[format_index].chroma;
     const int coded_w = 1 + fuzz_take(&input) % 128;
     const int coded_h = 1 + fuzz_take(&input) % 128;
     fuzz_picture_t test;

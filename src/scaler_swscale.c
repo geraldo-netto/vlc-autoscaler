@@ -12,6 +12,7 @@
 #endif
 
 #include "scaler.h"
+#include "chroma_classify.h"
 #include "picture_view.h"
 #include "upscale_logic.h"
 
@@ -40,21 +41,22 @@ static void sws_warn_once( const scaler_ctx_t *ctx, int *warned,
     msg_Warn( ctx->log_obj, "swscale: %s (logged only once)", reason );
 }
 
-/* Local helper — same set of chromas the original plugin supported. */
 static enum AVPixelFormat ChromaToAVFmt( vlc_fourcc_t c )
 {
-    switch( c )
+    const up_chroma_descriptor_t *desc =
+        up_chroma_descriptor( (uint32_t)c );
+    if( !desc ) return AV_PIX_FMT_NONE;
+    switch( desc->layout )
     {
-        case VLC_CODEC_I420:
-        case VLC_CODEC_YV12:  return AV_PIX_FMT_YUV420P;
-        case VLC_CODEC_NV12:  return AV_PIX_FMT_NV12;
-        case VLC_CODEC_NV21:  return AV_PIX_FMT_NV21;
-        case VLC_CODEC_I422:  return AV_PIX_FMT_YUV422P;
-        case VLC_CODEC_I444:  return AV_PIX_FMT_YUV444P;
-        case VLC_CODEC_RGB24: return AV_PIX_FMT_RGB24;
-        case VLC_CODEC_RGBA:  return AV_PIX_FMT_RGBA;
-        case VLC_CODEC_BGRA:  return AV_PIX_FMT_BGRA;
-        default:              return AV_PIX_FMT_NONE;
+        case UP_CHROMA_LAYOUT_YUV420P: return AV_PIX_FMT_YUV420P;
+        case UP_CHROMA_LAYOUT_YUV422P: return AV_PIX_FMT_YUV422P;
+        case UP_CHROMA_LAYOUT_YUV444P: return AV_PIX_FMT_YUV444P;
+        case UP_CHROMA_LAYOUT_NV12:    return AV_PIX_FMT_NV12;
+        case UP_CHROMA_LAYOUT_NV21:    return AV_PIX_FMT_NV21;
+        case UP_CHROMA_LAYOUT_RGB24:   return AV_PIX_FMT_RGB24;
+        case UP_CHROMA_LAYOUT_RGBA:    return AV_PIX_FMT_RGBA;
+        case UP_CHROMA_LAYOUT_BGRA:    return AV_PIX_FMT_BGRA;
+        default:                       return AV_PIX_FMT_NONE;
     }
 }
 
@@ -108,9 +110,10 @@ static int sws_open( scaler_ctx_t *ctx )
 
 /* libswscale's YUV420P descriptor expects semantic Y/U/V, while VLC stores
  * YV12 physically as Y/V/U. Other formats keep their physical plane order. */
-static int sws_plane_index( vlc_fourcc_t chroma, int plane )
+static int sws_plane_index( const up_chroma_descriptor_t *desc, int plane )
 {
-    if( chroma != VLC_CODEC_YV12 || plane == 0 ) return plane;
+    if( !desc || !desc->uv_planes_swapped || plane == 0 )
+        return plane;
     return plane == 1 ? 2 : 1;
 }
 
@@ -122,6 +125,9 @@ static scaler_process_status_t sws_process( scaler_ctx_t *ctx,
 {
     sws_priv_t *p = ctx->priv;
     if( !p ) return SCALER_PROCESS_FATAL;
+    const up_chroma_descriptor_t *desc =
+        up_chroma_descriptor( (uint32_t)ctx->chroma );
+    if( !desc ) return SCALER_PROCESS_FATAL;
 
     const up_picture_region_t src_region = up_scaler_src_region(ctx);
     const up_picture_region_t dst_region = up_scaler_dst_region(ctx);
@@ -143,13 +149,13 @@ static scaler_process_status_t sws_process( scaler_ctx_t *ctx,
 
     for( int i = 0; i < src_view.plane_count && i < 4; i++ )
     {
-        const int plane = sws_plane_index( ctx->chroma, i );
+        const int plane = sws_plane_index( desc, i );
         src_data[i]   = src_view.plane[plane].pixels;
         src_stride[i] = src_view.plane[plane].pitch;
     }
     for( int i = 0; i < dst_view.plane_count && i < 4; i++ )
     {
-        const int plane = sws_plane_index( ctx->chroma, i );
+        const int plane = sws_plane_index( desc, i );
         dst_data[i]   = dst_view.plane[plane].pixels;
         dst_stride[i] = dst_view.plane[plane].pitch;
     }

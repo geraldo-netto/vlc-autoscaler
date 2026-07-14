@@ -42,14 +42,17 @@
 /* ARCH-2: chroma_classify.h spells its chroma fourccs as UP_FOURCC() literals
  * so the tests can include it without VLC headers. Guard against drift from
  * VLC's real VLC_CODEC_* values with compile-time asserts in this (VLC-linked)
- * TU. Only the planar set up_chroma_has_y_plane() recognises is checked; the
- * opaque/hwaccel fourccs have no stable VLC_CODEC_* names across VLC versions. */
+ * TU. Check every software descriptor entry; the opaque/hwaccel fourccs have
+ * no stable VLC_CODEC_* names across VLC versions. */
 _Static_assert(UP_FOURCC('I','4','2','0') == VLC_CODEC_I420, "I420 fourcc drift");
 _Static_assert(UP_FOURCC('Y','V','1','2') == VLC_CODEC_YV12, "YV12 fourcc drift");
 _Static_assert(UP_FOURCC('N','V','1','2') == VLC_CODEC_NV12, "NV12 fourcc drift");
 _Static_assert(UP_FOURCC('N','V','2','1') == VLC_CODEC_NV21, "NV21 fourcc drift");
 _Static_assert(UP_FOURCC('I','4','2','2') == VLC_CODEC_I422, "I422 fourcc drift");
 _Static_assert(UP_FOURCC('I','4','4','4') == VLC_CODEC_I444, "I444 fourcc drift");
+_Static_assert(UP_FOURCC('R','V','2','4') == VLC_CODEC_RGB24, "RGB24 fourcc drift");
+_Static_assert(UP_FOURCC('R','G','B','A') == VLC_CODEC_RGBA, "RGBA fourcc drift");
+_Static_assert(UP_FOURCC('B','G','R','A') == VLC_CODEC_BGRA, "BGRA fourcc drift");
 
 /* VLC's <libintl.h>-based N_() isn't always pulled in transitively.
  * Provide a no-op fallback if it's missing — we don't translate strings. */

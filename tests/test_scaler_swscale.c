@@ -92,13 +92,27 @@ static void test_picture_regions(void)
 static void test_supports(void)
 {
     BEGIN("supported chromas map; unknown chroma is rejected");
-    const vlc_fourcc_t supported[] = {
-        VLC_CODEC_I420, VLC_CODEC_YV12, VLC_CODEC_NV12, VLC_CODEC_NV21,
-        VLC_CODEC_I422, VLC_CODEC_I444, VLC_CODEC_RGB24,
-        VLC_CODEC_RGBA, VLC_CODEC_BGRA,
+    static const struct {
+        vlc_fourcc_t chroma;
+        enum AVPixelFormat format;
+    } supported[] = {
+        { VLC_CODEC_I420,  AV_PIX_FMT_YUV420P },
+        { VLC_CODEC_YV12,  AV_PIX_FMT_YUV420P },
+        { VLC_CODEC_I422,  AV_PIX_FMT_YUV422P },
+        { VLC_CODEC_I444,  AV_PIX_FMT_YUV444P },
+        { VLC_CODEC_NV12,  AV_PIX_FMT_NV12 },
+        { VLC_CODEC_NV21,  AV_PIX_FMT_NV21 },
+        { VLC_CODEC_RGB24, AV_PIX_FMT_RGB24 },
+        { VLC_CODEC_RGBA,  AV_PIX_FMT_RGBA },
+        { VLC_CODEC_BGRA,  AV_PIX_FMT_BGRA },
     };
-    for (size_t i = 0; i < sizeof supported / sizeof supported[0]; i++)
-        CHECK(sws_supports(supported[i], UP_ALGO_LANCZOS));
+    for (size_t i = 0; i < sizeof supported / sizeof supported[0]; i++) {
+        CHECK(ChromaToAVFmt(supported[i].chroma) == supported[i].format);
+        CHECK(sws_supports(supported[i].chroma, UP_ALGO_LANCZOS));
+    }
+    for (size_t i = 0; i < UP_CHROMA_DESCRIPTOR_COUNT; i++)
+        CHECK(ChromaToAVFmt((vlc_fourcc_t)up_chroma_descriptors[i].chroma)
+              != AV_PIX_FMT_NONE);
     CHECK(!sws_supports(VLC_FOURCC('B', 'A', 'D', '!'), UP_ALGO_LANCZOS));
     END();
 }

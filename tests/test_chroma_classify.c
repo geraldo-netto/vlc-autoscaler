@@ -2,9 +2,8 @@
 /*****************************************************************************
  * test_chroma_classify.c - unit tests for chroma_classify.h
  *****************************************************************************
- * Tests the two predicates that gate hwaccel rejection (up_chroma_is_opaque)
- * and USM application (up_chroma_has_y_plane). These functions are tiny but
- * their correctness matters:
+ * Tests the shared software descriptor and the predicates that gate hwaccel
+ * rejection and USM application. Their correctness matters:
  *
  *   - A missing entry in up_opaque_chromas means autoupscale accepts a
  *     hardware GPU surface, performs unnecessary worker and scratch setup,
@@ -25,6 +24,69 @@
 #include <stdlib.h>
 
 #include "test_harness.h"
+
+typedef struct {
+    uint32_t fourcc;
+    up_chroma_layout_t layout;
+    uint8_t plane_count;
+    uint8_t sub_w;
+    uint8_t sub_h;
+    bool uv_planes_swapped;
+    uint8_t x_group_pixels[UP_CHROMA_MAX_PLANES];
+    uint8_t x_group_bytes[UP_CHROMA_MAX_PLANES];
+    uint8_t y_group_pixels[UP_CHROMA_MAX_PLANES];
+    uint8_t pixel_pitch[UP_CHROMA_MAX_PLANES];
+} expected_descriptor_t;
+
+static const expected_descriptor_t k_descriptors[] = {
+    { UP_FOURCC('I','4','2','0'), UP_CHROMA_LAYOUT_YUV420P, 3, 1, 1, false,
+      {1, 2, 2, 0}, {1, 1, 1, 0}, {1, 2, 2, 0}, {1, 1, 1, 0} },
+    { UP_FOURCC('Y','V','1','2'), UP_CHROMA_LAYOUT_YUV420P, 3, 1, 1, true,
+      {1, 2, 2, 0}, {1, 1, 1, 0}, {1, 2, 2, 0}, {1, 1, 1, 0} },
+    { UP_FOURCC('I','4','2','2'), UP_CHROMA_LAYOUT_YUV422P, 3, 1, 0, false,
+      {1, 2, 2, 0}, {1, 1, 1, 0}, {1, 1, 1, 0}, {1, 1, 1, 0} },
+    { UP_FOURCC('I','4','4','4'), UP_CHROMA_LAYOUT_YUV444P, 3, 0, 0, false,
+      {1, 1, 1, 0}, {1, 1, 1, 0}, {1, 1, 1, 0}, {1, 1, 1, 0} },
+    { UP_FOURCC('N','V','1','2'), UP_CHROMA_LAYOUT_NV12, 2, 1, 1, false,
+      {1, 2, 0, 0}, {1, 2, 0, 0}, {1, 2, 0, 0}, {1, 1, 0, 0} },
+    { UP_FOURCC('N','V','2','1'), UP_CHROMA_LAYOUT_NV21, 2, 1, 1, false,
+      {1, 2, 0, 0}, {1, 2, 0, 0}, {1, 2, 0, 0}, {1, 1, 0, 0} },
+    { UP_FOURCC('R','V','2','4'), UP_CHROMA_LAYOUT_RGB24, 1, 0, 0, false,
+      {1, 0, 0, 0}, {3, 0, 0, 0}, {1, 0, 0, 0}, {3, 0, 0, 0} },
+    { UP_FOURCC('R','G','B','A'), UP_CHROMA_LAYOUT_RGBA, 1, 0, 0, false,
+      {1, 0, 0, 0}, {4, 0, 0, 0}, {1, 0, 0, 0}, {4, 0, 0, 0} },
+    { UP_FOURCC('B','G','R','A'), UP_CHROMA_LAYOUT_BGRA, 1, 0, 0, false,
+      {1, 0, 0, 0}, {4, 0, 0, 0}, {1, 0, 0, 0}, {4, 0, 0, 0} },
+};
+
+static void test_software_descriptor_table(void)
+{
+    BEGIN("descriptor: all supported software layouts are exact and unique");
+    const size_t count = sizeof k_descriptors / sizeof k_descriptors[0];
+    CHECK(UP_CHROMA_DESCRIPTOR_COUNT == count);
+    for (size_t i = 0; i < count; i++) {
+        const expected_descriptor_t *expected = &k_descriptors[i];
+        const up_chroma_descriptor_t *actual =
+            up_chroma_descriptor(expected->fourcc);
+        CHECK(actual != NULL);
+        if (!actual) continue;
+        CHECK(actual->layout == expected->layout);
+        CHECK(actual->plane_count == expected->plane_count);
+        CHECK(actual->sub_w == expected->sub_w);
+        CHECK(actual->sub_h == expected->sub_h);
+        CHECK(actual->uv_planes_swapped == expected->uv_planes_swapped);
+        for (size_t p = 0; p < UP_CHROMA_MAX_PLANES; p++) {
+            CHECK(actual->x_group_pixels[p] == expected->x_group_pixels[p]);
+            CHECK(actual->x_group_bytes[p] == expected->x_group_bytes[p]);
+            CHECK(actual->y_group_pixels[p] == expected->y_group_pixels[p]);
+            CHECK(actual->pixel_pitch[p] == expected->pixel_pitch[p]);
+        }
+        for (size_t j = i + 1; j < count; j++)
+            CHECK(expected->fourcc != k_descriptors[j].fourcc);
+    }
+    CHECK(up_chroma_descriptor(UP_FOURCC('B','A','D','!')) == NULL);
+    END();
+}
 
 /* ---------- up_chroma_is_opaque: opaque chromas detected ---------- */
 
@@ -174,8 +236,7 @@ static void test_y_plane_garbage(void)
 static void test_opaque_implies_no_y_plane(void)
 {
     BEGIN("invariant: every opaque chroma has has_y_plane==false");
-    /* Walk the opaque table and confirm none claims a usable Y plane.
-     * Keeps the two lists in sync if someone edits one without the other. */
+    /* Walk the opaque table and keep it disjoint from software descriptors. */
     for (size_t i = 0; i < UP_OPAQUE_CHROMA_COUNT; i++) {
         if (up_chroma_has_y_plane(up_opaque_chromas[i])) {
             printf("    opaque chroma 0x%08x at index %zu also "
@@ -248,8 +309,7 @@ static void test_subsample_null_outputs(void)
 static void test_subsample_covers_every_y_plane_chroma(void)
 {
     BEGIN("invariant: has_y_plane(c) <=> subsample(c) succeeds");
-    /* The two lists are edited by hand in the same header; a chroma with a
-     * Y plane but no subsample entry would silently skip crop alignment. */
+    /* The independent expected cases cover every descriptor with a Y plane. */
     for (size_t i = 0; i < N_SUBSAMPLED; i++)
         CHECK(up_chroma_has_y_plane(k_subsampled[i].fourcc));
     unsigned sw, sh;
@@ -352,6 +412,8 @@ static void test_align_is_idempotent_and_shrinking(void)
 int main(void)
 {
     printf("Running chroma_classify tests...\n");
+
+    test_software_descriptor_table();
 
     /* up_chroma_is_opaque positive cases */
     test_opaque_vaapi();

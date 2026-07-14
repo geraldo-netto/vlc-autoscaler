@@ -303,11 +303,9 @@ static stripe_worker_t *zimg_workers(zimg_priv_t *p)
 /* ---------- chroma + algo mappings ---------- */
 
 /*
- * Thin wrapper around up_chroma_to_zimg() in scaler_zimg_chroma.h.
- * The pure logic lives in the header so the same code is exercised by
- * the production path AND by tests/fuzz_scaler_chroma.c without
- * pulling in VLC headers. vlc_fourcc_t is a uint32_t, so the cast is
- * a no-op at runtime.
+ * Thin wrapper around the descriptor adapter in scaler_zimg_chroma.h. The
+ * pure logic is shared with tests/fuzz_scaler_chroma.c without pulling in VLC
+ * headers. vlc_fourcc_t is a uint32_t, so the cast is a no-op at runtime.
  */
 static int ChromaToZimg(vlc_fourcc_t c,
                         unsigned *sub_w, unsigned *sub_h, int *yv12_swap)
