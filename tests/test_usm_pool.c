@@ -303,6 +303,62 @@ static void test_create_clamps_huge_thread_count(void)
     END();
 }
 
+/* PERF-2: the sweep is bandwidth-bound and stops scaling around 10-12 workers
+ * (1080p: N=10 is the measured knee at 51 us; N=30 regresses to 76 us), while
+ * the stripe floor alone would allow 135 workers at 1080p. The default policy
+ * must cap at the plateau — but an explicit stripe_min_rows means the caller
+ * has taken over the partition policy and must still get what it asked for. */
+static void test_default_policy_caps_useful_threads(void)
+{
+    BEGIN("default policy caps the pool at the bandwidth knee (PERF-2)");
+    enum { USEFUL = 12 };   /* USM_MAX_USEFUL_THREADS */
+
+    /* 1080p: the stripe floor (8 rows) would permit 135 workers. */
+    usm_pool_t *p = up_usm_pool_create(64, 1920, 1080, 0);
+    CHECK(p != NULL);
+    if (p) {
+        CHECK(up_usm_pool_effective_threads(p) == USEFUL);
+        up_usm_pool_destroy(p);
+    }
+
+    /* 4K: same cap, still inside the measured plateau. */
+    p = up_usm_pool_create(32, 3840, 2160, 0);
+    CHECK(p != NULL);
+    if (p) {
+        CHECK(up_usm_pool_effective_threads(p) == USEFUL);
+        up_usm_pool_destroy(p);
+    }
+
+    /* Below the cap, the request is honoured unchanged. */
+    p = up_usm_pool_create(4, 1920, 1080, 0);
+    CHECK(p != NULL);
+    if (p) {
+        CHECK(up_usm_pool_effective_threads(p) == 4);
+        up_usm_pool_destroy(p);
+    }
+
+    /* Explicit stripe_min_rows opts out of the cap: 1080/8 = 135 -> 64. */
+    p = up_usm_pool_create(64, 1920, 1080, 8);
+    CHECK(p != NULL);
+    if (p) {
+        CHECK(up_usm_pool_effective_threads(p) == 64);
+        up_usm_pool_destroy(p);
+    }
+
+    /* The height clamp still wins when it is the tighter bound. */
+    p = up_usm_pool_create(64, 100, 16, 0);
+    CHECK(p != NULL);
+    if (p) {
+        CHECK(up_usm_pool_effective_threads(p) == 2);   /* 16/8 */
+        up_usm_pool_destroy(p);
+    }
+
+    /* Capping must not change a single byte of output. */
+    CHECK(run_compare_inplace(64, 640, 360, up_usm_amount_pct_to_q8(30),
+                              0x61) == 0);
+    END();
+}
+
 /* PERF-1: a single-stripe pool must not spawn a thread at all — the whole
  * point is to skip the broadcast + sem round-trip (~7 us/dispatch, measured)
  * that buys nothing with one worker. Counting /proc/self/task entries proves
@@ -743,6 +799,7 @@ int main(void)
     test_inplace_matches_oracle();
     test_barrier_post_failure_poisons_pool();
     test_create_clamps_huge_thread_count();
+    test_default_policy_caps_useful_threads();
     test_single_thread_runs_inline();
     test_inplace_stride_mismatch_rejected();
     test_aggressive_100pct();

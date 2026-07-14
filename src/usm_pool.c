@@ -89,6 +89,11 @@
  * dominated by kernel boundary handling and not worth threading. */
 #define USM_STRIPE_MIN_ROWS 8
 
+/* PERF-2: the pass is memory-bandwidth-bound; measured throughput knees at
+ * ~10 workers at 1080p and plateaus at 8-12 at 4K, then regresses. See the
+ * rationale in up_usm_pool_create. Exposed for the test that pins it. */
+#define USM_MAX_USEFUL_THREADS 12
+
 /* Workspace alignment - matches the rest of the plugin. */
 #define USM_POOL_ALIGN 64
 
@@ -440,23 +445,46 @@ static int usm_pool_lazy_init(usm_pool_t *p)
  * Public API
  * =========================================================================*/
 
-usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
-                               int stripe_min_rows)
+/*
+ * Resolve the worker count actually worth spawning for this frame height.
+ *
+ * PERF-2: the sweep is memory-bandwidth-bound and stops scaling long before
+ * the stripe floor runs out of rows. Measured 1080p in-place USM (best of 5):
+ * N=1 322 us, N=4 89.8, N=8 58.6, N=10 51.1 (knee), N=12 56.6, N=14 59.3,
+ * N=20 60.6, N=30 76.5; 4K plateaus at N=8..12. Past the knee each extra
+ * worker only adds gate, barrier and halo-snapshot cost, so the auto policy's
+ * 14 threads on a 32-core box (+16%) and 30 on a 64-core box (+50%) are pure
+ * loss. Cap the default policy at the plateau.
+ *
+ * An explicit stripe_min_rows means the caller has taken over the partition
+ * policy (--autoupscale-usm-stripe-min-rows) — respect it and skip the cap.
+ */
+static int usm_pool_resolve_threads(int n_threads, int height,
+                                    int stripe_min_rows)
 {
-    if (n_threads < 1 || width <= 0 || height <= 0) return NULL;
-
     /* Cap at the pool-wide maximum here, not only in up_threads_decide:
      * a direct API caller with a huge n_threads and a tall frame would
      * otherwise size the worker array from an unchecked multiply. */
     if (n_threads > UP_THREADS_MAX) n_threads = UP_THREADS_MAX;
 
-    /* stripe_min_rows <= 0 → use compile-time default. */
-    if (stripe_min_rows <= 0) stripe_min_rows = USM_STRIPE_MIN_ROWS;
+    if (stripe_min_rows <= 0) {
+        if (n_threads > USM_MAX_USEFUL_THREADS)
+            n_threads = USM_MAX_USEFUL_THREADS;
+        stripe_min_rows = USM_STRIPE_MIN_ROWS;
+    }
 
     /* Each stripe at least stripe_min_rows rows tall. */
     int max_by_size = height / stripe_min_rows;
     if (max_by_size < 1) max_by_size = 1;
-    if (n_threads > max_by_size) n_threads = max_by_size;
+    return n_threads > max_by_size ? max_by_size : n_threads;
+}
+
+usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
+                               int stripe_min_rows)
+{
+    if (n_threads < 1 || width <= 0 || height <= 0) return NULL;
+
+    n_threads = usm_pool_resolve_threads(n_threads, height, stripe_min_rows);
 
     usm_pool_t *p = calloc(1, sizeof(*p));
     if (!p) return NULL;

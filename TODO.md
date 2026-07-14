@@ -41,7 +41,6 @@ under `cv_inited`/`sem_inited`; both barrier-failure paths join before `picture_
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| PERF-2 | open | S | USM pool's only work cap is `height / USM_STRIPE_MIN_ROWS(8)` = 135 workers at 1080p (`src/usm_pool.c:88-90,431-433`), so it takes whatever `up_threads_decide` gives; the pass is memory-bandwidth-bound and stops scaling ~4× earlier. | Measured 1080p in-place USM: N=1 322 µs, N=8 58.6, **N=10 51.1 (knee)**, N=14 59.3, N=30 76.5. 4K plateaus at N=8..12. Auto picks 14 on a 32-core box (+16% vs optimum) and 30 on a 64-core box (+50%) while spawning 3× the threads. Fix: raise the effective USM stripe floor (~96-128 rows) or cap USM threads at ~12. |
 
 Otherwise clean: zero steady-state per-frame allocations; no per-frame graph rebuilds; default aligned
 row-stripe path copies no planes; hot USM TU is `-O3`; false sharing padded in both pools. Correction
