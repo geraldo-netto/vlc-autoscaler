@@ -99,7 +99,13 @@ COMMON_CFLAGS := -O2 $(MARCH_FLAG) -fPIC -DPIC $(WARN) -MMD -MP -fstack-protecto
 PLUGIN_CFLAGS := $(COMMON_CFLAGS) -fvisibility=hidden \
                  -DMODULE_STRING=\"autoupscale\" \
                  -D__PLUGIN__ $(VLC_CFLAGS) $(SWS_CFLAGS)
-PLUGIN_LDFLAGS := -shared -flto $(EXTRA_LDFLAGS)
+# ABI-2: the LTO link is where cross-TU diagnostics are raised
+# (-Wlto-type-mismatch, and -Wstringop-overflow / -Warray-bounds arising from
+# cross-TU inlining). gcc reports them and still exits 0, so a link that
+# carries no warning flags cannot fail on them — CI's `EXTRA_CFLAGS=-Werror`
+# only ever reached the compile step. Pass $(WARN) and $(EXTRA_CFLAGS) to the
+# link too, so a prototype/type mismatch between TUs is a build failure.
+PLUGIN_LDFLAGS := -shared -flto $(WARN) $(EXTRA_CFLAGS) $(EXTRA_LDFLAGS)
 PLUGIN_LIBS    := $(VLC_LIBS) $(SWS_LIBS) -lpthread
 
 ifdef HAVE_ZIMG
@@ -263,17 +269,28 @@ $(BUILD)/$(PLUGIN).so: $(PLUGIN_OBJS) | $(BUILD)
 $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CC) $(PLUGIN_CFLAGS) -c -o $@ $<
 
-# ABI-1 regression gate: the .so must export only VLC's vlc_entry* plugin
-# entry points. Any other defined dynamic symbol is a leak of an internal
-# name into embedders' global namespaces.
+# ABI-1 regression gate: the .so must export VLC's vlc_entry* plugin entry
+# points — and nothing else. Any other defined dynamic symbol is a leak of an
+# internal name into embedders' global namespaces.
+#
+# Both halves matter. Asserting only "nothing extra" passes a .so that exports
+# NOTHING AT ALL: an empty symbol list has no unexpected names in it, so a
+# visibility regression that hid vlc_entry itself would go green here while
+# VLC's loader silently skipped the plugin (it would never appear in
+# `vlc --list`). Assert the entry points exist first.
 check-visibility: $(BUILD)/$(PLUGIN).so
-	@bad=$$(nm -D --defined-only $< | awk '$$2 != "U" {print $$NF}' \
-	        | grep -v '^vlc_entry' || true); \
+	@exported=$$(nm -D --defined-only $< | awk '$$2 != "U" {print $$NF}'); \
+	 entries=$$(echo "$$exported" | grep -c '^vlc_entry' || true); \
+	 if [ "$$entries" -eq 0 ]; then \
+	     echo "check-visibility FAILED — no vlc_entry* symbol is exported;"; \
+	     echo "  VLC's loader would silently skip this plugin."; exit 1; \
+	 fi; \
+	 bad=$$(echo "$$exported" | grep -v '^vlc_entry' || true); \
 	 if [ -n "$$bad" ]; then \
 	     echo "check-visibility FAILED — unexpected exported symbols:"; \
 	     echo "$$bad"; exit 1; \
 	 fi; \
-	 echo "check-visibility OK: only vlc_entry* exported"
+	 echo "check-visibility OK: $$entries vlc_entry* symbol(s) exported, nothing else"
 
 # --------- unit tests ---------
 # `test` runs the suites only; `check` adds the lizard complexity gate.
