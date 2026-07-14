@@ -131,10 +131,10 @@ recovery change must nevertheless avoid freeing storage unless termination is pr
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| ABI-1 | open | S | `check-multiversion-isa` inspects fresh non-LTO objects, not the shipped LTO-linked plugin (`Makefile:216-245,268-277`). | A compiler/LTO regression can collapse a linked variant while the gate remains green. After a multiversion link, inspect each linked variant's symbol range for its required ISA and verify baseline/dispatcher code contains no wider instructions. |
 
-Current linked artifacts expose only the expected VLC entry point and `ldd -r` found
-no live unresolved symbol; ABI-1 is a regression-gate gap.
+No open finding. Current linked artifacts expose only the expected VLC entry
+point, `ldd -r` found no live unresolved symbol, and the final-link gate verifies
+multiversion vector-ISA use.
 
 ## build/toolchain hygiene
 

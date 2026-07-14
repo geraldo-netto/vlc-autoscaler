@@ -46,7 +46,8 @@ VLC_PLUGIN_DIR  := $(VLC_PLUGIN_BASE)/video_filter
 # Fail fast, at parse time, when a plugin build is requested without the
 # required SDKs — otherwise the first object compile dies on a cryptic
 # "vlc_common.h: No such file" long before any friendly message.
-PLUGIN_GOALS := all plugin install scan-build $(BUILD)/$(PLUGIN).so
+PLUGIN_GOALS := all plugin install scan-build check-multiversion-isa \
+                $(BUILD)/$(PLUGIN).so
 ifneq ($(filter $(PLUGIN_GOALS),$(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)),)
   ifeq ($(strip $(VLC_LIBS)),)
     $(error vlc-plugin pkg-config not found. Install libvlccore-dev (Debian/Ubuntu) or vlc-devel (Fedora))
@@ -214,36 +215,54 @@ endif
 
 PLUGIN_OBJS += $(USM_OBJS)
 
-# BUILD-4: prove each SIMD variant actually emits its target ISA. The
-# cross-variant test asserts byte-identical *output*, which by design masks an
-# accidental collapse to the baseline (a vectorization-disabling pragma, a
-# broken -march mapping, a compiler regression) — three identical SSE2 kernels
-# would still pass it. Compile usm_pool.c at each level without LTO/ASan (so
-# real instructions are emitted, not GIMPLE or scalar-instrumented code) and
-# assert the register file widens: SSE2 baseline has no ymm/zmm, the v3 variant
-# emits ymm (AVX2), the v4 variant emits zmm (AVX-512). This checks the
-# source+flags+compiler; it does not exercise the LTO link (LTO preserving
-# per-TU target attributes is a compiler guarantee, not our code's concern).
+# ABI-1: prove each SIMD variant in the shipped LTO-linked plugin actually
+# emits its target ISA. The cross-variant test asserts byte-identical *output*;
+# that deliberately masks an accidental collapse to the baseline caused by a
+# vectorization-disabling pragma, broken -march mapping, or compiler regression
+# — three identical SSE2 kernels
+# would still pass it. usm_pool_run_worker_<variant> is a retained noinline
+# anchor around the hot sweep: SSE2 has no VEX/EVEX instructions, v3 emits YMM
+# through VEX but no EVEX, and v4 emits EVEX-encoded AVX-512. The load-time
+# selector constructor must also remain free of AVX vector instructions before
+# feature selection runs. This gate does not classify unrelated scalar ISA.
 .PHONY: check-multiversion-isa
-check-multiversion-isa: | $(BUILD)
-	@if [ "$$(uname -m)" != "x86_64" ]; then \
-	    echo "  check-multiversion-isa: skipped (non-x86_64 host)"; exit 0; fi; \
-	 set -e; fail=0; \
-	 for spec in "sse2:x86-64:sse" "avx2:x86-64-v3:ymm" "avx512:x86-64-v4:zmm"; do \
-	    v=$${spec%%:*}; rest=$${spec#*:}; march=$${rest%%:*}; want=$${rest##*:}; \
-	    obj=$(BUILD)/isacheck_$$v.o; \
-	    $(CC) -O3 -march=$$march $(WARN) -DUSM_VARIANT=$$v -Isrc -c src/usm_pool.c -o $$obj; \
-	    ymm=$$(objdump -d $$obj | grep -c ymm || true); \
-	    zmm=$$(objdump -d $$obj | grep -c zmm || true); \
+ifeq ($(MULTIVERSION),1)
+check-multiversion-isa: $(BUILD)/$(PLUGIN).so
+	@set -e; so=$<; fail=0; \
+	 symbols=$$(nm -S -P --defined-only "$$so"); \
+	 for spec in \
+	   "usm_pool_run_worker_sse2:baseline" \
+	   "usm_pool_run_worker_avx2:avx2" \
+	   "usm_pool_run_worker_avx512:avx512" \
+	   "up_usm_pool_dispatch_init:baseline"; do \
+	    sym=$${spec%%:*}; want=$${spec##*:}; \
+	    matches=$$(printf '%s\n' "$$symbols" | awk -v name="$$sym" '$$1 == name { n++ } END { print n + 0 }'); \
+	    if [ "$$matches" -ne 1 ]; then \
+	        echo "  [FAIL] linked ISA anchor $$sym occurs $$matches times"; fail=1; continue; \
+	    fi; \
+	    entry=$$(printf '%s\n' "$$symbols" | awk -v name="$$sym" '$$1 == name { print; exit }'); \
+	    set -- $$entry; type=$$2; size=$$4; \
+	    if { [ "$$type" != t ] && [ "$$type" != T ]; } || [ $$((0x$$size)) -eq 0 ]; then \
+	        echo "  [FAIL] linked ISA anchor $$sym has type=$$type size=$$size"; fail=1; continue; \
+	    fi; \
+	    body=$$(objdump -d --disassemble="$$sym" "$$so"); \
+	    ymm=$$(printf '%s\n' "$$body" | grep -c ymm || true); \
+	    zmm=$$(printf '%s\n' "$$body" | grep -c zmm || true); \
+	    vex=$$(printf '%s\n' "$$body" | awk '$$2 == "c4" || $$2 == "c5" { n++ } END { print n + 0 }'); \
+	    evex=$$(printf '%s\n' "$$body" | awk '$$2 == "62" { n++ } END { print n + 0 }'); \
 	    case $$want in \
-	      sse) if [ $$ymm -ne 0 ] || [ $$zmm -ne 0 ]; then echo "  [FAIL] $$v ($$march): ymm=$$ymm zmm=$$zmm, expected SSE-only"; fail=1; else echo "  [ok] $$v: SSE baseline"; fi ;; \
-	      ymm) if [ $$ymm -eq 0 ] || [ $$zmm -ne 0 ]; then echo "  [FAIL] $$v ($$march): ymm=$$ymm zmm=$$zmm, expected AVX2 (ymm>0, zmm=0)"; fail=1; else echo "  [ok] $$v: AVX2 ($$ymm ymm ops)"; fi ;; \
-	      zmm) if [ $$zmm -eq 0 ]; then echo "  [FAIL] $$v ($$march): zmm=0, variant collapsed below AVX-512"; fail=1; else echo "  [ok] $$v: AVX-512 ($$zmm zmm ops)"; fi ;; \
+	      baseline) if [ "$$vex" -ne 0 ] || [ "$$evex" -ne 0 ] || [ "$$ymm" -ne 0 ] || [ "$$zmm" -ne 0 ]; then echo "  [FAIL] $$sym: vex=$$vex evex=$$evex ymm=$$ymm zmm=$$zmm, expected no AVX"; fail=1; else echo "  [ok] $$sym: no AVX/EVEX"; fi ;; \
+	      avx2) if [ "$$vex" -eq 0 ] || [ "$$ymm" -eq 0 ] || [ "$$zmm" -ne 0 ] || [ "$$evex" -ne 0 ]; then echo "  [FAIL] $$sym: vex=$$vex evex=$$evex ymm=$$ymm zmm=$$zmm, expected AVX2"; fail=1; else echo "  [ok] $$sym: AVX2 ($$vex VEX, $$ymm YMM ops)"; fi ;; \
+	      avx512) if [ "$$evex" -eq 0 ]; then echo "  [FAIL] $$sym: no EVEX instructions, expected AVX-512"; fail=1; else echo "  [ok] $$sym: AVX-512 ($$evex EVEX ops)"; fi ;; \
 	    esac; \
-	    rm -f $$obj; \
 	 done; \
-	 if [ $$fail -ne 0 ]; then echo "  multiversion ISA check FAILED"; exit 1; fi; \
-	 echo "  multiversion ISA check passed"
+	 if [ "$$fail" -ne 0 ]; then echo "  linked multiversion ISA check FAILED"; exit 1; fi; \
+	 echo "  linked multiversion ISA check passed"
+else
+check-multiversion-isa:
+	@echo "check-multiversion-isa requires MULTIVERSION=1" >&2
+	@exit 2
+endif
 
 .PHONY: all plugin abi-layout-check check-multiversion-isa test check check-visibility fuzz fuzz-smoke fuzz-seam analyze scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
 

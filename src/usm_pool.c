@@ -69,12 +69,24 @@
 #  define up_usm_pool_apply    USM_PASTE(up_usm_pool_apply,    USM_VARIANT)
 #  define up_usm_pool_effective_threads \
           USM_PASTE(up_usm_pool_effective_threads, USM_VARIANT)
+#  define usm_pool_run_worker \
+          USM_PASTE(usm_pool_run_worker, USM_VARIANT)
+#  if defined(__has_attribute)
+#    if __has_attribute(noclone)
+#      define USM_ISA_ANCHOR __attribute__((used, noinline, noclone))
+#    else
+#      define USM_ISA_ANCHOR __attribute__((used, noinline))
+#    endif
+#  else
+#    define USM_ISA_ANCHOR __attribute__((used, noinline))
+#  endif
    /* ABI-2: cross-check this TU's renamed definitions against the shared
     * variant prototypes — a drift is a compile error here, not silent ABI
     * mismatch at the call boundary. (The pasted _<name> tokens below are
     * distinct from the object-like macros above, so no re-expansion.) */
 #  include "usm_pool_variants.h"
 #else
+#  define USM_ISA_ANCHOR
    /* Single-baseline build: provide the variant_name symbol that callers
     * (e.g. autoupscale.c's engagement log) expect. The dispatcher provides
     * a strong definition in MULTIVERSION=1 plugin builds; here we provide
@@ -333,7 +345,8 @@ static int usm_pool_construct_worker(void *owner, int i)
     return 0;
 }
 
-static void usm_pool_run_worker(void *owner, int i)
+/* Stable final-link symbol for the multiversion ISA regression gate. */
+static void USM_ISA_ANCHOR usm_pool_run_worker(void *owner, int i)
 {
     usm_worker_run(&usm_workers((usm_pool_t *)owner)[i]);
 }
