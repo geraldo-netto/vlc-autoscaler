@@ -187,6 +187,168 @@ static void test_opaque_implies_no_y_plane(void)
     END();
 }
 
+/* ---------- up_chroma_subsample ---------- */
+
+typedef struct {
+    uint32_t fourcc;
+    const char *name;
+    unsigned sub_w;
+    unsigned sub_h;
+} subsample_case_t;
+
+static const subsample_case_t k_subsampled[] = {
+    { UP_FOURCC('I','4','2','0'), "I420", 1, 1 },
+    { UP_FOURCC('Y','V','1','2'), "YV12", 1, 1 },
+    { UP_FOURCC('N','V','1','2'), "NV12", 1, 1 },
+    { UP_FOURCC('N','V','2','1'), "NV21", 1, 1 },
+    { UP_FOURCC('I','4','2','2'), "I422", 1, 0 },
+    { UP_FOURCC('I','4','4','4'), "I444", 0, 0 },
+};
+#define N_SUBSAMPLED (sizeof k_subsampled / sizeof k_subsampled[0])
+
+static void test_subsample_table(void)
+{
+    BEGIN("subsample: every Y-plane chroma reports its documented shifts");
+    for (size_t i = 0; i < N_SUBSAMPLED; i++) {
+        const subsample_case_t *c = &k_subsampled[i];
+        unsigned sw = 99, sh = 99;
+        if (!up_chroma_subsample(c->fourcc, &sw, &sh)
+            || sw != c->sub_w || sh != c->sub_h) {
+            printf("    %s: got (%u,%u) expected (%u,%u)\n",
+                   c->name, sw, sh, c->sub_w, c->sub_h);
+            g_cur_fail = 1;
+        }
+    }
+    END();
+}
+
+static void test_subsample_rejects_non_planar(void)
+{
+    BEGIN("subsample: packed YUV / RGB / opaque / garbage are rejected");
+    unsigned sw = 7, sh = 7;
+    CHECK(!up_chroma_subsample(UP_FOURCC('Y','U','Y','2'), &sw, &sh));
+    CHECK(!up_chroma_subsample(UP_FOURCC('R','V','2','4'), &sw, &sh));
+    CHECK(!up_chroma_subsample(UP_FOURCC('V','A','O','P'), &sw, &sh));
+    CHECK(!up_chroma_subsample(0xFFFFFFFFu, &sw, &sh));
+    /* Rejection must leave the outputs untouched. */
+    CHECK(sw == 7 && sh == 7);
+    END();
+}
+
+static void test_subsample_null_outputs(void)
+{
+    BEGIN("subsample: NULL outputs are rejected without dereferencing");
+    unsigned v = 0;
+    CHECK(!up_chroma_subsample(UP_FOURCC('I','4','2','0'), NULL, &v));
+    CHECK(!up_chroma_subsample(UP_FOURCC('I','4','2','0'), &v, NULL));
+    CHECK(!up_chroma_subsample(UP_FOURCC('I','4','2','0'), NULL, NULL));
+    END();
+}
+
+static void test_subsample_covers_every_y_plane_chroma(void)
+{
+    BEGIN("invariant: has_y_plane(c) <=> subsample(c) succeeds");
+    /* The two lists are edited by hand in the same header; a chroma with a
+     * Y plane but no subsample entry would silently skip crop alignment. */
+    for (size_t i = 0; i < N_SUBSAMPLED; i++)
+        CHECK(up_chroma_has_y_plane(k_subsampled[i].fourcc));
+    unsigned sw, sh;
+    CHECK(!up_chroma_has_y_plane(UP_FOURCC('Y','U','Y','2'))
+          && !up_chroma_subsample(UP_FOURCC('Y','U','Y','2'), &sw, &sh));
+    END();
+}
+
+/* ---------- up_chroma_align_crop_even ---------- */
+
+/* REL-1 regression: NV12/NV21 are 4:2:0 but zimg cannot consume them, so the
+ * crop alignment used to be gated on up_chroma_to_zimg() and skipped them
+ * entirely — the chroma anchor then floored to x/2 while luma started at the
+ * odd byte, displacing chroma half a luma pel for the whole playback. Every
+ * hardware decoder hands back NV12, so this was the common path. */
+static void test_align_semi_planar_420(void)
+{
+    BEGIN("align: NV12/NV21 odd crop dims AND offsets are evened (REL-1)");
+    for (size_t i = 0; i < 2; i++) {
+        const uint32_t c = i ? UP_FOURCC('N','V','2','1')
+                             : UP_FOURCC('N','V','1','2');
+        int w = 641, h = 361;
+        unsigned x = 1, y = 3;
+        up_chroma_align_crop_even(c, &w, &h, &x, &y);
+        CHECK(w == 640 && h == 360 && x == 0 && y == 2);
+    }
+    END();
+}
+
+static void test_align_planar_420(void)
+{
+    BEGIN("align: I420/YV12 even both axes");
+    int w = 101, h = 51;
+    unsigned x = 5, y = 7;
+    up_chroma_align_crop_even(UP_FOURCC('I','4','2','0'), &w, &h, &x, &y);
+    CHECK(w == 100 && h == 50 && x == 4 && y == 6);
+    w = 101; h = 51; x = 5; y = 7;
+    up_chroma_align_crop_even(UP_FOURCC('Y','V','1','2'), &w, &h, &x, &y);
+    CHECK(w == 100 && h == 50 && x == 4 && y == 6);
+    END();
+}
+
+static void test_align_422_horizontal_only(void)
+{
+    BEGIN("align: I422 evens the horizontal axis only (sub_h == 0)");
+    int w = 101, h = 51;
+    unsigned x = 5, y = 7;
+    up_chroma_align_crop_even(UP_FOURCC('I','4','2','2'), &w, &h, &x, &y);
+    CHECK(w == 100 && h == 51 && x == 4 && y == 7);
+    END();
+}
+
+static void test_align_444_and_unsupported_untouched(void)
+{
+    BEGIN("align: I444 (no subsampling) and non-planar chromas are untouched");
+    int w = 101, h = 51;
+    unsigned x = 5, y = 7;
+    up_chroma_align_crop_even(UP_FOURCC('I','4','4','4'), &w, &h, &x, &y);
+    CHECK(w == 101 && h == 51 && x == 5 && y == 7);
+    up_chroma_align_crop_even(UP_FOURCC('Y','U','Y','2'), &w, &h, &x, &y);
+    CHECK(w == 101 && h == 51 && x == 5 && y == 7);
+    up_chroma_align_crop_even(0xFFFFFFFFu, &w, &h, &x, &y);
+    CHECK(w == 101 && h == 51 && x == 5 && y == 7);
+    END();
+}
+
+static void test_align_null_arguments(void)
+{
+    BEGIN("align: each argument is independently optional");
+    int w = 101;
+    unsigned y = 7;
+    /* Open() aligns dims only; ConfigureScaler aligns offsets only. */
+    up_chroma_align_crop_even(UP_FOURCC('I','4','2','0'), &w, NULL,
+                              NULL, NULL);
+    CHECK(w == 100);
+    up_chroma_align_crop_even(UP_FOURCC('I','4','2','0'), NULL, NULL,
+                              NULL, &y);
+    CHECK(y == 6);
+    up_chroma_align_crop_even(UP_FOURCC('I','4','2','0'), NULL, NULL,
+                              NULL, NULL);
+    END();
+}
+
+static void test_align_is_idempotent_and_shrinking(void)
+{
+    BEGIN("invariant: align never grows the window and is idempotent");
+    for (size_t i = 0; i < N_SUBSAMPLED; i++) {
+        int w = 1919, h = 1079;
+        unsigned x = 33, y = 17;
+        up_chroma_align_crop_even(k_subsampled[i].fourcc, &w, &h, &x, &y);
+        const int w1 = w, h1 = h;
+        const unsigned x1 = x, y1 = y;
+        CHECK(w1 <= 1919 && h1 <= 1079 && x1 <= 33 && y1 <= 17);
+        up_chroma_align_crop_even(k_subsampled[i].fourcc, &w, &h, &x, &y);
+        CHECK(w == w1 && h == h1 && x == x1 && y == y1);
+    }
+    END();
+}
+
 int main(void)
 {
     printf("Running chroma_classify tests...\n");
@@ -214,6 +376,20 @@ int main(void)
 
     /* Cross-predicate invariant */
     test_opaque_implies_no_y_plane();
+
+    /* up_chroma_subsample */
+    test_subsample_table();
+    test_subsample_rejects_non_planar();
+    test_subsample_null_outputs();
+    test_subsample_covers_every_y_plane_chroma();
+
+    /* up_chroma_align_crop_even */
+    test_align_semi_planar_420();
+    test_align_planar_420();
+    test_align_422_horizontal_only();
+    test_align_444_and_unsupported_untouched();
+    test_align_null_arguments();
+    test_align_is_idempotent_and_shrinking();
 
     return test_harness_report();
 }

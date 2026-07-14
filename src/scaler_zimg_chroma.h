@@ -40,18 +40,22 @@ static inline int up_chroma_to_zimg(uint32_t c,
 {
     if (sub_w == NULL || sub_h == NULL || yv12_swap == NULL)
         return 0;
+    /* Which chromas zimg's plane-array API can consume. The subsample
+     * factors themselves come from up_chroma_subsample so the two headers
+     * cannot drift; this switch only decides support. */
     switch (c) {
         case UP_FOURCC('I','4','2','0'):
-            *sub_w = 1; *sub_h = 1; *yv12_swap = 0; return 1;
         case UP_FOURCC('Y','V','1','2'):
-            *sub_w = 1; *sub_h = 1; *yv12_swap = 1; return 1;
         case UP_FOURCC('I','4','2','2'):
-            *sub_w = 1; *sub_h = 0; *yv12_swap = 0; return 1;
         case UP_FOURCC('I','4','4','4'):
-            *sub_w = 0; *sub_h = 0; *yv12_swap = 0; return 1;
+            break;
         default:
             return 0;
     }
+    if (!up_chroma_subsample(c, sub_w, sub_h))
+        return 0;
+    *yv12_swap = (c == UP_FOURCC('Y','V','1','2'));
+    return 1;
 }
 
 #endif /* AUTOUPSCALE_SCALER_ZIMG_CHROMA_H */

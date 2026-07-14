@@ -18,6 +18,17 @@
  *     YUV (YUY2/UYVY) and RGB are excluded; sharpening packed RGB or
  *     chroma planes causes visible colour fringing on edges.
  *
+ *   up_chroma_subsample(c, &sub_w, &sub_h) - the chroma subsample shift
+ *     exponents (0 = full rate, 1 = half rate) on each axis. This is the
+ *     single source of truth for subsampling: scaler_zimg_chroma.h derives
+ *     its (sub_w, sub_h) from it, and picture_view.h's per-plane group
+ *     table must agree with it (tests/test_chroma_classify.c asserts that).
+ *     Unlike the zimg mapping it covers the semi-planar NV12/NV21 too -
+ *     they are 4:2:0 whether or not zimg can consume them.
+ *
+ *   up_chroma_align_crop_even(c, w, h, x, y) - round a crop window down to
+ *     even on each subsampled axis. Any NULL argument is skipped.
+ *
  * The fourcc literals are spelled out as 4-character UP_FOURCC() calls
  * so this header doesn't pull in any VLC headers - the test files can
  * include it directly. The values are byte-identical to VLC's
@@ -103,6 +114,64 @@ static inline bool up_chroma_has_y_plane(uint32_t c)
             return true;
         default:
             return false;
+    }
+}
+
+/*
+ * Chroma subsample shift exponents, per axis. Returns false (and leaves the
+ * outputs untouched) for chromas with no discrete Y plane - packed YUV, RGB
+ * and the opaque surfaces, none of which this filter reads plane-wise.
+ */
+static inline bool up_chroma_subsample(uint32_t c,
+                                       unsigned *sub_w, unsigned *sub_h)
+{
+    if (sub_w == NULL || sub_h == NULL)
+        return false;
+    /* A flat switch keeps new chroma mappings easy to audit. */
+    switch (c) {
+        case UP_FOURCC('I','4','2','0'):  /* planar 4:2:0 */
+        case UP_FOURCC('Y','V','1','2'):  /* planar 4:2:0, V/U swap */
+        case UP_FOURCC('N','V','1','2'):  /* semi-planar 4:2:0 */
+        case UP_FOURCC('N','V','2','1'):  /* semi-planar 4:2:0, V/U swap */
+            *sub_w = 1; *sub_h = 1; return true;
+        case UP_FOURCC('I','4','2','2'):  /* planar 4:2:2 */
+            *sub_w = 1; *sub_h = 0; return true;
+        case UP_FOURCC('I','4','4','4'):  /* planar 4:4:4 */
+            *sub_w = 0; *sub_h = 0; return true;
+        default:
+            return false;
+    }
+}
+
+/*
+ * Round a source crop window down to even on every subsampled axis.
+ *
+ * A subsampled chroma plane anchors its crop at offset >> subsample, floored
+ * (up_picture_plane_extent). An odd luma offset therefore floors the chroma
+ * anchor and shifts chroma half a luma pel against luma - visible colour
+ * fringing on saturated edges, identical on both backends because they share
+ * picture_view, so the byte-identity tests cannot see it. Odd crop *dims* are
+ * just as bad on the zimg path: the graph build rejects an image dimension
+ * that is not divisible by the subsample factor, which turns into a sticky
+ * lazy-init failure and every frame dropped. VP9/AV1 permit both with 4:2:0.
+ *
+ * Rounding down only ever shrinks the window, so offset+width stays inside
+ * the coded plane. Any of the four pointers may be NULL.
+ */
+static inline void up_chroma_align_crop_even(uint32_t c, int *w, int *h,
+                                             unsigned *x, unsigned *y)
+{
+    unsigned sub_w;
+    unsigned sub_h;
+    if (!up_chroma_subsample(c, &sub_w, &sub_h))
+        return;
+    if (sub_w) {
+        if (w) *w &= ~1;
+        if (x) *x &= ~1u;
+    }
+    if (sub_h) {
+        if (h) *h &= ~1;
+        if (y) *y &= ~1u;
     }
 }
 

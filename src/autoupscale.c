@@ -33,7 +33,6 @@
 #include "usm_pool.h"
 #include "scaler.h"
 #include "scaler_pick_logic.h"
-#include "scaler_zimg_chroma.h"
 #include "perfmon.h"
 #include "threading.h"
 #include "chroma_classify.h"
@@ -429,46 +428,6 @@ static void ResolveInputDims( const filter_t *p_filter,
     *src_h = height <= INT_MAX ? (int)height : -1;
 }
 
-/* REL-4: even-align src dims on subsampled axes. zimg rejects image
- * dims not divisible by the subsample factor, so an odd visible crop
- * (VP9/AV1 allow them with 4:2:0) would pass Open and then fail EVERY
- * per-cell graph build on the first valid frame — sticky lazy-init failure,
- * every frame dropped. Cropping one source row/column is visually
- * free; up__clamp_even already does the same for dst. */
-static void EvenAlignSrcDims( vlc_fourcc_t chroma, int *src_w, int *src_h )
-{
-    unsigned sub_w;
-    unsigned sub_h;
-    int yv12_swap;
-    if( up_chroma_to_zimg( chroma, &sub_w, &sub_h, &yv12_swap ) )
-    {
-        if( sub_w ) *src_w &= ~1;
-        if( sub_h ) *src_h &= ~1;
-    }
-}
-
-/* REL-1: subsampled chroma planes anchor their crop origin at
- * offset >> subsample, floored in up_picture_plane_extent. An odd luma
- * i_x_offset/i_y_offset (VP9/AV1 allow them with 4:2:0/4:2:2) therefore
- * floors the chroma anchor and shifts chroma ~half a luma pel against luma —
- * visible colour fringing on saturated edges, identical on both backends
- * (shared picture_view), so the byte-identity tests don't flag it. Drop the
- * crop offset to even on each subsampled axis, the same alignment
- * EvenAlignSrcDims applies to the crop dimensions. Rounding down only ever
- * decreases the offset, so offset+width stays within the coded plane. */
-static void EvenAlignSrcOffsets( vlc_fourcc_t chroma,
-                                 unsigned *x_offset, unsigned *y_offset )
-{
-    unsigned sub_w;
-    unsigned sub_h;
-    int yv12_swap;
-    if( up_chroma_to_zimg( chroma, &sub_w, &sub_h, &yv12_swap ) )
-    {
-        if( sub_w ) *x_offset &= ~1u;
-        if( sub_h ) *y_offset &= ~1u;
-    }
-}
-
 /* Opaque-chroma rejection + backend selection. Logs the reason and returns
  * NULL when this filter cannot run on the input — Open() turns NULL into
  * VLC_EGENERIC. */
@@ -572,7 +531,8 @@ static void ConfigureScaler( scaler_ctx_t *sc,
     sc->src_coded_h  = p_filter->fmt_in.video.i_height;
     sc->src_x_offset = p_filter->fmt_in.video.i_x_offset;
     sc->src_y_offset = p_filter->fmt_in.video.i_y_offset;
-    EvenAlignSrcOffsets( chroma, &sc->src_x_offset, &sc->src_y_offset );
+    up_chroma_align_crop_even( chroma, NULL, NULL,
+                               &sc->src_x_offset, &sc->src_y_offset );
     sc->dst_w        = target.width;
     sc->dst_h        = target.height;
     sc->algo         = algo;
@@ -763,7 +723,8 @@ static int Open( vlc_object_t *p_this )
     int src_h;
     ResolveInputDims( p_filter, &src_w, &src_h );
 
-    EvenAlignSrcDims( p_filter->fmt_in.video.i_chroma, &src_w, &src_h );
+    up_chroma_align_crop_even( p_filter->fmt_in.video.i_chroma,
+                               &src_w, &src_h, NULL, NULL );
 
     int skip_above   = InheritIntSat( p_filter, CFG_PREFIX "skip-above" );
     int preset       = InheritIntSat( p_filter, CFG_PREFIX "target" );

@@ -211,6 +211,145 @@ static void check_random_fourcc(uint32_t fourcc)
     }
 }
 
+/* up_chroma_to_zimg derives its shifts from up_chroma_subsample, so any
+ * chroma zimg accepts must report the same (sub_w, sub_h) through the generic
+ * mapping — and the generic one must additionally cover the semi-planar 4:2:0
+ * pair that zimg rejects. */
+static void check_zimg_agrees_with_subsample(uint32_t fourcc)
+{
+    unsigned zw, zh, gw = 0, gh = 0;
+    int swap;
+    if (up_chroma_to_zimg(fourcc, &zw, &zh, &swap) != 1)
+        return;
+    if (!up_chroma_subsample(fourcc, &gw, &gh))
+        FAIL("0x%08x accepted by zimg but has no subsample entry", fourcc);
+    if (zw != gw || zh != gh)
+        FAIL("0x%08x subsample drift: zimg (%u,%u) vs generic (%u,%u)",
+             fourcc, zw, zh, gw, gh);
+}
+
+static void check_subsample_contract(uint32_t fourcc)
+{
+    unsigned sw = 0xDEAD, sh = 0xBEEF;
+    if (!up_chroma_subsample(fourcc, &sw, &sh)) {
+        /* Rejection must leave the outputs untouched. */
+        if (sw != 0xDEAD || sh != 0xBEEF)
+            FAIL("0x%08x rejected but outputs were written", fourcc);
+        return;
+    }
+    if (sw > 1) FAIL("0x%08x sub_w=%u out of range", fourcc, sw);
+    if (sh > 1) FAIL("0x%08x sub_h=%u out of range", fourcc, sh);
+    /* Subsampling is only defined for chromas with a discrete Y plane. */
+    if (!up_chroma_has_y_plane(fourcc))
+        FAIL("0x%08x has a subsample entry but no Y plane", fourcc);
+}
+
+/* Indexed by axis so every invariant is checked one axis at a time — the
+ * per-axis helpers stay well inside the project's CCN limit. */
+enum { AXIS_X = 0, AXIS_Y = 1, AXIS_COUNT = 2 };
+
+typedef struct {
+    int dim[AXIS_COUNT];       /* width, height */
+    unsigned off[AXIS_COUNT];  /* x_offset, y_offset */
+} crop_window_t;
+
+static crop_window_t crop_window_from(const uint8_t *data, size_t size)
+{
+    crop_window_t win = { { 1, 1 }, { 0, 0 } };
+    if (size >= 12) {
+        win.dim[AXIS_X] = (int)(data[5] | ((unsigned)data[6] << 8)) + 1;
+        win.dim[AXIS_Y] = (int)(data[7] | ((unsigned)data[8] << 8)) + 1;
+        win.off[AXIS_X] = data[9] | ((unsigned)data[10] << 8);
+        win.off[AXIS_Y] = data[11];
+    }
+    return win;
+}
+
+static crop_window_t crop_align(uint32_t fourcc, crop_window_t win)
+{
+    up_chroma_align_crop_even(fourcc, &win.dim[AXIS_X], &win.dim[AXIS_Y],
+                              &win.off[AXIS_X], &win.off[AXIS_Y]);
+    return win;
+}
+
+static bool crop_equal(crop_window_t a, crop_window_t b)
+{
+    return a.dim[AXIS_X] == b.dim[AXIS_X] && a.dim[AXIS_Y] == b.dim[AXIS_Y]
+        && a.off[AXIS_X] == b.off[AXIS_X] && a.off[AXIS_Y] == b.off[AXIS_Y];
+}
+
+/* Alignment may only shrink an axis, and by at most one pel — that is what
+ * keeps offset+dim inside the coded plane. */
+static void check_axis_shrinks(uint32_t fourcc, int a, crop_window_t before,
+                               crop_window_t after)
+{
+    if (after.dim[a] > before.dim[a] || after.off[a] > before.off[a])
+        FAIL("0x%08x axis %d align grew the window (%d/%u -> %d/%u)",
+             fourcc, a, before.dim[a], before.off[a],
+             after.dim[a], after.off[a]);
+    if (after.dim[a] < 0)
+        FAIL("0x%08x axis %d align produced a negative dim (%d)",
+             fourcc, a, after.dim[a]);
+    if (before.dim[a] - after.dim[a] > 1 || before.off[a] - after.off[a] > 1)
+        FAIL("0x%08x axis %d align shifted by more than one pel", fourcc, a);
+}
+
+static void check_axis_parity(uint32_t fourcc, int a, unsigned sub,
+                              crop_window_t after)
+{
+    if (!sub)
+        return;
+    if ((after.dim[a] & 1) || (after.off[a] & 1u))
+        FAIL("0x%08x axis %d is subsampled but dim=%d off=%u still odd",
+             fourcc, a, after.dim[a], after.off[a]);
+}
+
+static void check_align_noop_when_unsupported(uint32_t fourcc,
+                                              crop_window_t before,
+                                              crop_window_t after)
+{
+    unsigned sub[AXIS_COUNT];
+    if (up_chroma_subsample(fourcc, &sub[AXIS_X], &sub[AXIS_Y]))
+        return;
+    if (!crop_equal(before, after))
+        FAIL("0x%08x has no subsample entry but the window changed", fourcc);
+}
+
+/* Each pointer is independently optional — the two production call sites pass
+ * dims only (Open) and offsets only (ConfigureScaler). */
+static void check_align_partial_pointers(uint32_t fourcc, crop_window_t before,
+                                         crop_window_t after)
+{
+    int w_only = before.dim[AXIS_X];
+    unsigned y_only = before.off[AXIS_Y];
+    up_chroma_align_crop_even(fourcc, &w_only, NULL, NULL, NULL);
+    up_chroma_align_crop_even(fourcc, NULL, NULL, NULL, &y_only);
+    up_chroma_align_crop_even(fourcc, NULL, NULL, NULL, NULL);
+    if (w_only != after.dim[AXIS_X] || y_only != after.off[AXIS_Y])
+        FAIL("0x%08x partial-pointer align disagrees with the full call",
+             fourcc);
+}
+
+static void check_crop_align(uint32_t fourcc, const uint8_t *data, size_t size)
+{
+    const crop_window_t before = crop_window_from(data, size);
+    const crop_window_t after = crop_align(fourcc, before);
+
+    unsigned sub[AXIS_COUNT] = { 0, 0 };
+    const bool subsampled = up_chroma_subsample(fourcc, &sub[AXIS_X],
+                                                &sub[AXIS_Y]);
+    for (int a = 0; a < AXIS_COUNT; a++) {
+        check_axis_shrinks(fourcc, a, before, after);
+        if (subsampled)
+            check_axis_parity(fourcc, a, sub[a], after);
+    }
+    check_align_noop_when_unsupported(fourcc, before, after);
+    check_align_partial_pointers(fourcc, before, after);
+
+    if (!crop_equal(crop_align(fourcc, after), after))
+        FAIL("0x%08x align is not idempotent", fourcc);
+}
+
 /* ---- single iteration ---- */
 
 static void run_one(const uint8_t *data, size_t size)
@@ -226,6 +365,9 @@ static void run_one(const uint8_t *data, size_t size)
 
     check_random_fourcc(fourcc);
     check_cross_properties(fourcc);
+    check_zimg_agrees_with_subsample(fourcc);
+    check_subsample_contract(fourcc);
+    check_crop_align(fourcc, data, size);
 
     /* Cycle through 7 mask combinations (1..7) so each NULL position
      * gets tested AND combinations with multiple NULLs. The mask is
@@ -257,7 +399,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
 static int smoke_iter(long i)
 {
-    uint8_t buf[8];
+    uint8_t buf[16];  /* >= 12: check_crop_align reads dims/offsets at [5..11] */
     fuzz_smoke_fill(buf, sizeof buf);
 
     /* Bias every 4th iteration to a known fourcc, so coverage hits

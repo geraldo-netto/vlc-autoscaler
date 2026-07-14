@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "../src/picture_view.h"
 
+#include "../src/chroma_classify.h"
+
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
@@ -304,8 +306,39 @@ static void test_unknown_chroma_layout(void)
                                 VLC_FOURCC('X', 'X', 'X', 'X'), &region));
 }
 
+/* ARCH-1: the per-plane group table here and up_chroma_subsample() in
+ * chroma_classify.h both encode chroma subsampling. If they drift, plane
+ * extents and the crop alignment disagree on one chroma and nothing else
+ * notices. Pin them to each other: for every Y-plane chroma the chroma
+ * plane's group size must be exactly 1 << subsample_shift on each axis. */
+static void test_layout_matches_subsample_table(void)
+{
+    static const vlc_fourcc_t chromas[] = {
+        VLC_CODEC_I420, VLC_CODEC_YV12, VLC_CODEC_I422,
+        VLC_CODEC_I444, VLC_CODEC_NV12, VLC_CODEC_NV21,
+    };
+    for (size_t i = 0; i < sizeof chromas / sizeof chromas[0]; ++i)
+    {
+        const up_picture_format_layout_t *layout =
+            up_picture_format_layout(chromas[i]);
+        CHECK(layout != NULL);
+        if (!layout)
+            continue;
+        unsigned sub_w = 99;
+        unsigned sub_h = 99;
+        CHECK(up_chroma_subsample(chromas[i], &sub_w, &sub_h));
+        /* Plane 0 is luma: never subsampled. Plane 1 carries the chroma
+         * group size (both chroma planes share it on planar formats). */
+        CHECK(layout->x_group_pixels[0] == 1);
+        CHECK(layout->y_group_pixels[0] == 1);
+        CHECK(layout->x_group_pixels[1] == (1u << sub_w));
+        CHECK(layout->y_group_pixels[1] == (1u << sub_h));
+    }
+}
+
 int main(void)
 {
+    test_layout_matches_subsample_table();
     test_every_supported_format();
     test_odd_crop_and_physical_order();
     test_invalid_format_contract();
