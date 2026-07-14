@@ -642,12 +642,18 @@ static void ClampConfig( int *preset, int *algo, int *backend, int *usm, int *sk
 /* OBS-5: the exported stat variables, in creation order. Kept as one table so
  * CreateStatsVars / the MaybeLogStats export / the Close teardown all agree on
  * the set; the names are documented in README under "Exported VLC variables". */
-static const char *const k_stats_vars[] = {
-    "autoupscale-ewma-us",   /* current EWMA frame time, microseconds */
-    "autoupscale-frames",    /* frames processed */
-    "autoupscale-dropped",   /* frames dropped (OBS-4) */
+enum stats_var_id {
+    STAT_VAR_EWMA_US,
+    STAT_VAR_FRAMES,
+    STAT_VAR_DROPPED,
+    STAT_VAR_COUNT,
 };
-#define STATS_VAR_COUNT (sizeof(k_stats_vars) / sizeof(k_stats_vars[0]))
+
+static const char *const k_stats_vars[STAT_VAR_COUNT] = {
+    [STAT_VAR_EWMA_US] = "autoupscale-ewma-us",
+    [STAT_VAR_FRAMES] = "autoupscale-frames",
+    [STAT_VAR_DROPPED] = "autoupscale-dropped",
+};
 
 /* OBS-5: expose performance and frame stats via VLC variables.
  * ERR-1: on failure the export is disabled rather than var_SetInteger
@@ -656,7 +662,7 @@ static const char *const k_stats_vars[] = {
  * Returns 1 only when the whole set exists. */
 static int CreateStatsVars( filter_t *p_filter )
 {
-    for( size_t i = 0; i < STATS_VAR_COUNT; i++ )
+    for( size_t i = 0; i < STAT_VAR_COUNT; i++ )
     {
         if( var_Create( p_filter, k_stats_vars[i],
                         VLC_VAR_INTEGER ) == VLC_SUCCESS )
@@ -1009,10 +1015,12 @@ static void MaybeLogStats( filter_t *p_filter, filter_sys_t *p_sys,
      * var_SetInteger takes the object var lock, too heavy per frame. */
     if( p_sys->stats_vars_ok )
     {
-        var_SetInteger( p_filter, "autoupscale-ewma-us",
+        var_SetInteger( p_filter, k_stats_vars[STAT_VAR_EWMA_US],
                         (int64_t)up_perfmon_ewma_us( &p_sys->perfmon ) );
-        var_SetInteger( p_filter, "autoupscale-frames", p_sys->frame_count );
-        var_SetInteger( p_filter, "autoupscale-dropped", p_sys->dropped_count );
+        var_SetInteger( p_filter, k_stats_vars[STAT_VAR_FRAMES],
+                        p_sys->frame_count );
+        var_SetInteger( p_filter, k_stats_vars[STAT_VAR_DROPPED],
+                        p_sys->dropped_count );
     }
 }
 
@@ -1197,7 +1205,7 @@ static void Close( vlc_object_t *p_this )
          * pair having been created successfully. */
         if( p_sys->stats_vars_ok )
         {
-            for( size_t i = 0; i < STATS_VAR_COUNT; i++ )
+            for( size_t i = 0; i < STAT_VAR_COUNT; i++ )
                 var_Destroy( p_filter, k_stats_vars[i] );
         }
         free( p_sys );

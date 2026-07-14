@@ -77,7 +77,6 @@ the maximum CCN is 10.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| DUP-2 | open | S | `k_stats_vars` is the advertised single source of stat-variable names (`src/autoupscale.c:639-647`), but `MaybeLogStats` repeats the same three strings at `:995-1002`. | Use indexed descriptors containing the name and value source, or at minimum index `k_stats_vars` in the export calls. |
 
 ## architecture/modularity/SOLID
 
