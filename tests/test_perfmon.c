@@ -16,7 +16,7 @@
 
 static void test_init_disabled_for_zero_fps(void)
 {
-    BEGIN("init: target_fps <= 0 disables monitoring");
+    BEGIN("init: target_fps <= 0 disables the advisory");
     up_perfmon_t pm;
     up_perfmon_init(&pm, 0);
     CHECK_EQ(pm.enabled, 0);
@@ -27,6 +27,38 @@ static void test_init_disabled_for_zero_fps(void)
     up_perfmon_init(&pm, -50);
     CHECK_EQ(pm.enabled, 0);
     CHECK_EQ(up_perfmon_record_ns(&pm, 999999999LL), 0);
+    END();
+}
+
+/* OBS-3: --autoupscale-target-fps=0 is documented as the way to silence the
+ * one-shot tuning hint. It used to switch off recording entirely, so
+ * up_perfmon_ewma_us returned a hard 0 forever — an operator who silenced the
+ * hint and then polled autoupscale-ewma-us (or read the periodic stats line)
+ * saw "0 us per frame", indistinguishable from a real measurement. The
+ * advisory kill-switch must kill the WARNING, not the telemetry. */
+static void test_disabled_advisory_keeps_ewma_live(void)
+{
+    BEGIN("target_fps=0 silences the advisory but keeps the EWMA live (OBS-3)");
+    up_perfmon_t pm;
+    up_perfmon_init(&pm, 0);
+
+    const int64_t frame_ns = 5000000LL;   /* 5 ms */
+    for (int i = 0; i < 200; i++)
+        CHECK_EQ(up_perfmon_record_ns(&pm, frame_ns), 0);   /* never warns */
+
+    /* ...but the measurement is there, and it is the right one. */
+    CHECK(up_perfmon_ewma_us(&pm) == frame_ns / 1000);
+    CHECK_EQ(pm.has_warned, 0);
+    /* No budget means no budget line to report. */
+    CHECK_EQ(up_perfmon_budget_us(&pm), 0);
+
+    /* An enabled perfmon fed the same frames reports the same EWMA — the two
+     * differ only in whether the advisory can fire. */
+    up_perfmon_t warned;
+    up_perfmon_init(&warned, 60);
+    for (int i = 0; i < 200; i++)
+        up_perfmon_record_ns(&warned, frame_ns);
+    CHECK(up_perfmon_ewma_us(&warned) == up_perfmon_ewma_us(&pm));
     END();
 }
 
@@ -314,6 +346,7 @@ int main(void)
     printf("Running perfmon tests...\n");
 
     test_init_disabled_for_zero_fps();
+    test_disabled_advisory_keeps_ewma_live();
     test_init_60fps_budget();
     test_init_target_fps_oob_boundaries();
     test_warmup_drops_first_samples();

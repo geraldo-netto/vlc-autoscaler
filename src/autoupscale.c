@@ -956,7 +956,7 @@ static void ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
             pixels, pitch,        /* in-place */
             p_sys->usm_amount_q8 ) != 0 )
     {
-        msg_Warn( p_filter,
+        msg_Info( p_filter,   /* OBS-2: msg_Warn is suppressed by default */
                   "AutoUpscale: USM pool initialization or dispatch failed; "
                   "sharpening disabled for this playback" );
         p_sys->usm_amount_q8 = 0;
@@ -1016,6 +1016,19 @@ static void RecordPerf( filter_t *p_filter, filter_sys_t *p_sys,
     MaybeLogStats( p_filter, p_sys, t_end );
 }
 
+/* OBS-1: count a dropped frame AND drive the stats tick. MaybeLogStats used to
+ * hang off RecordPerf, which only runs on the success path — so once a fatal
+ * backend failure started dropping every frame, the periodic "frames=…
+ * dropped=…" line stopped and var_SetInteger("autoupscale-dropped", …) was
+ * never called again. An embedder polling that variable read 0 while 100% of
+ * frames were being dropped: the counter went blind in exactly the scenario it
+ * exists for. */
+static void RecordDrop( filter_t *p_filter, filter_sys_t *p_sys )
+{
+    p_sys->dropped_count++;
+    MaybeLogStats( p_filter, p_sys, monotonic_ns() );
+}
+
 /* SYS-2: one-shot runtime fallback to swscale after the active backend
  * reports a fatal processing failure. zimg defers its heavy setup
  * (worker spawn, scratch alloc, per-cell graph build) to the first valid frame,
@@ -1062,7 +1075,7 @@ static void TryBackendFallback( filter_t *p_filter, filter_sys_t *p_sys )
         return;
     }
     ctx->backend = sw;
-    msg_Warn( p_filter,
+    msg_Info( p_filter,   /* OBS-2: msg_Warn is suppressed by default */
               "AutoUpscale: zimg failed at runtime; "
               "fell back to swscale for the rest of this playback" );
 }
@@ -1075,7 +1088,7 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
     /* SYS-2: a failed backend fallback leaves no live backend. */
     if( !p_sys->scaler.backend )
     {
-        p_sys->dropped_count++;
+        RecordDrop( p_filter, p_sys );
         picture_Release( p_in );
         return NULL;
     }
@@ -1089,11 +1102,15 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
         if( !p_sys->newpic_fail_logged )
         {
             p_sys->newpic_fail_logged = 1;
-            msg_Warn( p_filter,
+            /* OBS-2: msg_Info, not msg_Warn — VLC 3.x's default verbosity
+             * suppresses level-2 warnings, so the user whose playback is
+             * stuttering from pool exhaustion would see nothing at all. The
+             * latch keeps it one-shot, so there is no spam risk. */
+            msg_Info( p_filter,
                       "AutoUpscale: output picture pool exhausted; "
                       "dropping frame(s) (this is logged only once)" );
         }
-        p_sys->dropped_count++;
+        RecordDrop( p_filter, p_sys );
         picture_Release( p_in );
         return NULL;
     }
@@ -1107,14 +1124,14 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
         if( !p_sys->process_fail_logged )
         {
             p_sys->process_fail_logged = 1;
-            msg_Warn( p_filter,
+            msg_Info( p_filter,   /* OBS-2: see the pool-exhaustion note */
                       "AutoUpscale: %s backend failed to process a frame; "
                       "dropping frame(s) (this is logged only once)",
                       p_sys->scaler.backend->name );
         }
         if( scaler_process_needs_fallback( status ) )
             TryBackendFallback( p_filter, p_sys );
-        p_sys->dropped_count++;
+        RecordDrop( p_filter, p_sys );
         picture_Release( p_out );
         picture_Release( p_in );
         return NULL;

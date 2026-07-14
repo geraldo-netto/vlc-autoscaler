@@ -1313,7 +1313,9 @@ static void zimg_warn_bad_geometry(zimg_priv_t *p)
     if (p->preflight_warned) return;
     p->preflight_warned = true;
     if (p->lazy.log_obj)
-        msg_Warn((vlc_object_t *)p->lazy.log_obj,
+        /* OBS-2: msg_Info — VLC 3.x suppresses msg_Warn by default, so a
+         * user losing every frame to this would see nothing. One-shot. */
+        msg_Info((vlc_object_t *)p->lazy.log_obj,
                  "zimg: source/destination picture geometry unusable "
                  "(planes, extent, or crop); dropping frame(s)");
 }
@@ -1331,7 +1333,7 @@ static scaler_process_status_t zimg_note_alignment_drift(zimg_priv_t *p)
     if (!p->drift.warned) {
         p->drift.warned = true;
         if (p->lazy.log_obj)
-            msg_Warn((vlc_object_t *)p->lazy.log_obj,
+            msg_Info((vlc_object_t *)p->lazy.log_obj,   /* OBS-2 */
                      "AutoUpscale: zimg: picture storage drifted from the "
                      "alignment the zero-copy graphs were built for; "
                      "dropping frame(s), failing over after %d consecutive "

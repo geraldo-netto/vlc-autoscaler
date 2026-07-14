@@ -42,7 +42,8 @@ typedef struct
     int64_t ewma_ns;         /* EWMA of frame times, nanoseconds */
     int     samples_seen;    /* samples recorded, capped at trust threshold */
     int     has_warned;      /* latched once warning fires */
-    int     enabled;         /* 0 if monitoring disabled (e.g. target_fps<=0) */
+    int     enabled;         /* 0 when the ADVISORY is off (target_fps<=0);
+                              * EWMA tracking runs regardless (OBS-3) */
 } up_perfmon_t;
 
 /* EWMA step = floor(diff / 2^ALPHA_SHIFT). Bit-identical to the
@@ -58,8 +59,18 @@ static inline int64_t up_perfmon__ewma_step(int64_t diff)
 }
 
 /*
- * Initialize a perfmon. target_fps <= 0 disables monitoring (record_ns
- * always returns 0). Sensible target_fps range is 1..240.
+ * Initialize a perfmon. target_fps <= 0 disables the ADVISORY (record_ns
+ * always returns 0) but NOT the measurement: the EWMA keeps tracking so the
+ * periodic stats line and the exported autoupscale-ewma-us variable stay live.
+ *
+ * OBS-3: --autoupscale-target-fps=0 is documented as the way to silence the
+ * one-shot tuning hint. It used to switch off up_perfmon_record_ns entirely,
+ * so up_perfmon_ewma_us returned a hard 0 for the rest of playback — an
+ * operator who silenced the hint and then polled the telemetry read "0 us per
+ * frame", indistinguishable from a real measurement, with nothing logged to
+ * say the counter was dead.
+ *
+ * Sensible target_fps range is 1..240.
  */
 static inline void up_perfmon_init(up_perfmon_t *pm, int target_fps)
 {
@@ -90,7 +101,7 @@ static inline void up_perfmon_init(up_perfmon_t *pm, int target_fps)
  */
 static inline int up_perfmon_record_ns(up_perfmon_t *pm, int64_t frame_ns)
 {
-    if (pm == NULL || !pm->enabled) return 0;
+    if (pm == NULL) return 0;
     if (frame_ns <= 0) return 0;
 
     if (pm->samples_seen < UP_PERFMON_MIN_FRAMES_FOR_WARN)
@@ -107,6 +118,9 @@ static inline int up_perfmon_record_ns(up_perfmon_t *pm, int64_t frame_ns)
      * taken in a wider type so it can't overflow. */
     pm->ewma_ns += up_perfmon__ewma_step(frame_ns - pm->ewma_ns);
 
+    /* Advisory off (target_fps <= 0): keep tracking, never warn (OBS-3). */
+    if (!pm->enabled) return 0;
+
     /* Warn-once latch suppresses only the return value, not tracking. */
     if (pm->has_warned) return 0;
 
@@ -121,11 +135,11 @@ static inline int up_perfmon_record_ns(up_perfmon_t *pm, int64_t frame_ns)
 }
 
 /* Convenience accessor: current EWMA in microseconds (for nicer log output).
- * Returns 0 if monitoring is disabled or warmup hasn't completed.
- * Warmup completes on the WARMUP_FRAMES-th sample (when EWMA is seeded). */
+ * Live whether or not the advisory is enabled (OBS-3); returns 0 only before
+ * warmup completes, i.e. on the WARMUP_FRAMES-th sample the EWMA is seeded. */
 static inline int64_t up_perfmon_ewma_us(const up_perfmon_t *pm)
 {
-    if (pm == NULL || !pm->enabled) return 0;
+    if (pm == NULL) return 0;
     if (pm->samples_seen < UP_PERFMON_WARMUP_FRAMES) return 0;
     return pm->ewma_ns / 1000;
 }
