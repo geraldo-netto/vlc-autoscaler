@@ -85,6 +85,28 @@ static void test_hblur_constant_invariant(void)
     END();
 }
 
+static void test_q8_floor_division(void)
+{
+    BEGIN("Q8 division floors negative fractional products");
+    CHECK_EQ(up_usm__floor_div_q8(76), 0);
+    CHECK_EQ(up_usm__floor_div_q8(-76), -1);
+    CHECK_EQ(up_usm__floor_div_q8(-256), -1);
+    CHECK_EQ(up_usm__floor_div_q8(-257), -2);
+    END();
+}
+
+static void test_combine_negative_fraction(void)
+{
+    BEGIN("combine_row preserves negative Q8 floor rounding");
+    const uint8_t src = 100;
+    const uint8_t blur = 101;
+    uint8_t dst = 0;
+
+    up_usm__combine_row(&dst, &src, &blur, &blur, &blur, 1, 76);
+    CHECK_EQ(dst, 99);
+    END();
+}
+
 /* ---------------------- apply_plane ---------------------- */
 
 static void test_apply_amount_zero_is_identity(void)
@@ -437,6 +459,8 @@ int main(void)
     test_workspace_size();
     test_hblur_row();
     test_hblur_constant_invariant();
+    test_q8_floor_division();
+    test_combine_negative_fraction();
     test_apply_amount_zero_is_identity();
     test_apply_constant_input();
     test_apply_impulse_amount_one();

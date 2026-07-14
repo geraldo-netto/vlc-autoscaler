@@ -29,7 +29,6 @@ strings are literals, and allocation dimensions are bounded.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| UB-1 | open | S | `src/usm.h:218` right-shifts `amount_q8 * hi` even when the product is negative; C11 makes right shift of a negative signed value implementation-defined. | Replace it with explicit floor division by 256, correcting a negative remainder so current GCC/x86 output remains byte-identical. |
 
 No other open UB finding after tracing shifts, allocation arithmetic, crop/plane
 bounds, worker lifetimes, atomics, and in-place USM halo ownership.

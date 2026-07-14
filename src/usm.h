@@ -185,6 +185,13 @@ static inline void up_usm__pass1_hblur(
     }
 }
 
+static inline int up_usm__floor_div_q8(int value)
+{
+    int quotient = value / 256;
+    if (value < 0 && value % 256 != 0) quotient--;
+    return quotient;
+}
+
 /*
  * Internal: combine one row's blur and source values into the sharpened
  * destination row. The triangle blur kernel reads three workspace rows
@@ -215,7 +222,7 @@ static inline void up_usm__combine_row(
                   + (int)dn_row[x] + 2) >> 2;
         int s = (int)src_row[x];
         int hi = s - blur;
-        int sharpened = s + ((amount_q8 * hi) >> 8);
+        int sharpened = s + up_usm__floor_div_q8(amount_q8 * hi);
         if (sharpened < 0) sharpened = 0;
         else if (sharpened > 255) sharpened = 255;
         dst_row[x] = (uint8_t)sharpened;
