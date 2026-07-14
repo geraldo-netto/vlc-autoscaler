@@ -1067,9 +1067,17 @@ static picture_t *FinishScaledFrame( filter_t *p_filter, filter_sys_t *p_sys,
  * broad-coverage swscale fallback would never engage. The
  * scaler_ctx_t geometry is backend-agnostic, so closing zimg and opening
  * swscale on the same ctx is a clean swap; one frame is dropped. A
- * forced --autoupscale-backend=1 (zimg) is respected. On a failed swap
- * the backend is left NULL and Filter() drops every frame — same
- * behavior as before, minus the dead process() call. */
+ * forced --autoupscale-backend=1 (zimg) is respected: the failed backend is
+ * retired without opening swscale. On a failed swap the backend is left NULL
+ * and Filter() drops every frame — same behavior as before, minus the dead
+ * process() call. */
+static void RetireBackend( scaler_ctx_t *ctx )
+{
+    ctx->backend->close( ctx );
+    ctx->priv = NULL;
+    ctx->backend = NULL;
+}
+
 static void TryBackendFallback( filter_t *p_filter, filter_sys_t *p_sys )
 {
     if( p_sys->fallback_tried )
@@ -1088,14 +1096,13 @@ static void TryBackendFallback( filter_t *p_filter, filter_sys_t *p_sys )
                  "AutoUpscale: zimg failed fatally but "
                  "--autoupscale-backend forces zimg; swscale fallback "
                  "suppressed, all remaining frames will be dropped" );
+        RetireBackend( ctx );
         return;
     }
 
     const scaler_backend_t *sw = scaler_pick( SCALER_BACKEND_SWSCALE,
                                               ctx->chroma, ctx->algo );
-    ctx->backend->close( ctx );
-    ctx->priv    = NULL;
-    ctx->backend = NULL;
+    RetireBackend( ctx );
     if( !sw || sw->open( ctx ) != 0 )
     {
         msg_Err( p_filter,

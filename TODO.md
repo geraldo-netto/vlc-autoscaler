@@ -131,7 +131,6 @@ recovery change must nevertheless avoid freeing storage unless termination is pr
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| RES-2 | open | S | Zimg poison now stops and joins threads (`src/worker_pool.h:336-340`), but worker slots, graphs, tmp/tile buffers, and shared scratch are released only by `zimg_close` (`src/scaler_zimg.c:1038-1069,1188-1205,1237-1247`). Strict-zimg fatal handling returns without closing (`src/autoupscale.c:1053-1062`), so later frames also allocate and discard an output before rediscovering the broken backend. | Close the fatal backend and set it NULL even when fallback is forbidden, or add an idempotent full zimg discard operation. Preserve the strict setting by suppressing only the swscale open. |
 
 ## API/ABI stability
 
