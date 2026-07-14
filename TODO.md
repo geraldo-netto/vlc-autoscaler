@@ -1,216 +1,216 @@
 # TODO — full-project audit findings
 
-Full rescan of HEAD `d754be4` on 2026-07-14 (6 parallel category audits, every src/ file read in
-full, tests/ + Makefile + CI + sonar config + scripts/ + docs/ inspected; findings verified against
-actual code paths, several with measurements on a 32-core box). IDs restart at this rescan — they do
-not correlate with pre-rescan IDs in git history. Row format: `id | status | effort | description | notes`.
+Full production rescan of the working tree based on HEAD `5cb7db1` on 2026-07-14.
+Scope: all 43 tracked non-test files, including production source and public headers,
+build/release configuration, CI, scripts, documentation, and patches. Excluded:
+`tests/**`, test corpora, generated build output, caches, ignored artifacts, and local
+untracked settings. The current uncommitted production edits were included in the scan.
+
+Validation: GCC and Clang plugin builds with `-Werror`; GCC `MULTIVERSION=1` build;
+linked-symbol visibility and multiversion ISA checks; `ldd -r`; cppcheck 2.13.0 over
+production code (test stubs used only as parser headers); Lizard 1.23.0 over `src/`
+with CCN <= 10 and at most 7 parameters; Bash syntax checks; and `git diff --check`.
+`scan-build` was unavailable locally. Test files were neither audited nor used as
+evidence for findings. Row format: `id | status | effort | description | notes`.
 
 ## security
 
-No open findings. Re-verified: config ints saturated (`InheritIntSat`) + clamped (`ClampConfig`);
-every frame-geometry entry point (zimg, swscale, probe, USM) is behind `up_picture_view_init`, which
-bounds each plane against the *allocated* `i_pitch`/`i_lines` (not declared `i_visible_*`), so a lying
-`video_format_t` cannot form an OOB pointer; allocation-size arithmetic overflow-checked at every seam;
-`>> sub_w/sub_h` shifts clamped `< 8`; all format strings literal; `up_cli_parse_long` checks
-`errno`/endptr/range.
+| id | status | effort | description | notes |
+|---|---|---|---|---|
+| SEC-1 | open | S | `.github/workflows/ci.yml:1-23,189-195` has no explicit least-privilege token permissions, and both checkout steps retain credentials. | Repository-default token rights therefore remain available while repository code and downloaded tools execute. Set `permissions: contents: read` and `persist-credentials: false` unless a job proves it needs more. |
+| SEC-2 | open | M | CI executes an unpinned PyPI `lizard` package and an unversioned Sonar build-wrapper ZIP without integrity verification (`.github/workflows/ci.yml:32-37,208-228`). | Pin the Python package/version and hash; pin a wrapper release and verify its published checksum/signature before extraction and execution. |
+| SEC-3 | open | S | The plugin link has partial RELRO but no `BIND_NOW` (`Makefile:108,268-277`), leaving lazy-binding GOT entries writable after load. | Add `-Wl,-z,relro,-z,now` and assert the dynamic flags in CI. This is hardening, not evidence of an existing exploit. |
+
+Production media/config paths otherwise had no new security finding: geometry is
+validated before pointer formation, user integers are normalized/clamped, format
+strings are literals, and allocation dimensions are bounded.
 
 ## undefined behavior
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| UB-1 | open | S | `src/usm.h:218` right-shifts `amount_q8 * hi` even when the product is negative; C11 makes right shift of a negative signed value implementation-defined. | Replace it with explicit floor division by 256, correcting a negative remainder so current GCC/x86 output remains byte-identical. |
 
-No open findings. Re-verified this pass: the in-place USM halo protocol traced row-by-row (no worker
-ever reads a row another worker wrote, at either stripe edge); `aligned_alloc` size proven a non-zero
-multiple of the alignment at all five sites; all four zimg graph dims and `active_region.left/width`
-provably even on every subsampled axis; `up_copy_plane`'s contiguous fast path proven unreachable for
-column tiles; `atomic_fetch_sub` driving `pending` negative during a poisoned drain is well-defined.
+No other open UB finding after tracing shifts, allocation arithmetic, crop/plane
+bounds, worker lifetimes, atomics, and in-place USM halo ownership.
 
 ## memory management
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No open findings. Re-verified: `release_worker_resources` idempotent and `thread_started` cleared
-before the second `zimg_close` pass (no double join/free, including barrier-failure →
-`TryBackendFallback` → `zimg_close`); the failed `try_spawn_one_worker` slot sits outside
-`teardown_constructed_workers`'s range but is already all-NULL; gate init partial failure unwinds
-under `cv_inited`/`sem_inited`; both barrier-failure paths join before `picture_Release`.
-(Retention-after-permanent-failure is real but tracked under *resource management*: RES-1, RES-2.)
+No separate open finding. Normal and partial-start teardown pairs every allocation
+with an owner release. Permanent-failure retention is tracked under RES-1 and RES-2.
 
 ## performance
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| PERF-1 | open | S | `zimg_pool_arm` clears every worker result under the dispatch gate lock (`src/scaler_zimg.c:511-524,864-870`), although every successful worker unconditionally overwrites it at `:502-505` and failed dispatches skip result inspection. | Remove the reset and `arm` hook. This avoids redundant O(worker-count) cache-line writes on every frame. |
 
-Otherwise clean: zero steady-state per-frame allocations; no per-frame graph rebuilds; default aligned
-row-stripe path copies no planes; hot USM TU is `-O3`; false sharing padded in both pools. Correction
-to the previous pass: there are **no** alignment hints anywhere in `src/` (GCC emits `vmovdqu`), but
-the measured cost is nil (0.217/0.218/0.219 ms at scratch offsets 0/16/32) — not a finding.
+No other unparked finding: steady-state processing allocates no per-frame backend
+state and does not rebuild graphs.
 
 ## scalability
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| SCAL-1 | open | M | `up_detect_cpu_topology_with` (`src/threading.h:127-171`) derives the CPU budget from `sched_getaffinity` + `sysconf`, which see a **cpuset** but never a cgroup CPU **quota** (v2 `cpu.max`, v1 `cpu.cfs_quota_us`). | Docker `--cpus=2` / K8s `limits.cpu: 2` on a 64-core node: affinity still reports 64, auto picks 30, and the plugin spawns 30 zimg + 30 USM workers against 2 CPUs of quota. The per-frame barrier is `max()` over 30 threads timesliced through 2 CPUs and CFS's 100 ms throttle lands mid-frame — frame latency inflates ~15× with burst stalls. Fix: read `cpu.max`/`cfs_quota` and clamp `allowed_count`. |
-| SCAL-2 | open | M | `--autoupscale-pin-threads=1` pins worker `i` to `pin_ids[i % pin_count]`, the first N set bits of the affinity mask, with no SMT/NUMA awareness (`src/scaler_zimg.c:117-130,792-797`, `src/threading.h:96-114`). | On any host whose CPU enumeration interleaves SMT siblings (`--cpuset-cpus=0,1,2,3` = 2 physical cores × 2 threads; several AMD/BIOS enumerations), the first N IDs stack 2 workers per physical core while sibling-free cores idle — up to 2× zimg stripe latency, so the option halves the throughput it advertises. Compounding: the USM pool is never pinned and floats onto the cores the zimg workers just claimed. Fix: consult `topology/thread_siblings_list`, prefer one worker per physical core. |
-
-Otherwise clean: stripe/tile partitions balanced to ±1-2 rows and even-aligned; grid search one-time
-O(64); `UP_THREADS_MAX=64` cap; per-resolution memory bounded; lazy init keeps speculative chain probes
-at ~zero cost; no O(n²) patterns.
+| SCAL-1 | open | M | CPU capacity uses `sched_getaffinity` and host `sysconf` only (`src/threading.h:128-153,167-221`); neither observes cgroup v2 `cpu.max` or v1 CFS quota. | A container with a broad cpuset but a small CPU quota can create far more zimg/USM workers than it can run. Clamp the affinity count by the effective cgroup quota. |
+| SCAL-2 | open | M | AUTO memory sizing uses host `sysinfo.totalram` (`src/autoupscale.c:383-399`), then selects 720p/1080p from that value (`src/upscale_logic.h:69-82`), ignoring cgroup memory limits. | Read cgroup v2 `memory.max` / v1 memory limit and use the smaller finite capacity. |
+| SCAL-3 | open | M | Thread pinning stores the first allowed logical CPU IDs and assigns workers round-robin (`src/threading.h:97-113`, `src/scaler_zimg.c:792-800`), without physical-core, SMT, or NUMA topology. | The opt-in setting can pack workers onto siblings or cross NUMA nodes poorly. Prefer one logical CPU per physical core, then siblings, or document an explicit CPU ordering policy. |
 
 ## concurrency
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| CONC-1 | open | M | The supposedly bounded completion wait builds its deadline from `CLOCK_REALTIME` (`src/threading.h:263-277`). | A backward wall-clock adjustment extends the 10-second recovery wait by the adjustment. Use `sem_clockwait(..., CLOCK_MONOTONIC, ...)` when available plus a monotonic portable fallback. |
 
-Otherwise sound (full re-trace of every atomic order, both lifecycles, both drain paths): gate wake
-publication ordered by the go-lock; acq_rel `fetch_sub` + release sequence + sem barrier publishes
-worker writes; spawn-before-partition ordered by the mutex; both drain paths join before
-`picture_Release`; partial-spawn teardown joins only started threads; the two pools share no mutable
-state; perfmon is main-thread only.
+The gate shutdown failure that can hang joins is tracked as ERR-1 rather than
+duplicated here.
 
 ## code complexity
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-Lizard 1.23.0 over `src` + `tests` at `-C 10`: exit 0, zero warnings. Highest is `ChromaToAVFmt`
-(CCN 10, exempt flat switch). Every production function is at ≤7 params.
+No open finding. Source-only `lizard -C 10 -a 7 src/` reports zero violations;
+the maximum CCN is 10.
 
 ## code duplication
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| DUP-3 | open | S | `tests/bench_usm_pool.c:22-31` — `xs32`/`fill_xs` reimplement `tests/prng.h`'s `up_xs32`/`up_fill_random` byte-for-byte (same 13/17/5 stream) without including `prng.h`. | Missed by the previous duplication pass, which only tracked the two content-probe files. A bench has no stream-sensitive assertions, so the DUP-5 blocker does not apply — adoptable now. |
-| DUP-4 | open | S | `tests/test_usm_pool_variants.c:49` and `tests/fuzz_usm_variants.c:101` — two further private LCG buffer fills (`fill_pattern`, `fill_source`) instead of `prng.h`. | Both feed cross-variant byte-identity comparisons, so the stream is irrelevant to the assertions: no risk, unlike DUP-5. |
-| DUP-5 | open | S | Two xorshift32 buffer fills remain inline in `tests/fuzz_content_probe.c:61` and `tests/test_content_probe.c:381` (same 13/17/5 stream now in `tests/prng.h`). | Carried over from the previous pass: they feed content-probe *metric* assertions, so a stream change could shift expected values. Adopt `prng.h` only after confirming those assertions are stream-agnostic. |
+| DUP-1 | open | M | Supported-chroma and subsampling knowledge is repeated across `up_chroma_has_y_plane` / `up_chroma_subsample` (`src/chroma_classify.h:104-144`), the picture layout table (`src/picture_view.h:62-99`), and backend maps (`src/scaler_swscale.c:43-58`, `src/scaler_zimg_chroma.h:37-59`). | A format addition can enable probing/USM while leaving crop/view/backend handling inconsistent. Centralize a neutral chroma descriptor and derive predicates/adapters from it. |
+| DUP-2 | open | S | `k_stats_vars` is the advertised single source of stat-variable names (`src/autoupscale.c:639-647`), but `MaybeLogStats` repeats the same three strings at `:995-1002`. | Use indexed descriptors containing the name and value source, or at minimum index `k_stats_vars` in the export calls. |
 
 ## architecture/modularity/SOLID
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
+No separate open finding. Backend and worker-pool ownership boundaries remain clear;
+the chroma source-of-truth issue is tracked as DUP-1.
+
 ## decoupling
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
+No open finding. VLC-facing orchestration, scaler backends, pure decision helpers,
+and worker-pool lifecycle remain separable at their current seams.
+
 ## business/design patterns/DDD
 
-No open findings. `usm_pool_ops_t` (typeof-derived from the `usm_pool_variants.h` X-macro, load-time
-bound, unit-driven through all three arms) and the `scaler_backend_t` strategy vtable are already the
-right patterns; the new dispatcher adds no pattern debt. No further pattern proposal survives the
-no-speculative-pattern-work bar.
+| id | status | effort | description | notes |
+|---|---|---|---|---|
+
+No open finding. The scaler strategy table and load-time SIMD dispatch table fit the
+problem; another business/domain pattern would add structure without a domain need.
 
 ## reliability/correctness
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| REL-3 | open | S | `tests/test_picture_view.c:54` builds its test `plane_t` **from the layout table it is testing** (`i_pixel_pitch = layout->pixel_pitch[i]`), so the NV12 assertion at `:142` is circular and cannot catch upstream VLC drift. | The table is correct against today's `vlc_fourcc_GetChromaDescription()` (verified), and `tests/abi_assert.c` checks field names/types, not these *values*. If VLC's `pixel_size` for a chroma ever changed, every frame of that chroma would silently fail `up_picture_plane_storage_ok` (all frames dropped, TRANSIENT). Fix: `_Static_assert` the table's `pixel_pitch[]` against `vlc_fourcc_GetChromaDescription(c)->pixel_size` in the VLC-linked TU, beside the existing fourcc asserts at `autoupscale.c:48-53`. |
+| REL-1 | open | M | A worker-side gate error exits that worker before its USM stripe runs (`src/threading.h:388-408`, `src/worker_pool.h:166-175`). Other stripes may finish and `up_usm_pool_apply` returns failure, but `Filter` still forwards that partially sharpened picture (`src/usm_pool.c:497-518`, `src/autoupscale.c:953-963,1140-1145`). | Return a status that distinguishes unchanged initialization failure from possibly partial dispatch failure, and drop the current output for the latter. |
+| REL-2 | open | S | `scripts/bench_matrix.sh:23-27` lacks `pipefail` and never validates the sample count, so a failed benchmark process can be hidden by `cut` and a “median” can be emitted from incomplete/non-numeric data. | Capture each run explicitly, require exactly three numeric samples, and fail the matrix on any benchmark failure. |
 
 ## portability/standards conformance
 
-No open findings. Verified against the declared target (Linux x86-64, `-std=c11` pinned for every
-build flavour): no char-signedness dependence; shift exponents bounded; negative right-shift avoided;
-`mem_mb` widened to `uint64_t` and saturated for 32-bit hosts; every compiler extension in use
-(`__typeof__`, `constructor`, `__builtin_cpu_*`, diagnostic pragmas) is GCC/Clang-x86-gated with
-`usm_pool_dispatch.c:54` `#error`-ing off x86-64; `WORDS_BIGENDIAN` fallback pinned by `_Static_assert`s.
+| id | status | effort | description | notes |
+|---|---|---|---|---|
+| PORT-1 | open | M | The GCC < 12 / Clang < 17 fallback in `src/cpu_level.h:25-48` treats AVX2+FMA+BMI+BMI2 as full x86-64-v3/v4 support, omitting required features such as F16C, LZCNT, MOVBE, and the full inherited v2 level. The selected objects are compiled with full `-march=x86-64-v3/v4` (`Makefile:195-205`). | A masked VM CPU can pass the fallback and then execute an unsupported instruction. Require a compiler with full-level builtins for multiversion builds or implement complete CPUID/XGETBV level checks. |
 
 ## error handling
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| ERR-1 | open | M | `pthread_cond_broadcast`'s and `pthread_mutex_lock`'s return values are ignored throughout the gate (`src/threading.h:313,326-330,343,369`), and the only recovery path is an **untimed** `sem_wait` — so a failed broadcast is unrecoverable by construction. | If `pthread_cond_broadcast` ever returns non-zero (EINVAL on a corrupted cond), no worker wakes, `pending` never reaches 0, nobody posts `all_done`, and `up_pool_gate_wait_all` blocks forever on VLC's video-output thread: playback hangs instead of dropping a frame and falling back. The test harness proves the gap — `tests/barrier_fault_inject.h:46-59` must pair its suppressed broadcast with an *injected `sem_wait` failure*, or the suite would hang exactly like production. Same root as CONC-1. |
+| ERR-1 | open | M | `up_worker_pool_stop` detects `up_pool_gate_request_exit` failure but then unconditionally joins (`src/worker_pool.h:233-243`). If the failed mutex/condition path leaves idle workers asleep (`src/threading.h:421-433`), the join can hang indefinitely. | Add a wake-independent stop fallback, such as cancellation with a condition-wait cleanup handler that unlocks the reacquired mutex, and join only after a proven termination path. |
 
-Otherwise clean: `pthread_create`, `aligned_alloc`, `clock_gettime`, `filter_NewPicture`, `zimg_*`,
-`sem_init`, `sched_getaffinity`, `sws_getContext` returns all checked; `sem_wait` EINTR-retried; sticky
-lazy-init/`pool_broken`/`fallback_tried` states propagate honest TRANSIENT-vs-FATAL codes.
+No separate row for the unchecked `pthread_join` result: with internally created,
+joinable workers its specified failures require an invariant violation. Any ERR-1
+recovery change must nevertheless avoid freeing storage unless termination is proven.
 
 ## resource management
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| RES-1 | open | S | The USM pool is never torn down when USM is **permanently** disabled — neither on the grainy-source skip (`src/autoupscale.c:915-919`) nor on the pool-failure path (`:980-1003`) — so its threads and scratch stay resident for the rest of playback with zero possible use. | Grainy 1080p source: USM runs from frame 1, so the pool lazily spawns up to 64 threads and allocates `5·dst_w·N` bytes (~10 MB at 4K/64). At frame 60 the probe window closes, `up_should_skip_usm_for_sharpness` trips, and `ApplyUsmIfEnabled` returns at its first line for every later frame — while the parked threads and scratch live until `Close()`. Same for the `usm_amount_q8 = 0` disable at `:1001`. |
-| RES-2 | open | S | The zimg worker-failure poison path sets `pool_broken` and returns FATAL **without** stopping/joining the workers (`src/scaler_zimg.c:1165-1175`) — unlike the barrier-failure path ten lines above, which calls `zimg_stop_workers()`. | `--autoupscale-backend=1` + a fatal graph failure: `TryBackendFallback` (`autoupscale.c:1079-1088`) logs and returns *without* closing the backend, so up to 64 worker threads, 64 zimg graphs, 64 tmp buffers and (column grid) 64 tile scratch buffers stay parked on the gate for the rest of playback while `zimg_process` short-circuits every frame to FATAL. Retention, not a leak — but exactly the unbounded-hold-after-permanent-failure this category exists for. |
+| RES-1 | open | S | The USM pool is retained after permanent grain/texture skip (`src/autoupscale.c:876-890,938-943`) and after pool failure disables sharpening (`:953-963`). | Grain skip leaves live workers and scratch parked; a poisoned failure stops workers but retains pool allocations. Destroy and null the pool on both permanent-disable paths. At 4K/64 the row scratch is about 1.17 MiB; default policy caps USM at 12 workers. |
+| RES-2 | open | S | Zimg poison now stops and joins threads (`src/worker_pool.h:336-340`), but worker slots, graphs, tmp/tile buffers, and shared scratch are released only by `zimg_close` (`src/scaler_zimg.c:1038-1069,1188-1205,1237-1247`). Strict-zimg fatal handling returns without closing (`src/autoupscale.c:1053-1062`), so later frames also allocate and discard an output before rediscovering the broken backend. | Close the fatal backend and set it NULL even when fallback is forbidden, or add an idempotent full zimg discard operation. Preserve the strict setting by suppressing only the swscale open. |
 
 ## API/ABI stability
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| ABI-3 | open | S | `check-multiversion-isa` (`Makefile:209-228`) inspects objects **it compiles itself** (`-O3 -march=… -c src/usm_pool.c`, no `-flto`, not `$(PLUGIN_CFLAGS)`); the shipped LTO-linked `.so` is never checked for ymm/zmm. `make check-simd` (`Makefile:217`) likewise builds without `-flto`. | Gate gap, not a live bug: gcc 13.3 *does* preserve per-TU `-march` through LTO (verified by disassembling the linked `.so`: xmm-only / 165 ymm / 208 ymm + 152 zmm). But a clang-LTO build or a compiler regression that collapses the avx512 variant to baseline would still print `[ok] avx512: AVX-512` (fresh objects), and the byte-identical-output variant test passes *by design* — an SSE2 kernel ships while `LogEngaged` reports `simd=avx512` (2-4× on the hottest kernel). One-line fix: `objdump -d $(BUILD)/$(PLUGIN).so \| grep -c zmm` after the MULTIVERSION=1 build. |
+| ABI-1 | open | S | `check-multiversion-isa` inspects fresh non-LTO objects, not the shipped LTO-linked plugin (`Makefile:216-245,268-277`). | A compiler/LTO regression can collapse a linked variant while the gate remains green. After a multiversion link, inspect each linked variant's symbol range for its required ISA and verify baseline/dispatcher code contains no wider instructions. |
+
+Current linked artifacts expose only the expected VLC entry point and `ldd -r` found
+no live unresolved symbol; ABI-1 is a regression-gate gap.
 
 ## build/toolchain hygiene
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| BUILD-1 | open | S | `make check-visibility` runs after the gcc build (`ci.yml:45`) and the MULTIVERSION build (`:71`) but **not** for the clang plugin step (`:51-56`, which builds then `make clean`s). | clang-specific symbol-visibility/dispatch link regressions slip through. Add a `check-visibility` to the clang job. (Note ABI-1: the check itself is also too weak.) |
-| BUILD-2 | open | S | `Makefile:817` defines a `scan-build` target (clang static analyzer, `--status-bugs`) that no CI job invokes, so the clang-analyzer path can rot silently. | May be a deliberate cost tradeoff — flagged as a coverage gap. Wire into CI or note as intentionally manual. |
-| BUILD-3 | open | M | `sonar-project.properties:32` — the new `sonar.coverage.exclusions=src/autoupscale.c` removes the **last** gate on that file: it is already excluded from cppcheck (`Makefile:875-877`), absent from the local 90% gate's `TRACKED` list (`scripts/coverage_report.sh:18-34`), has no unit test, and `scan-build` isn't in CI (BUILD-2). | A new branch in `TryBackendFallback`/`Filter` (`autoupscale.c:1070-1168` — a stateful backend-swap + 4-way drop machine that `picture_Release`s on each arm, *not* "glue") is measured by nothing; a NULL-backend or double-release bug ships green. The properties comment ("exercising the glue needs a full VLC runtime mock") overstates it: `tests/stubs/vlc_common.h` + `vlc_picture.h` already fake `picture_t`/`plane_t`/`msg_*` well enough to unit-test `scaler_swscale.c`; adding `filter_t`, `var_Inherit/Create/SetInteger` and `filter_NewPicture` is an incremental extension. |
-| BUILD-4 | open | S | The sonarcloud job never blocks (`ci.yml:248-253`): no `sonar.qualitygate.wait=true`, no `args:`, no gate step. | Combined with BUILD-3, Sonar is now the only analyzer that sees `autoupscale.c` — **and its verdict cannot fail the build**. Sonar raises a blocker, CI is green, the PR merges. |
-| BUILD-5 | open | S | `TRACKED` (`scripts/coverage_report.sh:18-34`, `scripts/coverage_per_function.sh:25-28`) omits `usm_pool_dispatch.c`, `plane_utils.h` and `cpu_level.h` — all production, all shipped — while it *does* gate `cli_parse.h`, a `tests/`-only helper. | Commit `d01ef2a` added the dispatch test to `COV_TESTS` (`Makefile:753`) "so Sonar sees its coverage" but never added the file to either gate. `usm_pool_select_ops` — the table deciding which SIMD kernel every frame runs in the shipped MULTIVERSION=1 build — can regress to 0% coverage with `make coverage` still exiting 0. Same for `plane_utils.h`, which holds the overflow-checked allocation-size arithmetic. |
-| BUILD-6 | open | S | `--gcov-ignore-parse-errors=negative_hits.warn_once_per_file` (`ci.yml:240`) makes gcovr clamp gcc's bogus negative counts to **0**, i.e. an *executed* line in `usm_pool.c`/`scaler_zimg.c` is reported to Sonar as **uncovered**. | Direction is safe but non-deterministic (GCC 68080 fires only on certain interleavings): an unchanged PR can flip Sonar's coverage-on-new-code red, or a real drop gets dismissed as "the gcov bug again". Worse, the two gates now disagree in *opposite* directions on the same lines — `scripts/coverage_report.sh:68-75` treats any count that isn't `-`/`#####`/`=====` as **covered**, so a negative count reads as covered locally and uncovered in Sonar. The warning goes to the job log and is never asserted on. |
-| BUILD-7 | open | S | build-wrapper only captures `make plugin MULTIVERSION=1` (`ci.yml:228`, `sonar-project.properties:35`), so Sonar's cfamily analysis only ever sees the `#ifdef USM_VARIANT` arm of `usm_pool.c`/`usm_pool.h`. | The **default shipped** build is `MULTIVERSION=0` (`Makefile:146`), whose arm (`src/usm_pool.c:85`, all un-suffixed symbol definitions) is never Sonar-analysed: a Sonar-detectable defect confined to it ships in the configuration nearly every user builds. cppcheck covers that arm — partial mitigation, narrower ruleset. |
-| BUILD-8 | open | S | `ci.yml:100` names the step "Per-file and per-function coverage gates (minimum 80%)" while the recipe passes `THRESHOLD=90` (`Makefile:858-859`). | A contributor relaxes a file to 85% believing it is in-bounds; the job fails on a number the step name contradicts. |
+| BUILD-1 | open | S | CI's Clang step builds only `MULTIVERSION=0` and omits `check-visibility` before cleaning (`.github/workflows/ci.yml:47-72`), while README claims Clang support for SIMD variants (`README.md:598-599`). | Build/link `MULTIVERSION=1` under Clang and run visibility plus ISA checks for both Clang configurations. |
+| BUILD-2 | open | M | The cppcheck target explicitly excludes the main orchestration TU and analyzes only a subset of production sources (`Makefile:926-935`); the fuller `scan-build` target at `:937-940` is not run in CI. `autoupscale.c` is therefore seen in CI only by Sonar, whose verdict does not block (BUILD-3). | Analyze the real plugin compile database with clang's analyzer/cppcheck, including `autoupscale.c`, `scaler.c`, `scaler_swscale.c`, and dispatcher code. |
+| BUILD-3 | open | S | The Sonar scan action has no quality-gate wait/check (`.github/workflows/ci.yml:248-253`). | Set `sonar.qualitygate.wait=true` or add the official quality-gate action so analyzer failures block CI. |
+| BUILD-4 | open | S | `PLUGIN_LDFLAGS` omits `-Wl,-z,defs` (`Makefile:108,268-277`). A shared-object link can therefore succeed with a missing internal dispatcher/API symbol and fail only at `dlopen`. | Link with `-Wl,-z,defs` and optionally assert no undefined project-prefixed symbols. |
+| BUILD-5 | open | M | Object and plugin targets do not depend on the effective compiler/configuration (`Makefile:89-114,195-212,268-281`). Reusing one build directory after changing `CC`, `MARCH`, `EXTRA_CFLAGS`, `MULTIVERSION`, or zimg availability can silently reuse incompatible objects/plugin output. | Add a configuration-hash stamp as an object/link dependency or make the build directory configuration-specific. Reproduced: changing GCC/x86-64 to Clang/x86-64-v4 plus a new define performed no compile or link. |
+| BUILD-6 | open | S | The install guard checks `VLC_PLUGIN_DIR`, but an empty `VLC_PLUGIN_BASE` produces non-empty `/video_filter` (`Makefile:43-44,943-953`). Install/uninstall can therefore target a root-level directory instead of failing. | Validate non-empty `VLC_PLUGIN_BASE` in both targets before deriving the subdirectory, and quote destination paths. |
+| BUILD-7 | open | S | The Sonar job runs on all pull requests but requires `SONAR_TOKEN` (`.github/workflows/ci.yml:3-8,189-253`); fork pull requests do not receive repository secrets. | Gate the job to branch/internal PR events, while leaving the token-free build job available to forks. |
+| BUILD-8 | open | S | CI labels its coverage gate “minimum 80%” (`.github/workflows/ci.yml:100`), while the invoked recipes enforce 90% (`Makefile:909-910`). | Make the displayed threshold and enforced threshold share one value so contributors get an accurate failure contract. |
 
 ## observability
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-
-No log-spam risk on per-frame paths: perf advisory, process-fail, alignment-drift, bad-geometry, probe
-verdict and USM-pool-failure messages are all one-shot latched; periodic stats are `msg_Dbg` on a 5 s
-tick; engagement/backend/grid selection is logged once at Open (`log_zimg_open` now also reports
-`graph-tmp MB`).
+| OBS-1 | open | S | Requested zimg thread pinning silently discards CPU-set allocation and `pthread_setaffinity_np` failures (`src/scaler_zimg.c:107-130,792-800`), and the post-start log reports no pin result (`:874-900`). | Count successful/failed pins and emit one post-start diagnostic when the opt-in request is only partially applied. |
+| OBS-2 | open | S | User-facing help says `target-fps=0` disables performance monitoring (`src/autoupscale.c:120-124`, `README.md:113,174-176`), but the implementation intentionally keeps EWMA/stat monitoring active and disables only the advisory (`src/perfmon.h:61-71,102-122`). | Change help/docs to “disable the performance warning/advisory”; keep telemetry behavior explicit. |
+| OBS-3 | open | S | Detailed swscale geometry/short-output failures use `msg_Warn` (`src/scaler_swscale.c:35-41,130-166`), although this project already treats that level as hidden by VLC 3's default verbosity; the outer path emits only a generic one-shot failure. | Use a one-shot visible level for the specific reason, consistent with zimg and output-pool failures. |
 
 ## wiring gaps
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| WIRE-1 | open | S | The whole desktop-integration feature (`scripts/vlc-autoupscale.sh`, `scripts/install-vlc-autoupscale-action.sh`, `docs/CINNAMON-DESKTOP-ACTIONS.md`) has **zero** inbound references anywhere in the repo, so a user has no discoverable path to it. | `grep -rn "vlc-autoupscale\.sh\|install-vlc-autoupscale-action\|CINNAMON-DESKTOP-ACTIONS" . --exclude-dir=.git -l` matches only the three files themselves. README.md:514-515 still lists `scripts/` as exactly `bench_matrix.sh` + `coverage_report.sh`; README.md:517-519 and the docs index at `docs/USAGE.md:732-734` omit the new doc. |
-| WIRE-3 | open | S | `scripts/coverage_per_function.sh` is wired into `make coverage` (`Makefile:859`) but missing from README's `scripts/` listing (README.md:514). | Pre-existing doc drift, same class as WIRE-1. |
+| WIRE-1 | open | S | The desktop-integration feature (`scripts/vlc-autoupscale.sh`, `scripts/install-vlc-autoupscale-action.sh`, `docs/CINNAMON-DESKTOP-ACTIONS.md`) has no inbound documentation link. | Add it to README's scripts/docs map and `docs/USAGE.md` “See also” section. |
+| WIRE-2 | open | S | README's repository map (`README.md:479-522`) omits shipped source headers (`worker_pool.h`, `plane_utils.h`, `cpu_level.h`, `usm_pool_variants.h`), scripts, and docs, and still describes `threading.h` as thread-count-only. Its threaded-USM text also claims dispatch state is embedded in each USM worker (`README.md:255-269`), although that state moved to `worker_pool.h`. | Regenerate/update the map and architecture prose from the current tracked production tree. |
+| WIRE-3 | open | S | Interface documentation drifted: the dispatcher comments and design guide describe three forwarded USM functions although there are four (`src/usm_pool_dispatch.c:12-15,31-35`, `docs/HOW_IT_WORKS.md:581-588`), and the scaler interface example drops destination `const` (`docs/HOW_IT_WORKS.md:360-369` versus `src/scaler.h:112-116`). | Update the contract snippets when the interface changes; consider sourcing the function list from `usm_pool_variants.h`. |
 
-Otherwise clean: all 14 `add_integer_with_range` options traced end-to-end to a concrete consumer
-(re-verified this pass); the option names in README/docs match the 14 declared in code exactly, no
-extras and none missing; the three exported VLC variables match `k_stats_vars[]`; both backends
-reachable through `scaler_pick` with AUTO/open/runtime fallback wired; `src/usm_pool_dispatch.c` is
-MULTIVERSION-only by documented design; no env vars anywhere. `USM_POOL_FLAT_SKIP` remains a
-bench-target-only feature (`Makefile:631`), correctly excluded from the shipped plugin.
+All 14 module options otherwise have a production consumer; both scaler backends,
+runtime fallback, stats exports, and the multiversion dispatcher have real call sites.
 
 ## unused functions/methods
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| UNUSED-1 | open | S | `src/scaler_zimg.c:97` — local macro `ALIGN_DOWN_2(x)` aliases `UP_ALIGN_DOWN_2` and has zero uses; the file reaches even-align logic only through plane_utils helpers. | `grep -rn '\bALIGN_DOWN_2\b' src/ tests/` matches only the `#define` itself. Delete the line. |
-| UNUSED-2 | open | S | `src/picture_view.h:19-23` — `up_picture_plane_view_t` fields `width`/`height`/`row_bytes`/`pixel_pitch` are populated by `up_picture_plane_view_init` but production reads only `.pixels` and `.pitch`; the four extra fields are read only in `tests/`. | Not dead (they're a validation byproduct), but production carries them unused. Add a comment noting they're computed for test/validation assertions only. |
-| UNUSED-3 | open | S | The production-dead header set is **9** functions, not the 3 the previous pass documented as test-only oracles. Additions: `up_usm_workspace_size` (`src/usm.h:66`), `up_usm__args_valid`/`up_usm__pass1_hblur`/`up_usm__pass2_combine` (`usm.h:175,230,266` — reachable only from the `up_usm_apply_plane` oracle), `up_block_edge_vertical`/`up_block_edge_horizontal` (`content_probe.h:134,152` — reachable only from the `up_block_edge_strength` oracle). | Verified by grep: nothing in `src/` calls `up_usm_workspace_size` (the pool sizes its own scratch via `usm_pool_scratch_bytes`, `usm_pool.c:329`) — yet TODO's security section previously cited it as a *production* overflow-checked seam. All 9 are `static inline` in headers, so nothing is emitted into the shipped `.so`: a bookkeeping/doc-accuracy gap, not bloat. Fix: extend the in-source test-only-oracle documentation to the full set. |
+| UNUSED-1 | open | S | `ALIGN_DOWN_2` at `src/scaler_zimg.c:98` has no use. | Delete the alias. |
+| UNUSED-2 | open | S | Several fields are write-only in production: `sws_priv_t.av_fmt` (`src/scaler_swscale.c:23-31,84-92`), `stripe_worker_t.worker_id` (`src/scaler_zimg.c:194,754-776`), and `up_picture_plane_view_t`'s `pixel_pitch/width/height/row_bytes` (`src/picture_view.h:16-24,173-178`). | Remove the first two. Either remove the view metadata from production or document/isolate its non-runtime diagnostic purpose. |
+| UNUSED-3 | open | S | Ten `static inline` functions have no production-rooted caller: the `up_usm_apply_plane` reference subtree (five functions), the Laplacian/block-edge reference subtree (four), and `up_worker_pool_inline` (`src/usm.h:66,175-301`, `src/content_probe.h:71-193`, `src/worker_pool.h:159-162`). | They emit no code unless used. Move intentional reference helpers to a clearly named support header or document the roots uniformly; delete `up_worker_pool_inline` if no public diagnostic contract needs it. |
 
-No other unused functions/macros: every `#define` in `src/` has ≥1 use except `ALIGN_DOWN_2`; every
-static function in `src/*.c` has ≥1 caller (`up_usm_pool_dispatch_init` is the ELF constructor); no
-unused statics or macros in `tests/`; the `UP_USM_POOL_VARIANT_LIST` X-macro is consumed in both
-`src/usm_pool_variants.h:42` and `tests/test_usm_pool_dispatch.c:33`.
+No other unused production static function or macro was found.
 
 ## Open — parked
 
 | id | status | effort | description | why not now |
 |---|---|---|---|---|
-| PERF-P1 | parked | M | `src/usm_pool.c:476-516` — in-place USM does 2×n_threads serial main-thread halo-row memcpys per frame before dispatch (~53-115 KB/frame at 1080p, ~0.5 MB worst case at 4K/64). | Folding snapshots into workers needs an extra ready-barrier — significant complexity for a cost that hasn't shown up in a profile. Measure first. |
-| TEST-P1 | parked | S | `up_usm_pool_effective_threads`: the mutant `n_threads`→`n_threads_pref` survives the suite — the fields diverge only under a deterministic partial spawn, and the RLIMIT_NPROC test asserts bounds only. | Killing it needs pthread_create fault-injection infra (new `--wrap`) for a diagnostics-only getter; not worth the infra now. |
-| SCAL-P1 | parked | L | Static equal-work stripe partition + full per-frame completion barrier (`usm_pool.c:530-542`, `scaler_zimg.c:1167-1195`) makes frame latency `max` over workers; on hybrid P/E-core CPUs or decoder-shared cores, fast workers idle at the barrier every frame. | Partition math is balanced (±1-2 rows); the fix is dynamic stripe stealing or heterogeneity-aware sizing — a large change against a deliberately simple, verified-correct design. Revisit with profile evidence on hybrid hardware. |
-| SCAL-P2 | parked | M | Per-worker zimg graph + tmp buffer (+ per-tile dst scratch) grows memory and graph-build time linearly with thread count, up to 64 graphs (`scaler_zimg.c:732-759`). | Independent graphs are what makes the frame path lock-free; bounded by thread caps and stripe floors. Inherent design cost. |
-| SCAL-P3 | parked | L | zimg pool and USM pool are separate persistent pools sized from the same budget (`autoupscale.c:585`, `scaler_zimg.c:774`): up to 2×64 threads per instance that only ever run sequentially within a frame. Auto policy on a 32-core box spawns 14+14 = 28 persistent threads, and the USM pass is a second cache-cold full read+write of the luma with its own broadcast/barrier — ~0.1-0.16 ms (~0.6-1%) at 1080p, ~0.3-0.8 ms (~2-5%) at 4K, plus 2× wake/barrier cycles per frame, per filter instance. | A shared pool (share the gate + worker threads, keep separate run fns) would halve the thread herd even without fusing the passes; full fusion removes one dispatch per frame and keeps stripes L2-warm. Effort M (share pool) to L (fuse). Large restructuring for a cost that hasn't surfaced in a profile — measure first. The shared lifecycle (`src/worker_pool.h`) is now in place, which makes sharing the threads themselves a much smaller change. |
-| SCAL-P4 | parked | M | `src/threading.h:326-350` broadcast wake serializes worker startup through one mutex: glibc `pthread_cond_broadcast` requeues waiters one futex-handoff at a time, so at N=64 the last worker starts ~64-128 µs after the first — twice per frame (both pools). | **Revisit trigger now met.** This pass measured per-dispatch gate cost at 6.2-8.5 µs against a 51 µs optimal 1080p USM pass — 12-17% of the pass it gates, at *auto* thread counts, not only explicit high `--autoupscale-threads`. The old "~0.2-0.4% of budget" estimate compared the ramp against the whole-frame budget rather than the pass it serializes. Still parked only because PERF-1/PERF-2 (cheaper, same symptom) should land first and may change the picture. Fix direction: per-worker atomic-generation check outside the lock, or tree wake. |
+| PERF-P1 | parked | M | In-place USM snapshots up to two halo rows per worker serially before each dispatch (`src/usm_pool.c:437-480`). | Folding snapshots into workers needs another readiness phase; profile the current copy cost before adding synchronization. |
+| SCAL-P1 | parked | L | Static equal-work stripes plus a full-frame barrier make latency the slowest worker on heterogeneous or contended CPUs (`src/usm_pool.c:346-371,497-518`, `src/scaler_zimg.c:1034-1070`). | Dynamic stealing or heterogeneous sizing substantially complicates a correctness-sensitive frame path; require production profile evidence. |
+| SCAL-P2 | parked | M | Zimg memory and lazy graph-build time grow linearly with worker count because each cell owns a graph/tmp buffer and some own tile scratch (`src/scaler_zimg.c:738-856`). | Independent graphs keep processing lock-free and resources remain capped; revisit if high-thread memory profiles justify sharing. |
+| SCAL-P3 | parked | L | Zimg and USM keep separate persistent pools derived from the same CPU budget even though their passes run sequentially (`src/autoupscale.c:564-584` and `src/scaler_zimg.c:864-988`). | Sharing threads is now structurally easier through `worker_pool.h`, but it remains a large lifecycle change without a measured end-to-end bottleneck. |
+| SCAL-P4 | parked | M | Every dispatch wakes all workers through one condition-variable broadcast (`src/threading.h:364-377`), serializing startup at high worker counts. | Previous microbenchmarks indicate a material small-pass cost, but a tree/atomic wake redesign changes the most failure-sensitive synchronization code. Re-profile current production before promotion. |
 
 ## Audit picks deliberately rejected
 
-Recorded so future passes don't re-pick them:
+Recorded so production-only rescans do not repeatedly promote the same non-findings:
 
-- **Unifying `worker_copy_in_stripe`/`worker_copy_out_stripe`/`worker_copy_out_tile`** (`scaler_zimg.c:373-455`) — shapes rhyme but direction and offset math differ; a unified helper needs ~8 params and reads worse.
-- **`min_plane_dims` in `tests/fuzz_scaler_seam.c` re-encoding subsample knowledge** from `scaler_zimg_chroma.h` — 8 lines, too small to matter. (The *production*-side duplicate of that knowledge is a real finding: ARCH-1.)
-- **First-frame rows-only fallback passing reduced `n_threads` as budget** (`scaler_zimg.c:1255-1256`) — verified it cannot change the resulting grid.
-- **`lazy_init_done/failed` as plain bools** — race-free under VLC's documented serial `pf_video_filter` contract; documented in-source. Revisit only if that contract changes.
-- **Per-worker 2-boundary-row re-hblur** in the USM pool — deliberate trade (<1% of USM work at 1080p) that buys barrier-free operation.
-- **RunProbe fusion beyond PERF-1** / SIMD for probe sweeps — probe is 60-frame bounded and grid-subsampled; not worth kernel complexity.
-- **Unifying the stripe-invariant checkers** (`check_stripe`/`check_alignment` vs `check_stripe_step`/`check_stripe_bounds_range`) — the invariants each asserts differ, and merging produces exactly the ~10-param mega-helper the guide warns against.
-- **Unifying `run_sse2`/`run_avx2`/`run_avx512`** (`test_usm_pool_variants.c:60`) — each names distinct per-ISA symbols that only exist in that build; unifying needs a code-gen macro, disfavored by the "prefer explicit" stance.
-- **64B-padding the per-worker USM scratch blocks** — adjacent workers do share one boundary cache line, but it holds a halo row written once per frame and read twice: ~1-2 coherence misses per frame. Measured nil.
-- **Alignment hints on the USM kernels** — the rolling scratch rows are only 64B-aligned when `width % 64 == 0`, and GCC emits `vmovdqu` throughout; measured 1080p fused sweep is 0.217/0.218/0.219 ms at scratch offsets 0/16/32. No cost to recover.
+- Unifying `worker_copy_in_stripe` / `worker_copy_out_stripe` /
+  `worker_copy_out_tile`: their direction and offset invariants differ; a generic
+  helper would require a wide parameter surface.
+- Adding a pool-wide cleanup hook solely because `prepare` is a pool callback:
+  shared allocations are explicitly owner-owned and both owners already release
+  them. Permanent-failure retirement is the real gap and is tracked by RES-1/RES-2.
+- Treating `lazy_done` / `lazy_failed` as an atomicity defect: VLC's video-filter
+  callback contract serializes the lifecycle; revisit only if that contract changes.
+- Removing per-worker boundary-row re-blur: the small duplicate computation is the
+  invariant that permits barrier-free, race-free in-place USM.
+- Adding alignment assumptions to USM vector loops: valid row alignment depends on
+  width/stride, and prior measurements found no actionable gain over unaligned moves.
