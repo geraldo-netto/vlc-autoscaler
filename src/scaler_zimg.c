@@ -77,6 +77,7 @@
 #include "picture_view.h"
 #include "upscale_logic.h"
 #include "threading.h"
+#include "worker_pool.h"
 #include "zimg_helpers.h"
 #include "scaler_zimg_chroma.h"
 
@@ -170,27 +171,18 @@ typedef struct
      * aligned-allocated array keeps each worker on its own cache line(s).
      * Per dispatch the main thread writes per-worker fields (w->result reset;
      * in zerocopy-dst mode also w->dst.{data,pitch}) and the worker writes
-     * w->result and w->seen_gen; without padding, two adjacent workers'
-     * writes invalidate each other's lines on every frame. Same fix as
-     * usm_worker_t in usm_pool.c. C11 disallows _Alignas on a typedef
-     * name, hence on the first member. */
-    alignas(64) pthread_t  thread;
-    /* Dispatch gate, owned by the priv and shared with the USM pool's
-     * design via up_pool_gate_t (DUP-1) — see threading.h for the full
-     * wake/done protocol and memory-ordering rationale. */
-    up_pool_gate_t    *gate;
-    uint64_t           seen_gen;     /* worker-private: last dispatch handled */
-    bool               thread_started; /* true iff pthread_create succeeded;
-                                        * pthread_t is opaque, so a "== 0"
-                                        * test on `thread` is not portable —
-                                        * mirror usm_worker_t and gate join/
-                                        * signal on this flag instead. */
-    /* result is single-writer (worker) / single-reader (main), published by
-     * the gate's done barrier (see threading.h). The exit signal lives in
-     * the gate (up_pool_gate_request_exit). */
+     * w->result; without padding, two adjacent workers' writes invalidate
+     * each other's lines on every frame. Same fix as usm_worker_t in
+     * usm_pool.c. C11 disallows _Alignas on a typedef name, hence on the
+     * first member.
+     *
+     * Threads, the dispatch gate and the exit protocol belong to the shared
+     * pool (ARCH-2, worker_pool.h); this struct is pure payload. `result` is
+     * single-writer (worker) / single-reader (main), published by the gate's
+     * done barrier (see threading.h). */
 
     /* Persistent: one graph + one tmp buffer per worker. */
-    zimg_filter_graph *graph;
+    alignas(64) zimg_filter_graph *graph;
     void              *tmp;
     size_t             tmp_size;
 
@@ -236,12 +228,10 @@ typedef struct
 
 typedef struct
 {
-    stripe_worker_t  *workers;
-    /* SCAL-2 wake gate: one broadcast wakes all workers (was N sem_post). */
-    /* Shared wake gate + counting done-barrier (DUP-1, threading.h).
-     * calloc zeroing marks it not-yet-initialized for destroy. */
-    up_pool_gate_t    gate;
-    bool              pool_broken;
+    /* ARCH-2: threads, wake gate, done barrier, worker slots, sticky lazy
+     * state and the poison flag live in the shared pool (worker_pool.h).
+     * calloc zeroing marks it not-yet-started for destroy. */
+    up_worker_pool_t  pool;
 
     int               yv12_swap_uv;
     unsigned          sub_w;
@@ -258,11 +248,6 @@ typedef struct
     up_zimg_io_plan_t plan;
     int               worker_budget;  /* up_threads_decide result at open;
                                        * first-frame plan re-resolve input */
-
-    /* PERF-1: a one-cell grid has no pool. The cell is constructed as usual
-     * (graph, tmp, scratch) but no gate is initialized and no thread spawned;
-     * zimg_dispatch_and_wait runs it on the calling thread. */
-    bool              inline_run;
 
     /* REL-6: consecutive frames rejected for alignment drift; a full
      * streak escalates to FATAL. `warned` latches the one-shot log. */
@@ -286,23 +271,19 @@ typedef struct
     int               dst_w;
     int               dst_h;
 
-    /* Lazy-init state. `done` is set by zimg_lazy_init() after the worker
-     * pool, scratch, and per-cell graphs are constructed successfully.
-     * `failed` sticks once the first attempt has failed so we don't
-     * retry-allocate every frame. The algo and log_obj are saved at
-     * Open() time so lazy_init can build graphs and emit its diagnostic
-     * message without needing the ctx.
+    /* Lazy-init inputs. The pool owns the sticky done/failed state (a failed
+     * start is never retried); the algo and log_obj are saved at Open() time
+     * so the construct hook can build graphs and the diagnostic can be emitted
+     * without needing the ctx.
      *
-     * CON-2: done / failed are PLAIN bools, read+written with no atomics
-     * or lock. This is sound only under the contract that a single filter
-     * instance's zimg_process() (driven by VLC's Filter()) is never
-     * entered concurrently — VLC calls a filter's pf_video_filter
-     * serially per instance. If this scaler is ever shared across threads
-     * within one instance, gate the first-frame init with pthread_once (or
-     * make these _Atomic) to close the check-then-act window. */
+     * CON-2: the pool's done/failed are PLAIN bools, read+written with no
+     * atomics or lock. This is sound only under the contract that a single
+     * filter instance's zimg_process() (driven by VLC's Filter()) is never
+     * entered concurrently — VLC calls a filter's pf_video_filter serially
+     * per instance. If this scaler is ever shared across threads within one
+     * instance, gate the first-frame init with pthread_once (or make them
+     * _Atomic) to close the check-then-act window. */
     struct {
-        bool  done;
-        bool  failed;
         int   algo;
         void *log_obj;
     } lazy;
@@ -311,6 +292,14 @@ typedef struct
      * warns once instead of every dropped frame. */
     bool              preflight_warned;
 } zimg_priv_t;
+
+/* The worker slots are pool-owned storage; the payload type is ours. They are
+ * contiguous with sizeof(stripe_worker_t) stride, so indexing from slot 0 is
+ * valid for the whole array. */
+static stripe_worker_t *zimg_workers(zimg_priv_t *p)
+{
+    return (stripe_worker_t *)up_worker_pool_slot(&p->pool, 0);
+}
 
 /* ---------- chroma + algo mappings ---------- */
 
@@ -519,17 +508,19 @@ static void zimg_worker_run(stripe_worker_t *w)
     }
 }
 
-static void *worker_main(void *arg)
+/* Pool hooks (worker_pool.h): one dispatch's work, and the per-dispatch state
+ * reset that must happen under the gate lock — a waking worker must never see
+ * the previous frame's result. */
+static void zimg_pool_run(void *owner, int i)
 {
-    stripe_worker_t *w = (stripe_worker_t *)arg;
-    for (;;)
-    {
-        if (!up_pool_gate_wait_for_go(w->gate, &w->seen_gen))
-            break;
-        zimg_worker_run(w);
-        up_pool_gate_worker_done(w->gate);
-    }
-    return NULL;
+    zimg_worker_run(&zimg_workers((zimg_priv_t *)owner)[i]);
+}
+
+static void zimg_pool_arm(void *owner, int n_workers)
+{
+    stripe_worker_t *workers = zimg_workers((zimg_priv_t *)owner);
+    for (int i = 0; i < n_workers; i++)
+        workers[i].result = 0;
 }
 
 /* ---------- per-cell graph builder ---------- */
@@ -782,8 +773,6 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
     /* I/O mode: copy on the side that is NOT zero-copy. */
     w->copy_in      = !p->plan.src_zerocopy;
     w->copy_out     = !p->plan.dst_zerocopy;
-    w->gate         = &p->gate;
-    w->seen_gen     = p->gate.generation;  /* don't run a frame before the first dispatch */
     w->worker_id    = worker_id;
     w->src = plane_buffer_view(&p->src);
 
@@ -797,52 +786,29 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
         w->dst = plane_buffer_view(&p->dst);
     }
 
-    if (build_worker_graph_and_tmp(w, p, c, sub_w, sub_h, filt) != 0)
-        return -1;
+    return build_worker_graph_and_tmp(w, p, c, sub_w, sub_h, filt);
+}
 
-    /* PERF-1: a single-cell grid runs on the main thread. Spawning a worker
-     * only to hand it the whole frame costs a broadcast, a sem round-trip and
-     * a thread — ~7 us per dispatch, measured — for zero parallelism, and the
-     * auto thread policy resolves to 1 on every machine with <= 7 cores. */
-    if (p->inline_run)
-        return 0;
-
-    if (pthread_create(&w->thread, NULL, worker_main, w) != 0) {
-        return -1;
-    }
-    w->thread_started = true;
-    /* SCAL-4: best-effort pin (opt-in). Round-robin so worker count > core
-     * count still spreads evenly; failure is ignored inside the helper. */
-    if (p->pin_cpus && p->cpu_topology.pin_count > 0) {
-        int pin_index = worker_id % p->cpu_topology.pin_count;
-        pin_worker_to_cpu(w->thread, p->cpu_topology.pin_ids[pin_index]);
-    }
-    return 0;
+/* Pool hook: SCAL-4 best-effort pin (opt-in), right after the pool spawns the
+ * thread. Round-robin so a worker count above the core count still spreads
+ * evenly; failure is ignored inside the helper. */
+static void zimg_pool_on_spawn(void *owner, int i, pthread_t thread)
+{
+    zimg_priv_t *p = (zimg_priv_t *)owner;
+    if (!p->pin_cpus || p->cpu_topology.pin_count <= 0) return;
+    pin_worker_to_cpu(thread,
+                      p->cpu_topology.pin_ids[i % p->cpu_topology.pin_count]);
 }
 
 /*
- * Per-worker teardown primitive: release the graph, temporary buffer, tile
- * scratch, and joined thread held by one worker slot. Idempotent — safe on a
- * fully-constructed worker, a partially-constructed one, or a zeroed slot.
- *
- * `had_thread` lets the caller indicate whether the thread field is a
- * valid pthread handle that needs joining (true) or a stub left over from
- * a failed pthread_create (false). Callers pass w->thread_started; we
- * can't infer it from `w->thread` alone because pthread_t is opaque.
- *
- * A started worker MUST already have been told to exit via
- * up_pool_gate_request_exit() before this joins it — that signal happens
- * once, under the gate lock, for every worker at once.
- *
- * After return, all dynamic resources owned by `w` are released; the
- * struct itself is NOT zeroed (caller decides whether to reuse the slot).
+ * Pool hook: release the graph, temporary buffer and tile scratch held by one
+ * worker slot. The pool has already joined the thread (up_worker_pool_stop).
+ * Idempotent — safe on a fully-constructed worker, a partially-constructed
+ * one, or a zeroed slot.
  */
-static void release_worker_resources(stripe_worker_t *w, bool had_thread)
+static void zimg_pool_release(void *owner, int i)
 {
-    if (had_thread) {
-        pthread_join(w->thread, NULL);
-        w->thread_started = false;
-    }
+    stripe_worker_t *w = &zimg_workers((zimg_priv_t *)owner)[i];
     if (w->graph) { zimg_filter_graph_free(w->graph); w->graph = NULL; }
     free(w->tmp); w->tmp = NULL;
     /* SCAL-3: a column tile owns its dst scratch; the shared (non-tiled) dst
@@ -850,47 +816,26 @@ static void release_worker_resources(stripe_worker_t *w, bool had_thread)
     if (w->col_tiled) free_plane_buffer(&w->tile_dst);
 }
 
-static void zimg_stop_workers(zimg_priv_t *p)
-{
-    if (!p->workers) return;
-    up_pool_gate_request_exit(&p->gate);
-    for (int i = 0; i < p->plan.n_threads; i++) {
-        stripe_worker_t *w = &p->workers[i];
-        if (!w->thread_started) continue;
-        pthread_join(w->thread, NULL);
-        w->thread_started = false;
-    }
-}
-
 /*
- * Tear down all `n` constructed workers and zero their slots so they can
- * be re-initialized cleanly on retry. Used after a partial construction.
- */
-static void teardown_constructed_workers(zimg_priv_t *p, int n)
-{
-    /* One broadcast wakes every started worker (the broadcast reaches all
-     * waiters; non-started slots are skipped), THEN join — same
-     * signal-then-reap order as zimg_close. */
-    zimg_stop_workers(p);
-    for (int i = 0; i < n; i++) {
-        stripe_worker_t *w = &p->workers[i];
-        release_worker_resources(w, w->thread_started);
-        memset(w, 0, sizeof *w);
-    }
-}
-
-/*
- * Spawn the worker for cell index `i` of the n_rows x n_cols grid (SCAL-3):
- * row = i / n_cols owns a height stripe, col = i % n_cols owns a width tile.
+ * Pool hook: construct cell `i` of the n_rows x n_cols grid (SCAL-3): row =
+ * i / n_cols owns a height stripe, col = i % n_cols owns a width tile.
  * up_compute_stripe_bounds() partitions each axis (even-aligned, so column
- * boundaries stay chroma-exact). Returns 0 on success, -1 on degenerate
- * geometry or worker init failure (partial graph/tmp/tile-dst released here).
+ * boundaries stay chroma-exact). Returns 0, or -1 on degenerate geometry or
+ * init failure (partial graph/tmp/tile-dst released here).
+ *
+ * The grid (up_decide_tile_grid) bounds the cell count by BOTH the dst floors
+ * (stripe_min rows, col_min cols) and the src extent (>= 2 src rows/cols per
+ * cell), so no cell can resolve to an empty source range.
+ *
+ * This pool is all-or-nothing (ops.all_or_nothing): a missing cell would leave
+ * part of the frame unwritten, so any cell failure fails the pool rather than
+ * silently shipping a partial frame. The last row/col always ends at
+ * dst_h/dst_w, so a full build covers the frame exactly.
  */
-static int try_spawn_one_worker(zimg_priv_t *p, int i,
-                                unsigned sub_w, unsigned sub_h,
-                                zimg_resample_filter_e filt)
+static int zimg_pool_construct(void *owner, int i)
 {
-    stripe_worker_t *w = &p->workers[i];
+    zimg_priv_t *p = (zimg_priv_t *)owner;
+    stripe_worker_t *w = &zimg_workers(p)[i];
     const int row = i / p->plan.n_cols;
     const int col = i % p->plan.n_cols;
 
@@ -902,36 +847,29 @@ static int try_spawn_one_worker(zimg_priv_t *p, int i,
                                   &c.cols))
         return -1;
 
-    if (init_stripe_worker(w, p, i, &c, sub_w, sub_h, filt) != 0) {
-        release_worker_resources(w, false);   /* no thread started yet */
+    if (init_stripe_worker(w, p, i, &c, p->sub_w, p->sub_h,
+                           (zimg_resample_filter_e)p->lazy.algo) != 0) {
+        zimg_pool_release(p, i);
         return -1;
     }
     return 0;
 }
 
-/*
- * Construct all n_rows*n_cols grid cells. The grid (up_decide_tile_grid) bounds
- * the cell count by BOTH the dst floors (stripe_min rows, col_min cols) and the
- * src extent (>= 2 src rows/cols per cell), so no cell can resolve to an empty
- * source range. Allocation, graph build, or thread creation can fail. This pool
- * deliberately builds all-or-nothing rather than retrying a smaller grid: on any
- * cell failure, tear down the cells already built and report 0. The last row/
- * col always ends at dst_h/dst_w, so a full build covers the frame exactly.
- */
-static void construct_workers(zimg_priv_t *p,
-                              unsigned sub_w, unsigned sub_h,
-                              zimg_resample_filter_e filt,
-                              int *out_constructed)
+/* Pool hook: allocate the shared scratch before any cell is built. */
+static int zimg_pool_prepare(void *owner)
 {
-    for (int i = 0; i < p->plan.n_threads; i++) {
-        if (try_spawn_one_worker(p, i, sub_w, sub_h, filt) != 0) {
-            teardown_constructed_workers(p, i);   /* tear down [0, i) */
-            *out_constructed = 0;
-            return;
-        }
-    }
-    *out_constructed = p->plan.n_threads;
+    return alloc_scratch_buffers((zimg_priv_t *)owner);
 }
+
+static const up_worker_pool_ops_t zimg_pool_ops = {
+    .construct      = zimg_pool_construct,
+    .run            = zimg_pool_run,
+    .prepare        = zimg_pool_prepare,
+    .release        = zimg_pool_release,
+    .arm            = zimg_pool_arm,
+    .on_spawn       = zimg_pool_on_spawn,
+    .all_or_nothing = true,   /* a missing cell leaves the frame unwritten */
+};
 
 /* Diagnostic log emitted once after successful lazy initialization. */
 static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
@@ -945,8 +883,10 @@ static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
     /* OBS-5: every cell owns a persistent zimg graph tmp buffer; at high thread
      * counts this dominates the reported scratch, so account for it here. */
     size_t tmp_bytes = 0;
-    for (int i = 0; i < p->plan.n_threads; i++)
-        tmp_bytes += p->workers[i].tmp_size;
+    const stripe_worker_t *workers =
+        (const stripe_worker_t *)up_worker_pool_slot(&p->pool, 0);
+    for (int i = 0; i < up_worker_pool_count(&p->pool); i++)
+        tmp_bytes += workers[i].tmp_size;
     msg_Info(log_obj,
              "zimg: %d worker thread%s (grid %dx%d), %dx%d -> %dx%d, "
              "scratch %zu MB (src %s, dst %s), graph-tmp %zu MB",
@@ -957,61 +897,6 @@ static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
              p->plan.src_zerocopy ? "zero-copy" : "copy",
              p->plan.col_tiled ? "tiled+copy" : (p->plan.dst_zerocopy ? "zero-copy" : "copy"),
              tmp_bytes >> 20);
-}
-
-/*
- * Lazy initialization of the worker pool, scratch buffers, and per-cell
- * filter graphs. Called on the first zimg_process() invocation rather
- * than from zimg_open().
- *
- * Why defer this? VLC's filter-chain solver instantiates filters
- * speculatively while searching for a working chain. With hardware
- * decode + a non-trivial filter chain (e.g. postproc + autoupscale),
- * the solver may construct and tear down filters speculatively before
- * settling on a working configuration. Spawning workers and allocating full
- * scratch for those probes is wasteful. Doing it lazily means VLC pays
- * nothing for probes that
- * never produce a frame; only the first valid Filter() picture triggers
- * the expensive setup.
- *
- * Returns 0 on success, -1 on any allocation/thread-spawn failure.
- * On failure the priv is left in a partial state and lazy_init_failed
- * is set so subsequent Filter() calls return -1 immediately rather
- * than retry-allocating every frame.
- */
-static int zimg_lazy_init(zimg_priv_t *p)
-{
-    if (alloc_scratch_buffers(p) != 0) return -1;
-
-    /* aligned_alloc not calloc: stripe_worker_t carries _Alignas(64) so
-     * each element sits on its own cache line; calloc returns malloc-
-     * default (16) alignment which would defeat the layout. sizeof is
-     * already a multiple of 64 thanks to _Alignas, satisfying
-     * aligned_alloc's C11 size constraint. Manual memset replaces
-     * calloc's zero-init. */
-    {
-        size_t total = (size_t)p->plan.n_threads * sizeof(*p->workers);
-        p->workers = aligned_alloc(64, total);
-        if (!p->workers) return -1;
-        memset(p->workers, 0, total);
-    }
-
-    /* PERF-1: with one cell there is no pool — no gate, no thread. */
-    p->inline_run = (p->plan.n_threads == 1);
-
-    /* Gate must be live before construct_workers spawns threads, since
-     * each worker blocks on the cv immediately (seen_gen == generation). */
-    if (!p->inline_run && up_pool_gate_init(&p->gate) != 0) return -1;
-
-    int constructed = 0;
-    /* ARCH-1: the worker-construction chain reads only src/dst geometry, all
-     * of which lives in the priv struct (init_priv_geometry) — no fake ctx. */
-    construct_workers(p, p->sub_w, p->sub_h,
-                      (zimg_resample_filter_e)p->lazy.algo, &constructed);
-    if (constructed == 0) return -1;
-
-    log_zimg_open((vlc_object_t *)p->lazy.log_obj, p);
-    return 0;
 }
 
 /*
@@ -1075,7 +960,7 @@ static int zimg_open(scaler_ctx_t *ctx)
     p->plan = plan;
     init_priv_geometry(p, ctx, sub_w, sub_h, swap);
 
-    /* Save what zimg_lazy_init() needs that isn't already in priv. */
+    /* Save what the construct hook needs that isn't already in priv. */
     p->lazy.algo    = (int)AlgoToZimg(ctx->algo);
     p->lazy.log_obj = ctx->log_obj;
 
@@ -1134,8 +1019,9 @@ static void point_workers_planes(zimg_priv_t *p,
     const int iy = 0;
     const int iu = up_zimg_plane_idx(1, swap);
     const int iv = up_zimg_plane_idx(2, swap);
-    for (int i = 0; i < p->plan.n_threads; i++) {
-        plane_view_t *view = worker_view_for(&p->workers[i], side, zerocopy);
+    stripe_worker_t *workers = zimg_workers(p);
+    for (int i = 0; i < up_worker_pool_count(&p->pool); i++) {
+        plane_view_t *view = worker_view_for(&workers[i], side, zerocopy);
         view->data[PLANE_Y] = pic->plane[iy].pixels;
         view->data[PLANE_U] = pic->plane[iu].pixels;
         view->data[PLANE_V] = pic->plane[iv].pixels;
@@ -1151,14 +1037,15 @@ static void point_workers_planes(zimg_priv_t *p,
  */
 static scaler_process_status_t zimg_check_worker_results(zimg_priv_t *p)
 {
-    for (int i = 0; i < p->plan.n_threads; i++) {
-        if (p->workers[i].result != 0) {
-            p->pool_broken = true;
+    stripe_worker_t *workers = zimg_workers(p);
+    for (int i = 0; i < up_worker_pool_count(&p->pool); i++) {
+        if (workers[i].result != 0) {
+            up_worker_pool_poison(&p->pool);
             if (p->lazy.log_obj)
                 msg_Err((vlc_object_t *)p->lazy.log_obj,
                         "AutoUpscale: zimg graph processing failed on worker "
                         "%d (libzimg error %d); pool poisoned (logged once)",
-                        i, (int)p->workers[i].err_code);
+                        i, (int)workers[i].err_code);
             return SCALER_PROCESS_FATAL;
         }
     }
@@ -1167,50 +1054,40 @@ static scaler_process_status_t zimg_check_worker_results(zimg_priv_t *p)
 
 static scaler_process_status_t zimg_dispatch_and_wait(zimg_priv_t *p)
 {
-    /* PERF-1: single cell — run it here, skip the gate entirely. */
-    if (p->inline_run) {
-        p->workers[0].result = 0;
-        zimg_worker_run(&p->workers[0]);
-        return zimg_check_worker_results(p);
-    }
-
-    /* Wake side: arm the barrier and reset results inside the gate's
-     * critical section, so a worker that wakes sees pending already
-     * armed and its result already reset. */
-    up_pool_gate_lock(&p->gate);
-    up_pool_gate_arm_locked(&p->gate, p->plan.n_threads);
-    for (int i = 0; i < p->plan.n_threads; i++)
-        p->workers[i].result = 0;
-    up_pool_gate_unlock_broadcast(&p->gate);
-
-    /* On a fatal barrier error, synchronously drain the dispatched generation
-     * and join the pool before returning control to the picture owner.
-     * OBS-1: log once — pool_broken latches, so zimg_process short-circuits
-     * every later frame and this site is not reached again. */
-    if (up_pool_gate_wait_all(&p->gate) != 0) {
-        p->pool_broken = true;
+    /* The pool arms the barrier, resets results under the gate lock, wakes all
+     * workers with one broadcast and waits once (worker_pool.h). A barrier
+     * failure poisons the pool and joins its threads before we return control
+     * to the picture owner. OBS-1: log once — the poison latches, so
+     * zimg_process short-circuits every later frame and never reaches here
+     * again. */
+    if (up_worker_pool_dispatch(&p->pool) != 0) {
         if (p->lazy.log_obj)
             msg_Err((vlc_object_t *)p->lazy.log_obj,
                     "AutoUpscale: zimg worker completion barrier failed; "
                     "pool poisoned (this is logged only once)");
-        zimg_stop_workers(p);
         return SCALER_PROCESS_FATAL;
     }
     return zimg_check_worker_results(p);
 }
 
 /*
- * Lazy init on the first valid frame: spawn workers, allocate scratch, and
- * build per-cell graphs — done once so VLC can probe us cheaply during chain
- * setup. Returns 0 if ready (already or just initialized), -1 on sticky
- * failure. Extracted to keep zimg_process within the complexity limit.
+ * Lazy init on the first valid frame: allocate scratch, build the per-cell
+ * graphs and spawn the workers — done once so VLC can probe us cheaply during
+ * chain setup. Returns 0 if ready (already or just initialized), -1 on sticky
+ * failure.
+ *
+ * The pool is configured here, not at Open(): the first frame's storage
+ * alignment can re-resolve the grid (zimg_prepare_first_frame_io), so the
+ * worker count is only final now. Configuration allocates nothing.
  */
 static int zimg_ensure_lazy_init(zimg_priv_t *p)
 {
-    if (p->lazy.done) return 0;
-    if (p->lazy.failed) return -1;
-    if (zimg_lazy_init(p) != 0) {
-        p->lazy.failed = true;
+    if (up_worker_pool_started(&p->pool)) return 0;
+    if (up_worker_pool_failed(&p->pool))  return -1;
+
+    up_worker_pool_config(&p->pool, &zimg_pool_ops, p, p->plan.n_threads,
+                          sizeof(stripe_worker_t));
+    if (up_worker_pool_ensure_started(&p->pool) != 0) {
         /* OBS-2: the expensive setup ran at the first valid frame, after cheap
          * Open() succeeded; say so once, else every frame drops silently. */
         if (p->lazy.log_obj)
@@ -1220,7 +1097,7 @@ static int zimg_ensure_lazy_init(zimg_priv_t *p)
                     p->src_w, p->src_h, p->dst_w, p->dst_h);
         return -1;
     }
-    p->lazy.done = true;
+    log_zimg_open((vlc_object_t *)p->lazy.log_obj, p);
     return 0;
 }
 
@@ -1244,7 +1121,8 @@ static void zimg_prepare_first_frame_io(zimg_priv_t *p,
                                         const up_picture_view_t *src,
                                         const up_picture_view_t *dst)
 {
-    if (p->lazy.done || p->lazy.failed) return;
+    if (up_worker_pool_started(&p->pool) || up_worker_pool_failed(&p->pool))
+        return;
     /* Re-resolve the plan with real storage alignment folded into the
      * requested flags; the resolver is a fixed point, so an unchanged
      * request yields the identical plan. */
@@ -1319,7 +1197,10 @@ static scaler_process_status_t zimg_note_alignment_drift(zimg_priv_t *p)
                      "misses", ZIMG_DRIFT_FATAL_STREAK);
     }
     if (++p->drift.streak >= ZIMG_DRIFT_FATAL_STREAK) {
-        p->pool_broken = true;
+        /* Permanent: the allocator changed for good. Poison, and stop the
+         * workers rather than leave them parked on the gate holding their
+         * graphs and scratch for the rest of playback (RES-2). */
+        up_worker_pool_poison(&p->pool);
         return SCALER_PROCESS_FATAL;
     }
     return SCALER_PROCESS_TRANSIENT;
@@ -1331,7 +1212,7 @@ static scaler_process_status_t zimg_process(scaler_ctx_t *ctx,
 {
     zimg_priv_t *p = ctx->priv;
     if (!p) return SCALER_PROCESS_FATAL;
-    if (p->pool_broken) return SCALER_PROCESS_FATAL;
+    if (up_worker_pool_broken(&p->pool)) return SCALER_PROCESS_FATAL;
 
     up_picture_view_t src_view;
     up_picture_view_t dst_view;
@@ -1358,15 +1239,7 @@ static void zimg_close(scaler_ctx_t *ctx)
     zimg_priv_t *p = ctx->priv;
     if (!p) return;
 
-    if (p->workers) {
-        zimg_stop_workers(p);
-        for (int i = 0; i < p->plan.n_threads; i++) {
-            stripe_worker_t *w = &p->workers[i];
-            release_worker_resources(w, w->thread_started);
-        }
-        free(p->workers);
-    }
-    up_pool_gate_destroy(&p->gate);
+    up_worker_pool_destroy(&p->pool);
 
     free_plane_buffer(&p->src);
     free_plane_buffer(&p->dst);

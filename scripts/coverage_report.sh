@@ -21,6 +21,7 @@ TRACKED=(
     usm.h
     perfmon.h
     threading.h
+    worker_pool.h
     zimg_helpers.h
     chroma_classify.h
     scaler_zimg_chroma.h

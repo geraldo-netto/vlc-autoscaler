@@ -1,0 +1,471 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*****************************************************************************
+ * test_worker_pool.c — the shared worker-pool lifecycle (ARCH-2)
+ *****************************************************************************
+ * worker_pool.h is the one lifecycle both real pools now run on (usm_pool.c,
+ * scaler_zimg.c): lazy start with sticky failure, partial-spawn policy,
+ * inline single-worker path, dispatch-and-wait, poison, teardown. Every one
+ * of those failure paths used to exist twice and be tested in at most one of
+ * the two copies, so they get direct coverage here with a fake owner: slot
+ * allocation failure, thread-spawn failure, per-slot construct failure under
+ * both spawn policies, and a broken completion barrier.
+ *
+ * Fault injection: --wrap on aligned_alloc (slot arrays), pthread_create
+ * (spawn), and the barrier primitives (tests/barrier_fault_inject.h).
+ *****************************************************************************/
+
+#include "../src/worker_pool.h"
+#include "barrier_fault_inject.h"
+#include "test_harness.h"
+
+#include <dirent.h>
+#include <errno.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* ---------- fault injection ---------- */
+
+static atomic_int g_fail_aligned_alloc_nth;   /* 1-based; 0 = never */
+static atomic_int g_aligned_alloc_calls;
+static atomic_int g_spawn_budget;             /* -1 = unlimited */
+
+void *__real_aligned_alloc(size_t alignment, size_t size);
+void *__wrap_aligned_alloc(size_t alignment, size_t size)
+{
+    const int n = atomic_fetch_add_explicit(&g_aligned_alloc_calls, 1,
+                                            memory_order_relaxed) + 1;
+    if (atomic_load_explicit(&g_fail_aligned_alloc_nth,
+                             memory_order_relaxed) == n) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    return __real_aligned_alloc(alignment, size);
+}
+
+int __real_pthread_create(pthread_t *, const pthread_attr_t *,
+                          void *(*)(void *), void *);
+int __wrap_pthread_create(pthread_t *th, const pthread_attr_t *attr,
+                          void *(*fn)(void *), void *arg)
+{
+    int budget = atomic_load_explicit(&g_spawn_budget, memory_order_relaxed);
+    if (budget == 0) return EAGAIN;
+    if (budget > 0)
+        atomic_fetch_sub_explicit(&g_spawn_budget, 1, memory_order_relaxed);
+    return __real_pthread_create(th, attr, fn, arg);
+}
+
+static void fault_reset(void)
+{
+    atomic_store(&g_fail_aligned_alloc_nth, 0);
+    atomic_store(&g_aligned_alloc_calls, 0);
+    atomic_store(&g_spawn_budget, -1);
+}
+
+/* ---------- fake owner ---------- */
+
+typedef struct {
+    alignas(UP_POOL_CACHELINE) int constructed;
+    atomic_int runs;
+} fake_worker_t;
+
+typedef struct {
+    up_worker_pool_t pool;
+    int  prepare_rc;
+    int  construct_fail_at;   /* slot index that refuses to construct; -1 none */
+    int  prepare_calls;
+    int  construct_calls;
+    int  release_calls;
+    int  arm_calls;
+    int  arm_n;            /* worker count the arm hook was given */
+    int  spawn_calls;
+    int  finalize_n;          /* -1 until finalize runs */
+    atomic_int total_runs;
+} fake_pool_t;
+
+static fake_worker_t *fake_slots(fake_pool_t *f)
+{
+    return (fake_worker_t *)up_worker_pool_slot(&f->pool, 0);
+}
+
+static int fake_prepare(void *owner)
+{
+    fake_pool_t *f = (fake_pool_t *)owner;
+    f->prepare_calls++;
+    return f->prepare_rc;
+}
+
+static int fake_construct(void *owner, int i)
+{
+    fake_pool_t *f = (fake_pool_t *)owner;
+    f->construct_calls++;
+    if (i == f->construct_fail_at) return -1;
+    fake_slots(f)[i].constructed = 1;
+    return 0;
+}
+
+static void fake_release(void *owner, int i)
+{
+    fake_pool_t *f = (fake_pool_t *)owner;
+    f->release_calls++;
+    fake_slots(f)[i].constructed = 0;
+}
+
+static void fake_run(void *owner, int i)
+{
+    fake_pool_t *f = (fake_pool_t *)owner;
+    atomic_fetch_add_explicit(&fake_slots(f)[i].runs, 1,
+                              memory_order_relaxed);
+    atomic_fetch_add_explicit(&f->total_runs, 1, memory_order_relaxed);
+}
+
+static void fake_arm(void *owner, int n_workers)
+{
+    fake_pool_t *f = (fake_pool_t *)owner;
+    f->arm_calls++;
+    f->arm_n = n_workers;
+}
+
+static void fake_on_spawn(void *owner, int i, pthread_t thread)
+{
+    (void)i; (void)thread;
+    ((fake_pool_t *)owner)->spawn_calls++;
+}
+
+static void fake_finalize(void *owner, int n_workers)
+{
+    ((fake_pool_t *)owner)->finalize_n = n_workers;
+}
+
+static const up_worker_pool_ops_t partial_ops = {
+    .construct      = fake_construct,
+    .run            = fake_run,
+    .prepare        = fake_prepare,
+    .release        = fake_release,
+    .arm            = fake_arm,
+    .on_spawn       = fake_on_spawn,
+    .finalize       = fake_finalize,
+    .all_or_nothing = false,
+};
+
+static const up_worker_pool_ops_t strict_ops = {
+    .construct      = fake_construct,
+    .run            = fake_run,
+    .prepare        = fake_prepare,
+    .release        = fake_release,
+    .arm            = fake_arm,
+    .on_spawn       = fake_on_spawn,
+    .finalize       = fake_finalize,
+    .all_or_nothing = true,
+};
+
+/* Minimal ops: only the two required hooks, so the optional-hook NULL guards
+ * are exercised too (the USM pool ships without release/arm/on_spawn). */
+static const up_worker_pool_ops_t bare_ops = {
+    .construct = fake_construct,
+    .run       = fake_run,
+};
+
+static void fake_init(fake_pool_t *f, const up_worker_pool_ops_t *ops,
+                      int n_pref)
+{
+    memset(f, 0, sizeof *f);
+    f->construct_fail_at = -1;
+    f->finalize_n        = -1;
+    atomic_init(&f->total_runs, 0);
+    up_worker_pool_config(&f->pool, ops, f, n_pref, sizeof(fake_worker_t));
+    fault_reset();
+}
+
+/* Every worker of a successful dispatch ran exactly `expected` times. */
+static void check_run_counts(fake_pool_t *f, int expected)
+{
+    const int n = up_worker_pool_count(&f->pool);
+    for (int i = 0; i < n; i++)
+        CHECK_EQ(atomic_load(&fake_slots(f)[i].runs), expected);
+    CHECK_EQ(atomic_load(&f->total_runs), n * expected);
+}
+
+static long live_thread_count(void)
+{
+    DIR *d = opendir("/proc/self/task");
+    if (!d) return -1;
+    long n = 0;
+    for (const struct dirent *e = readdir(d); e; e = readdir(d))
+        if (e->d_name[0] != '.') n++;
+    closedir(d);
+    return n;
+}
+
+/* ---------- tests ---------- */
+
+static void test_threaded_dispatch_cycles(void)
+{
+    BEGIN("start N workers, M dispatches, each worker runs once per dispatch");
+    enum { N = 4, M = 20 };
+    fake_pool_t f;
+    fake_init(&f, &partial_ops, N);
+
+    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
+    CHECK_EQ(up_worker_pool_count(&f.pool), N);
+    CHECK_EQ(up_worker_pool_inline(&f.pool), 0);
+    CHECK_EQ(f.prepare_calls, 1);
+    CHECK_EQ(f.spawn_calls, N);
+    CHECK_EQ(f.finalize_n, N);
+
+    for (int i = 0; i < M; i++)
+        CHECK_EQ(up_worker_pool_dispatch(&f.pool), 0);
+    check_run_counts(&f, M);
+    CHECK_EQ(f.arm_calls, M);
+    CHECK_EQ(f.arm_n, N);   /* armed for exactly the workers that came up */
+    CHECK_EQ(up_worker_pool_broken(&f.pool), 0);
+
+    /* Already started: ensure is a no-op, prepare does not run twice. */
+    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
+    CHECK_EQ(f.prepare_calls, 1);
+
+    up_worker_pool_destroy(&f.pool);
+    CHECK_EQ(f.release_calls, N);
+    END();
+}
+
+/* PERF-1: a one-worker pool spawns no thread and needs no gate — the work
+ * runs on the calling thread. Counting /proc/self/task proves it directly. */
+static void test_single_worker_runs_inline(void)
+{
+    BEGIN("single worker: no thread spawned, dispatch runs on the caller");
+    fake_pool_t f;
+    fake_init(&f, &partial_ops, 1);
+
+    const long before = live_thread_count();
+    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
+    CHECK_EQ(up_worker_pool_inline(&f.pool), 1);
+    CHECK_EQ(up_worker_pool_count(&f.pool), 1);
+    CHECK_EQ(f.spawn_calls, 0);
+    CHECK_EQ(live_thread_count(), before);
+
+    CHECK_EQ(up_worker_pool_dispatch(&f.pool), 0);
+    CHECK_EQ(f.arm_calls, 1);      /* the arm hook still runs (result reset) */
+    CHECK_EQ(f.arm_n, 1);
+    check_run_counts(&f, 1);
+    CHECK_EQ(up_pool_gate_ready(&f.pool.gate), 0);   /* no gate at all */
+
+    up_worker_pool_destroy(&f.pool);
+    END();
+}
+
+/* The USM pool's policy: whatever came up is usable, and the finalize hook
+ * repartitions the work over exactly that count. */
+static void test_partial_spawn_is_usable(void)
+{
+    BEGIN("partial spawn: pool runs with the workers that came up");
+    fake_pool_t f;
+    fake_init(&f, &partial_ops, 6);
+    atomic_store(&g_spawn_budget, 2);   /* the 3rd pthread_create fails */
+
+    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
+    CHECK_EQ(up_worker_pool_count(&f.pool), 2);
+    CHECK_EQ(f.finalize_n, 2);
+    /* The slot whose thread failed to spawn was constructed, then released. */
+    CHECK_EQ(f.construct_calls, 3);
+    CHECK_EQ(f.release_calls, 1);
+
+    CHECK_EQ(up_worker_pool_dispatch(&f.pool), 0);
+    check_run_counts(&f, 1);
+
+    up_worker_pool_destroy(&f.pool);
+    CHECK_EQ(f.release_calls, 3);   /* the 2 live slots, plus the failed one */
+    END();
+}
+
+/* The zimg grid's policy: a missing cell would leave part of the frame
+ * unwritten, so a partial spawn must fail the pool outright — and every slot
+ * that did come up must be released, not leaked. */
+static void test_all_or_nothing_rejects_partial_spawn(void)
+{
+    BEGIN("all-or-nothing: a failed spawn fails the pool and releases slots");
+    fake_pool_t f;
+    fake_init(&f, &strict_ops, 4);
+    atomic_store(&g_spawn_budget, 2);
+
+    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), -1);
+    CHECK_EQ(up_worker_pool_count(&f.pool), 0);
+    CHECK_EQ(f.finalize_n, -1);          /* never reached */
+    CHECK_EQ(f.release_calls, 3);        /* 2 spawned + the one that didn't */
+    CHECK_EQ(up_worker_pool_started(&f.pool), 0);
+    CHECK_EQ(up_worker_pool_failed(&f.pool), 1);
+
+    /* Sticky: a failed start is never retried (it would re-allocate and
+     * re-spawn on every frame). */
+    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), -1);
+    CHECK_EQ(f.prepare_calls, 1);
+
+    up_worker_pool_destroy(&f.pool);
+    CHECK_EQ(f.release_calls, 3);        /* no double release on teardown */
+    END();
+}
+
+static void test_construct_failure(void)
+{
+    BEGIN("construct failure: slot cleans up itself, earlier slots released");
+    fake_pool_t f;
+    fake_init(&f, &strict_ops, 4);
+    f.construct_fail_at = 2;
+
+    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), -1);
+    CHECK_EQ(f.construct_calls, 3);
+    /* Slots 0 and 1 only: the pool never releases a slot construct() rejected
+     * — that one cleans up after itself. */
+    CHECK_EQ(f.release_calls, 2);
+    up_worker_pool_destroy(&f.pool);
+    END();
+}
+
+/* A pool where NOTHING comes up is unusable under either policy. */
+static void test_no_worker_at_all(void)
+{
+    BEGIN("zero workers constructed: start fails under the partial policy too");
+    fake_pool_t f;
+    fake_init(&f, &partial_ops, 4);
+    f.construct_fail_at = 0;
+
+    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), -1);
+    CHECK_EQ(up_worker_pool_count(&f.pool), 0);
+    CHECK_EQ(f.release_calls, 0);
+    up_worker_pool_destroy(&f.pool);
+    END();
+}
+
+static void test_prepare_failure(void)
+{
+    BEGIN("prepare failure: no slot array, no thread, sticky");
+    fake_pool_t f;
+    fake_init(&f, &partial_ops, 4);
+    f.prepare_rc = -1;
+
+    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), -1);
+    CHECK_EQ(f.construct_calls, 0);
+    CHECK_EQ(atomic_load(&g_aligned_alloc_calls), 0);
+    up_worker_pool_destroy(&f.pool);
+    END();
+}
+
+/* MEM-1: both allocations the pool makes (worker slots, thread records) must
+ * fail cleanly — not half-build a pool. */
+static void test_alloc_failure(void)
+{
+    BEGIN("slot / thread-record allocation failure fails the start cleanly");
+    for (int nth = 1; nth <= 2; nth++) {
+        fake_pool_t f;
+        fake_init(&f, &partial_ops, 4);
+        atomic_store(&g_fail_aligned_alloc_nth, nth);
+
+        CHECK_EQ(up_worker_pool_ensure_started(&f.pool), -1);
+        CHECK_EQ(f.construct_calls, 0);
+        CHECK_EQ(up_worker_pool_count(&f.pool), 0);
+        up_worker_pool_destroy(&f.pool);
+    }
+    END();
+}
+
+static void test_worker_count_bounds(void)
+{
+    BEGIN("worker count outside [1, UP_THREADS_MAX] is rejected");
+    fake_pool_t f;
+
+    fake_init(&f, &partial_ops, 0);
+    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), -1);
+    CHECK_EQ(f.prepare_calls, 0);
+    up_worker_pool_destroy(&f.pool);
+
+    fake_init(&f, &partial_ops, UP_THREADS_MAX + 1);
+    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), -1);
+    CHECK_EQ(f.prepare_calls, 0);
+    up_worker_pool_destroy(&f.pool);
+    END();
+}
+
+/* The optional hooks are genuinely optional: a pool with only construct+run
+ * must dispatch and tear down without dereferencing a NULL hook. */
+static void test_bare_ops(void)
+{
+    BEGIN("pool with only the required hooks dispatches and destroys");
+    fake_pool_t f;
+    fake_init(&f, &bare_ops, 3);
+
+    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
+    CHECK_EQ(up_worker_pool_dispatch(&f.pool), 0);
+    check_run_counts(&f, 1);
+    CHECK_EQ(f.arm_calls, 0);
+    CHECK_EQ(f.spawn_calls, 0);
+    up_worker_pool_destroy(&f.pool);
+    CHECK_EQ(f.release_calls, 0);
+    END();
+}
+
+/*
+ * REGRESSION (CON-2 / RES-2): a broken completion barrier must poison the pool
+ * AND stop its threads. Leaving up to UP_THREADS_MAX workers parked on the gate
+ * for the rest of playback — holding their graphs and scratch while every later
+ * frame short-circuits — is the retention-after-permanent-failure this pool
+ * exists to prevent. The injected fault suppresses the wake broadcast and fails
+ * the barrier wait together, exactly as the real pools' harness does.
+ */
+static void test_barrier_failure_poisons_and_stops(void)
+{
+    BEGIN("broken barrier: dispatch fails, pool poisoned, threads joined");
+    fake_pool_t f;
+    fake_init(&f, &partial_ops, 3);
+    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
+
+    const long with_workers = live_thread_count();
+    CHECK(with_workers >= 3);
+
+    barrier_fault_inject_next_dispatch();
+    CHECK_EQ(up_worker_pool_dispatch(&f.pool), -1);
+    CHECK_EQ(barrier_fault_injection_consumed(), 1);
+    CHECK_EQ(up_worker_pool_broken(&f.pool), 1);
+    /* Threads joined by the poison, not left parked on the gate. */
+    CHECK_EQ(live_thread_count(), with_workers - 3);
+
+    /* Poison is idempotent — Close() runs it again through destroy. */
+    up_worker_pool_poison(&f.pool);
+    up_worker_pool_destroy(&f.pool);
+    CHECK_EQ(f.release_calls, 3);
+    END();
+}
+
+/* A configured-but-never-started pool is what a VLC filter-chain probe leaves
+ * behind: destroy must not touch the gate, the slots or the hooks. */
+static void test_destroy_without_start(void)
+{
+    BEGIN("destroy on a never-started pool is a no-op");
+    fake_pool_t f;
+    fake_init(&f, &partial_ops, 4);
+    up_worker_pool_destroy(&f.pool);
+    CHECK_EQ(f.prepare_calls, 0);
+    CHECK_EQ(f.release_calls, 0);
+    CHECK_EQ(atomic_load(&g_aligned_alloc_calls), 0);
+    END();
+}
+
+int main(void)
+{
+    printf("Running worker-pool lifecycle tests...\n");
+
+    test_threaded_dispatch_cycles();
+    test_single_worker_runs_inline();
+    test_partial_spawn_is_usable();
+    test_all_or_nothing_rejects_partial_spawn();
+    test_construct_failure();
+    test_no_worker_at_all();
+    test_prepare_failure();
+    test_alloc_failure();
+    test_worker_count_bounds();
+    test_bare_ops();
+    test_barrier_failure_poisons_and_stops();
+    test_destroy_without_start();
+
+    return test_harness_report();
+}

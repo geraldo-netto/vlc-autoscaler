@@ -41,6 +41,7 @@
 #include "usm_pool.h"
 #include "usm.h"
 #include "threading.h"
+#include "worker_pool.h"
 
 #include <pthread.h>
 #include <semaphore.h>
@@ -116,18 +117,13 @@ typedef struct usm_worker_s {
      * to 64 and forces sizeof to be a 64-byte multiple, so an aligned
      * array (one element per cache line) keeps every per-worker write
      * off neighboring workers' cache lines. C11 disallows _Alignas on a
-     * typedef name itself, hence placing it here. */
-    alignas(64) pthread_t  thread;
-    bool       thread_started;
-
-    /* Dispatch gate, owned by the pool and shared with the zimg pool's
-     * design via up_pool_gate_t (DUP-1) — see threading.h for the full
-     * wake/done protocol and memory-ordering rationale. */
-    up_pool_gate_t *gate;
-    uint64_t        seen_gen;
+     * typedef name itself, hence placing it here.
+     *
+     * Threads, the dispatch gate and the exit protocol belong to the
+     * shared pool (ARCH-2, worker_pool.h); this struct is pure payload. */
 
     /* Per-worker constants set at lazy_init. */
-    int        y_start;
+    alignas(64) int y_start;
     int        y_end;
     int        width;
     int        height;
@@ -214,29 +210,26 @@ struct usm_pool_s {
     int            width;
     int            height;
 
-    usm_worker_t  *workers;
-
-    /* Shared wake gate + counting done-barrier (DUP-1, threading.h).
-     * calloc zeroing marks it not-yet-initialized for destroy. */
-    up_pool_gate_t gate;
-
     uint8_t       *scratch;         /* 5*width per worker, contiguous block */
 
-    bool           lazy_init_done;
-    bool           lazy_init_failed;
-    bool           pool_broken;
-
-    /* PERF-1: with a single stripe there is no pool. The worker slot is set up
-     * as usual, but no gate is initialized and no thread spawned; usm_pool_run
-     * sweeps the stripe on the calling thread. */
-    bool           inline_run;
+    /* ARCH-2: threads, gate, worker slots, sticky lazy state and the poison
+     * flag all live in the shared pool (worker_pool.h). calloc zeroing marks
+     * it not-yet-started for destroy. */
+    up_worker_pool_t pool;
 };
 
+/* The worker slots are pool-owned storage; the payload type is ours. They are
+ * contiguous with sizeof(usm_worker_t) stride, so indexing from slot 0 is
+ * valid for the whole array. */
+static usm_worker_t *usm_workers(usm_pool_t *p)
+{
+    return (usm_worker_t *)up_worker_pool_slot(&p->pool, 0);
+}
+
 /* ===========================================================================
- * Worker thread main loop. Receives work via the shared generation gate
- * (one broadcast per dispatch) and signals completion through the pending
- * counting barrier. Exits cleanly when the main thread sets should_exit
- * under go_lock and broadcasts.
+ * Per-dispatch worker work. The pool (worker_pool.h) owns the wake gate, the
+ * done barrier and the exit protocol; this file only says what one worker
+ * does with one dispatch.
  * =========================================================================*/
 
 /*
@@ -291,30 +284,12 @@ static void usm_worker_run(usm_worker_t *w)
     usm_worker_sweep(w);
 }
 
-static void *usm_worker_main(void *arg)
-{
-    usm_worker_t *w = (usm_worker_t *)arg;
-    for (;;) {
-        if (!up_pool_gate_wait_for_go(w->gate, &w->seen_gen))
-            break;
-        usm_worker_run(w);
-        up_pool_gate_worker_done(w->gate);
-    }
-    return NULL;
-}
-
 /* ===========================================================================
- * Lazy initialization: scratch alloc + worker spawn. Called on the first
- * apply() invocation that actually has work to do (amount_q8 > 0). Returns
- * 0 on success, -1 on any allocation/spawn failure (caller sets the sticky
- * lazy_init_failed flag in that case). On partial failure (some workers
- * spawned but not all), n_threads is shrunk to the actually-spawned count
- * and we proceed - the partition logic handles uneven counts.
+ * Lazy initialization: scratch alloc + worker construction, driven by the
+ * shared pool on the first apply() that has work to do (amount_q8 > 0). A
+ * partial spawn is fine here — stripes repartition over whatever came up
+ * (ops.all_or_nothing = false).
  * =========================================================================*/
-static int usm_pool_init_gate(usm_pool_t *p)
-{
-    return up_pool_gate_init(&p->gate);
-}
 
 /*
  * Total bytes for the shared scratch block: USM_POOL_SCRATCH_ROWS rolling
@@ -343,29 +318,24 @@ static int usm_pool_alloc_scratch(usm_pool_t *p)
     return p->scratch ? 0 : -1;
 }
 
-static void usm_pool_init_worker_slot(usm_pool_t *p, int i)
+/* Pool hook: set up worker slot `i`. Cannot fail — the scratch block is
+ * already allocated (usm_pool_prepare) and the stripe bounds are assigned by
+ * usm_pool_finalize once the real worker count is known, so a worker cannot
+ * read them before the first dispatch bumps the generation. */
+static int usm_pool_construct_worker(void *owner, int i)
 {
-    usm_worker_t *w = &p->workers[i];
-    w->gate       = &p->gate;
-    w->seen_gen   = p->gate.generation;  /* don't run a frame before the first dispatch */
-    w->scratch   = p->scratch + (size_t)i
-                 * (size_t)USM_POOL_SCRATCH_ROWS * (size_t)p->width;
-    w->width     = p->width;
-    w->height    = p->height;
-    /* y_start/y_end are assigned solely by usm_pool_repartition_stripes
-     * after the spawn loop; a worker cannot read them before the first
-     * dispatch bumps the generation. */
+    usm_pool_t *p = (usm_pool_t *)owner;
+    usm_worker_t *w = &usm_workers(p)[i];
+    w->scratch = p->scratch + (size_t)i
+               * (size_t)USM_POOL_SCRATCH_ROWS * (size_t)p->width;
+    w->width   = p->width;
+    w->height  = p->height;
+    return 0;
 }
 
-static int usm_pool_spawn_worker(usm_pool_t *p, int i)
+static void usm_pool_run_worker(void *owner, int i)
 {
-    usm_worker_t *w = &p->workers[i];
-    usm_pool_init_worker_slot(p, i);
-
-    if (pthread_create(&w->thread, NULL, usm_worker_main, w) != 0)
-        return -1;
-    w->thread_started = true;
-    return 0;
+    usm_worker_run(&usm_workers((usm_pool_t *)owner)[i]);
 }
 
 /* Single partitioner (DUP-8): divide `height` into `n` contiguous stripes
@@ -384,60 +354,29 @@ static void usm_pool_repartition_stripes(usm_worker_t *workers, int n,
     }
 }
 
-/* Allocate the worker array (one cache-line-aligned slot each) and zero
- * it. Returns 0 on success, -1 on failure. */
-static int usm_pool_alloc_workers(usm_pool_t *p)
+/* Pool hook: one-time setup before any slot exists. */
+static int usm_pool_prepare(void *owner)
 {
-    /* aligned_alloc not calloc: usm_worker_t carries _Alignas(64) so each
-     * element sits on its own cache line; calloc returns malloc-default
-     * (16) alignment which would defeat the layout. sizeof is already a
-     * multiple of 64 thanks to _Alignas, satisfying aligned_alloc's C11
-     * size constraint. Manual memset replaces calloc's zero-init. */
-    size_t total = (size_t)p->n_threads_pref * sizeof(*p->workers);
-    p->workers = aligned_alloc(64, total);
-    if (!p->workers) return -1;
-    memset(p->workers, 0, total);
-    return 0;
+    return usm_pool_alloc_scratch((usm_pool_t *)owner);
 }
 
-static int usm_pool_spawn_all(usm_pool_t *p)
+/* Pool hook: the workers that actually came up (a partial spawn is usable
+ * here). Partition the plane across exactly those; unused slots stay zeroed
+ * and are never dispatched to. */
+static void usm_pool_finalize(void *owner, int n_workers)
 {
-    int constructed = 0;
-    for (int i = 0; i < p->n_threads_pref; i++) {
-        if (usm_pool_spawn_worker(p, i) != 0) break;
-        constructed++;
-    }
-    if (constructed == 0) return -1;
-
-    /* Partition across the workers that actually spawned; unused slots
-     * stay zeroed and are skipped by destroy. */
-    usm_pool_repartition_stripes(p->workers, constructed, p->height);
-    p->n_threads = constructed;
-    return 0;
+    usm_pool_t *p = (usm_pool_t *)owner;
+    usm_pool_repartition_stripes(usm_workers(p), n_workers, p->height);
+    p->n_threads = n_workers;
 }
 
-/* PERF-1: one stripe means no parallelism to buy. Spawning a thread only to
- * hand it the whole plane costs a broadcast, a sem round-trip and a thread —
- * ~7 us per dispatch, measured — and the auto thread policy resolves to 1 on
- * every machine with <= 7 cores. Set the slot up, skip the gate and the spawn,
- * and sweep on the calling thread. */
-static int usm_pool_init_inline(usm_pool_t *p)
-{
-    usm_pool_init_worker_slot(p, 0);
-    usm_pool_repartition_stripes(p->workers, 1, p->height);
-    p->n_threads = 1;
-    p->inline_run = true;
-    return 0;
-}
-
-static int usm_pool_lazy_init(usm_pool_t *p)
-{
-    if (usm_pool_alloc_scratch(p) != 0) return -1;
-    if (usm_pool_alloc_workers(p) != 0) return -1;
-    if (p->n_threads_pref == 1) return usm_pool_init_inline(p);
-    if (usm_pool_init_gate(p) != 0) return -1;
-    return usm_pool_spawn_all(p);
-}
+static const up_worker_pool_ops_t usm_pool_ops = {
+    .construct      = usm_pool_construct_worker,
+    .run            = usm_pool_run_worker,
+    .prepare        = usm_pool_prepare,
+    .finalize       = usm_pool_finalize,
+    .all_or_nothing = false,   /* stripes repartition over a partial spawn */
+};
 
 /* ===========================================================================
  * Public API
@@ -487,9 +426,11 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
     usm_pool_t *p = calloc(1, sizeof(*p));
     if (!p) return NULL;
     p->n_threads_pref = n_threads;
-    p->n_threads      = n_threads;  /* updated by lazy_init if it shrinks */
+    p->n_threads      = n_threads;  /* updated by the finalize hook if it shrinks */
     p->width          = width;
     p->height         = height;
+    up_worker_pool_config(&p->pool, &usm_pool_ops, p, n_threads,
+                          sizeof(usm_worker_t));
     return p;
 }
 
@@ -518,7 +459,7 @@ static void usm_worker_snapshot_halo(usm_worker_t *w, const uint8_t *src,
  * Update each worker's per-frame state to point at the current src/dst
  * buffers and amount. Called by the main thread while workers are
  * blocked on the go gate - no synchronization needed (the gate's mutex
- * in usm_pool_run publishes these writes; see usm_worker_s).
+ * in up_worker_pool_dispatch publishes these writes; see usm_worker_s).
  */
 static void usm_pool_set_per_frame(usm_pool_t *p,
                                    uint8_t *dst, int dst_stride,
@@ -526,7 +467,7 @@ static void usm_pool_set_per_frame(usm_pool_t *p,
                                    int amount_q8)
 {
     for (int i = 0; i < p->n_threads; i++) {
-        usm_worker_t *w = &p->workers[i];
+        usm_worker_t *w = &usm_workers(p)[i];
         w->src        = src;
         w->src_stride = src_stride;
         w->dst        = dst;
@@ -537,36 +478,6 @@ static void usm_pool_set_per_frame(usm_pool_t *p,
         if (dst == src)
             usm_worker_snapshot_halo(w, src, src_stride, p->height);
     }
-}
-
-/*
- * Dispatch the (single) fused sweep to all workers and wait for all to
- * finish — O(1) syscalls each way (SYS-1, mirrors the zimg pool's
- * SCAL-2 design): arm the done-barrier, bump the generation once and
- * wake every worker with a single broadcast; then one wait on the
- * counting barrier's sem, posted by the last worker to finish. Returns
- * 0 once every worker completed. On a non-EINTR barrier failure, drains the
- * dispatched generation, joins the pool, and returns -1 with a sticky fatal
- * state.
- */
-static void usm_pool_stop_workers(usm_pool_t *p);
-
-static int usm_pool_run(usm_pool_t *p)
-{
-    /* PERF-1: single stripe — sweep it here, skip the gate entirely. */
-    if (p->inline_run) {
-        usm_worker_run(&p->workers[0]);
-        return 0;
-    }
-
-    up_pool_gate_lock(&p->gate);
-    up_pool_gate_arm_locked(&p->gate, p->n_threads);
-    up_pool_gate_unlock_broadcast(&p->gate);
-
-    if (up_pool_gate_wait_all(&p->gate) == 0) return 0;
-    p->pool_broken = true;
-    usm_pool_stop_workers(p);
-    return -1;
 }
 
 static int usm_pool_validate_args(const usm_pool_t *p,
@@ -583,20 +494,6 @@ static int usm_pool_validate_args(const usm_pool_t *p,
     return 0;
 }
 
-/* Lazy init on first real call. Returns 0 on success (already done or
- * just succeeded), -1 on prior or fresh failure (sticky). */
-static int usm_pool_ensure_init(usm_pool_t *p)
-{
-    if (p->lazy_init_done) return 0;
-    if (p->lazy_init_failed) return -1;
-    if (usm_pool_lazy_init(p) != 0) {
-        p->lazy_init_failed = true;
-        return -1;
-    }
-    p->lazy_init_done = true;
-    return 0;
-}
-
 int up_usm_pool_apply(usm_pool_t *p,
                       uint8_t *dst, int dst_stride,
                       const uint8_t *src, int src_stride,
@@ -604,7 +501,7 @@ int up_usm_pool_apply(usm_pool_t *p,
 {
     if (usm_pool_validate_args(p, dst, dst_stride, src, src_stride) != 0)
         return -1;
-    if (p->pool_broken) return -1;
+    if (up_worker_pool_broken(&p->pool)) return -1;
 
     amount_q8 = up_usm__clamp_amount_q8(amount_q8);
 
@@ -615,21 +512,10 @@ int up_usm_pool_apply(usm_pool_t *p,
         return 0;
     }
 
-    if (usm_pool_ensure_init(p) != 0) return -1;
+    if (up_worker_pool_ensure_started(&p->pool) != 0) return -1;
 
     usm_pool_set_per_frame(p, dst, dst_stride, src, src_stride, amount_q8);
-    return usm_pool_run(p);
-}
-
-static void usm_pool_stop_workers(usm_pool_t *p)
-{
-    if (!p->workers) return;
-    up_pool_gate_request_exit(&p->gate);
-    for (int i = 0; i < p->n_threads; i++) {
-        if (!p->workers[i].thread_started) continue;
-        pthread_join(p->workers[i].thread, NULL);
-        p->workers[i].thread_started = false;
-    }
+    return up_worker_pool_dispatch(&p->pool);
 }
 
 int up_usm_pool_effective_threads(const usm_pool_t *p)
@@ -641,11 +527,7 @@ void up_usm_pool_destroy(usm_pool_t *p)
 {
     if (!p) return;
 
-    if (p->workers) {
-        usm_pool_stop_workers(p);
-        free(p->workers);
-    }
-    up_pool_gate_destroy(&p->gate);
+    up_worker_pool_destroy(&p->pool);
     free(p->scratch);
     free(p);
 }
