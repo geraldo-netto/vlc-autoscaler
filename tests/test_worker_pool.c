@@ -20,6 +20,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <time.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -195,6 +196,20 @@ static long live_thread_count(void)
     for (const struct dirent *e = readdir(d); e; e = readdir(d))
         if (e->d_name[0] != '.') n++;
     closedir(d);
+    return n;
+}
+
+/* pthread_join returns once the thread has terminated, but the kernel task
+ * entry can linger in /proc for a moment after that — poll instead of racing
+ * it. Returns the count reached (== target on success). */
+static long await_thread_count(long target)
+{
+    const struct timespec tick = { .tv_sec = 0, .tv_nsec = 1000000 };  /* 1 ms */
+    long n = live_thread_count();
+    for (int i = 0; i < 2000 && n != target; i++) {
+        nanosleep(&tick, NULL);
+        n = live_thread_count();
+    }
     return n;
 }
 
@@ -427,7 +442,7 @@ static void test_barrier_failure_poisons_and_stops(void)
     CHECK_EQ(barrier_fault_injection_consumed(), 1);
     CHECK_EQ(up_worker_pool_broken(&f.pool), 1);
     /* Threads joined by the poison, not left parked on the gate. */
-    CHECK_EQ(live_thread_count(), with_workers - 3);
+    CHECK_EQ(await_thread_count(with_workers - 3), with_workers - 3);
 
     /* Poison is idempotent — Close() runs it again through destroy. */
     up_worker_pool_poison(&f.pool);

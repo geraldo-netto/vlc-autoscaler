@@ -115,14 +115,20 @@ endif
 
 TEST_CFLAGS  := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefined $(EXTRA_CFLAGS)
 TEST_LDFLAGS := -fsanitize=address,undefined
-BARRIER_WRAP_LDFLAGS := -Wl,--wrap=sem_wait -Wl,--wrap=sem_post -Wl,--wrap=pthread_cond_broadcast
+# The done barrier waits with a deadline (CONC-1), so sem_timedwait is the
+# call the fault injector intercepts.
+BARRIER_WRAP_LDFLAGS := -Wl,--wrap=sem_timedwait -Wl,--wrap=sem_post -Wl,--wrap=pthread_cond_broadcast
 # test_threading fault-injects pthread_cond_init to exercise gate-init cleanup.
-THREADING_WRAP_LDFLAGS := -Wl,--wrap=pthread_cond_init
+THREADING_WRAP_LDFLAGS := -Wl,--wrap=pthread_cond_init $(BARRIER_WRAP_LDFLAGS)
 USM_POOL_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc
 # worker_pool fault injection: slot/thread-record allocation + thread spawn.
 WORKER_POOL_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc \
     -Wl,--wrap=pthread_create
 WORKER_POOL_FUZZ_WRAP_LDFLAGS := -Wl,--wrap=pthread_create
+# CONC-1: the lost-wake regression waits out the barrier deadline, so shrink it
+# from the shipped 10 s to something a test suite can afford.
+WORKER_POOL_TEST_CFLAGS := -DUP_POOL_BARRIER_TIMEOUT_MS=200
+THREADING_TEST_CFLAGS := -DUP_POOL_BARRIER_TIMEOUT_MS=200
 
 FUZZ_SAN     := -fsanitize=fuzzer,address,undefined
 FUZZ_CFLAGS  := -O1 -g $(MARCH_FLAG) $(WARN) -MMD -MP $(FUZZ_SAN) $(EXTRA_CFLAGS)
@@ -816,14 +822,14 @@ $(COV_BUILD)/test_perfmon: tests/test_perfmon.c src/perfmon.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_cli_parse: tests/test_cli_parse.c tests/cli_parse.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/test_threading: tests/test_threading.c src/threading.h | $(COV_BUILD)
-	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
+$(COV_BUILD)/test_threading: tests/test_threading.c src/threading.h tests/barrier_fault_inject.h | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) $(THREADING_TEST_CFLAGS) -o $@ $< $(COV_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
 $(COV_BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_worker_pool: tests/test_worker_pool.c src/worker_pool.h src/threading.h tests/barrier_fault_inject.h tests/test_harness.h | $(COV_BUILD)
-	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS) \
+	$(COV_CC) $(COV_CFLAGS) $(WORKER_POOL_TEST_CFLAGS) -o $@ $< $(COV_LDFLAGS) \
 	    $(WORKER_POOL_WRAP_LDFLAGS) -lpthread
 $(COV_BUILD)/fuzz_worker_pool: tests/fuzz_worker_pool.c src/worker_pool.h src/threading.h | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS) \
@@ -966,13 +972,13 @@ $(BUILD):
 # of truth for incremental correctness.
 -include $(wildcard $(BUILD)/*.d)
 -include $(wildcard $(COV_BUILD)/*.d)
-$(BUILD)/test_threading: tests/test_threading.c src/threading.h | $(BUILD)
-	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
+$(BUILD)/test_threading: tests/test_threading.c src/threading.h tests/barrier_fault_inject.h | $(BUILD)
+	$(CC) $(TEST_CFLAGS) $(THREADING_TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
 
 # PORT-1: same suite compiled with the affinity machinery forced off,
 # proving the sysconf-only fallback (non-glibc libcs) builds and passes.
-$(BUILD)/test_threading_noaffinity: tests/test_threading.c src/threading.h | $(BUILD)
-	$(CC) $(TEST_CFLAGS) -DUP_NO_CPU_AFFINITY -o $@ $< $(TEST_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
+$(BUILD)/test_threading_noaffinity: tests/test_threading.c src/threading.h tests/barrier_fault_inject.h | $(BUILD)
+	$(CC) $(TEST_CFLAGS) $(THREADING_TEST_CFLAGS) -DUP_NO_CPU_AFFINITY -o $@ $< $(TEST_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
 
 $(BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
@@ -984,7 +990,7 @@ $(BUILD)/usm_pool_test.o: src/usm_pool.c | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -c -o $@ $<
 
 $(BUILD)/test_worker_pool: tests/test_worker_pool.c src/worker_pool.h src/threading.h tests/barrier_fault_inject.h tests/test_harness.h | $(BUILD)
-	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS) \
+	$(CC) $(TEST_CFLAGS) $(WORKER_POOL_TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS) \
 	    $(WORKER_POOL_WRAP_LDFLAGS) -lpthread
 
 $(BUILD)/test_usm_pool: tests/test_usm_pool.c $(BUILD)/usm_pool_test.o | $(BUILD)

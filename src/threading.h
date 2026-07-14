@@ -45,6 +45,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include <time.h>       /* clock_gettime, timespec */
 #include <unistd.h>     /* sysconf */
 
 /* Affinity-mask topology detection needs the glibc/Linux CPU_*_S macro
@@ -220,20 +221,59 @@ static inline int up_threads_decide(int user_pref, int total_cores)
 }
 
 /*
- * sem_wait with the standard EINTR retry (CON-3). Both worker pools use
- * a counting done-barrier whose final sem_wait runs on VLC's video
- * thread; libvlc embedders routinely install non-SA_RESTART signal
- * handlers, and an EINTR'd wait returning early would let Filter() hand
- * a picture downstream while workers are still writing it.
+ * CONC-1: the done-barrier's wait is BOUNDED.
  *
- * Returns 0 on success. Any non-EINTR failure (EINVAL: destroyed/corrupt
- * sem) returns -1 — the caller must FAIL the dispatch, not proceed with
- * the barrier broken.
+ * The final wait runs on VLC's video-output thread. It used to be an untimed
+ * sem_wait, which made every "the post never arrived" state a permanent
+ * playback hang with no diagnostic: the last finisher posts exactly once, and
+ * if that post fails the flag it sets can only be read *after* a wait that
+ * never returns. The same is true of any lost wake. A hang is not a recovery —
+ * time the wait out instead, so the caller can poison the pool, drop the frame
+ * and fail over to a backend that works.
+ *
+ * The timeout is orders of magnitude above any real dispatch (a worker handles
+ * one stripe of one frame: tens of microseconds to a few milliseconds, and
+ * even a 64-thread 8K sweep under TSAN stays far below a second), so it can
+ * only fire on a genuinely broken barrier.
+ *
+ * Suspend caveat: the deadline is CLOCK_REALTIME (what POSIX sem_timedwait
+ * takes), which keeps running across a machine suspend. A suspend landing in
+ * the narrow window while workers are mid-frame can therefore expire the
+ * deadline; the cost is one dropped frame and a fail-over, against today's
+ * permanent hang. A post that already arrived is still consumed without
+ * blocking, expired deadline or not, so the common resume path is unaffected.
  */
-static inline int up_sem_wait_nointr(sem_t *s)
+#ifndef UP_POOL_BARRIER_TIMEOUT_MS
+#define UP_POOL_BARRIER_TIMEOUT_MS 10000
+#endif
+
+#define UP_NSEC_PER_SEC 1000000000L
+
+/*
+ * sem_timedwait with the standard EINTR retry (CON-3). Both worker pools use
+ * a counting done-barrier whose final wait runs on VLC's video thread; libvlc
+ * embedders routinely install non-SA_RESTART signal handlers, and an EINTR'd
+ * wait returning early would let Filter() hand a picture downstream while
+ * workers are still writing it.
+ *
+ * Returns 0 on success. Any other failure — ETIMEDOUT (no post arrived) or
+ * EINVAL (destroyed/corrupt sem) — returns -1, and the caller must FAIL the
+ * dispatch rather than proceed with the barrier broken.
+ */
+static inline int up_sem_wait_timeout(sem_t *s, long timeout_ms)
 {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return -1;
+
+    /* Carry in one wider computation rather than a conditional fixup: the
+     * carry branch would otherwise depend on the wall-clock time of day. */
+    const int64_t deadline_ns = (int64_t)ts.tv_nsec
+                              + (int64_t)timeout_ms * 1000000;
+    ts.tv_sec  += (time_t)(deadline_ns / UP_NSEC_PER_SEC);
+    ts.tv_nsec  = (long)(deadline_ns % UP_NSEC_PER_SEC);
+
     int rc;
-    do { rc = sem_wait(s); } while (rc == -1 && errno == EINTR);
+    do { rc = sem_timedwait(s, &ts); } while (rc == -1 && errno == EINTR);
     return rc;
 }
 
@@ -370,24 +410,43 @@ static inline void up_pool_gate_request_exit(up_pool_gate_t *g)
     pthread_mutex_unlock(&g->lock);
 }
 
-/* Worker side: signal completion. The last finisher posts the barrier.
- * CON-2: sem_post on a valid unnamed semaphore can only fail with
- * EOVERFLOW — the count is already at SEM_VALUE_MAX, so the main
- * thread's wait cannot block — but it does mean the barrier accounting
- * is no longer trustworthy. Record it so wait_all reports the dispatch
- * as broken instead of silently succeeding. */
+/* How many times the last finisher retries a failed post before giving up.
+ * A post that keeps failing means the semaphore itself is unusable; the
+ * bounded wait (up_sem_wait_timeout) is what keeps that from hanging. */
+#define UP_POOL_POST_RETRIES 3
+
+/*
+ * Worker side: signal completion. The last finisher posts the barrier.
+ *
+ * CON-2: sem_post on a valid unnamed semaphore can only fail with EOVERFLOW —
+ * the count is already at SEM_VALUE_MAX, so the main thread's wait cannot
+ * block — but it does mean the barrier accounting is no longer trustworthy.
+ * Record it so wait_all reports the dispatch as broken instead of silently
+ * succeeding.
+ *
+ * CONC-1: retry the post rather than dropping it. The main thread is waiting
+ * on exactly one post from exactly one finisher, so a single unretried failure
+ * used to mean no post reached the semaphore at all. Retrying costs nothing on
+ * the path that never fails, and the failure flag is still recorded either way.
+ */
 static inline void up_pool_gate_worker_done(up_pool_gate_t *g)
 {
-    if (atomic_fetch_sub_explicit(&g->pending, 1, memory_order_acq_rel) == 1
-        && sem_post(&g->all_done) != 0)
-        atomic_store_explicit(&g->post_failed, true, memory_order_release);
+    if (atomic_fetch_sub_explicit(&g->pending, 1, memory_order_acq_rel) != 1)
+        return;
+
+    for (int try = 0; try < UP_POOL_POST_RETRIES; try++)
+        if (sem_post(&g->all_done) == 0) return;
+
+    atomic_store_explicit(&g->post_failed, true, memory_order_release);
 }
 
 /* Main-thread side: wait for every worker of this dispatch. Returns 0 on
- * success; non-zero means the barrier is broken (poison + stop). */
+ * success; non-zero means the barrier is broken (poison + stop) — either a
+ * recorded post failure, or no post at all within the timeout (CONC-1). */
 static inline int up_pool_gate_wait_all(up_pool_gate_t *g)
 {
-    if (up_sem_wait_nointr(&g->all_done) != 0) return -1;
+    if (up_sem_wait_timeout(&g->all_done, UP_POOL_BARRIER_TIMEOUT_MS) != 0)
+        return -1;
     if (atomic_exchange_explicit(&g->post_failed, false,
                                  memory_order_acquire))
         return -1;

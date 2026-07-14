@@ -9,7 +9,9 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
+#include "barrier_fault_inject.h"
 #include "test_harness.h"
 
 /* Fault injection (linked with -Wl,--wrap=pthread_cond_init): make the next
@@ -478,6 +480,113 @@ static void test_pool_gate_init_cond_failure(void)
     END();
 }
 
+/* Elapsed wall-clock milliseconds since `start`. */
+static long elapsed_ms(const struct timespec *start)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (now.tv_sec - start->tv_sec) * 1000
+         + (now.tv_nsec - start->tv_nsec) / 1000000;
+}
+
+/*
+ * REGRESSION (CONC-1): the done-barrier wait is BOUNDED. Arm a dispatch that
+ * no worker will ever complete — exactly what a lost wake or a dropped post
+ * leaves behind — and the wait must report a broken barrier, not block.
+ *
+ * This used to be an untimed sem_wait, so this state was a permanent stall on
+ * VLC's video-output thread with nothing logged: the post-failure flag the
+ * code inspects for "recovery" can only be read AFTER the wait returns. Before
+ * the fix this test does not terminate.
+ *
+ * Built with UP_POOL_BARRIER_TIMEOUT_MS=200 (THREADING_TEST_CFLAGS) so the
+ * deadline costs a fifth of a second rather than the shipped 10 s.
+ */
+static void test_pool_gate_wait_times_out(void)
+{
+    BEGIN("pool gate: a dispatch nobody completes times out, never hangs");
+    up_pool_gate_t gate;
+    CHECK_EQ(up_pool_gate_init(&gate), 0);
+
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    up_pool_gate_lock(&gate);
+    up_pool_gate_arm_locked(&gate, 1);      /* one worker owed... */
+    up_pool_gate_unlock_broadcast(&gate);   /* ...and none exists */
+
+    CHECK_EQ(up_pool_gate_wait_all(&gate), -1);
+    const long waited = elapsed_ms(&t0);
+    CHECK(waited >= UP_POOL_BARRIER_TIMEOUT_MS / 2);   /* it really waited */
+    CHECK(waited < 10 * UP_POOL_BARRIER_TIMEOUT_MS);   /* and it really returned */
+
+    up_pool_gate_destroy(&gate);
+    END();
+}
+
+/*
+ * CONC-1, other half: the last finisher RETRIES its post. A transient failure
+ * (fewer than UP_POOL_POST_RETRIES in a row) must be recovered — the dispatch
+ * succeeds and nothing is recorded as broken. Only a failure that survives
+ * every retry (a real EOVERFLOW) breaks the dispatch, which
+ * test_pool_gate_post_failure_reported covers.
+ */
+static void test_pool_gate_post_retry_recovers(void)
+{
+    BEGIN("pool gate: the finisher retries a transient post failure (CONC-1)");
+    up_pool_gate_t gate;
+    CHECK_EQ(up_pool_gate_init(&gate), 0);
+
+    static gate_worker_t w;
+    gate_worker_start(&w, &gate);
+
+    barrier_fault_inject_sem_post_failures(UP_POOL_POST_RETRIES - 1);
+    up_pool_gate_lock(&gate);
+    up_pool_gate_arm_locked(&gate, 1);
+    up_pool_gate_unlock_broadcast(&gate);
+    CHECK_EQ(up_pool_gate_wait_all(&gate), 0);   /* retry got the post through */
+    CHECK_EQ(atomic_load(&w.runs), 1);
+
+    up_pool_gate_request_exit(&gate);
+    pthread_join(w.thread, NULL);
+    up_pool_gate_destroy(&gate);
+    END();
+}
+
+/*
+ * The other end of the retry: a post failure that survives every retry (a real
+ * EOVERFLOW — the count is pinned at SEM_VALUE_MAX) is recorded, and the
+ * dispatch it belongs to is reported broken rather than silently succeeding.
+ * Driven through a real worker, so the flag is set by the finisher itself.
+ */
+static void test_pool_gate_post_failure_survives_retries(void)
+{
+    BEGIN("pool gate: a post failure no retry can clear breaks the dispatch");
+    up_pool_gate_t gate;
+    CHECK_EQ(up_pool_gate_init(&gate), 0);
+
+    static gate_worker_t w;
+    gate_worker_start(&w, &gate);
+
+    barrier_fault_inject_next_sem_post();   /* fails every retry */
+    up_pool_gate_lock(&gate);
+    up_pool_gate_arm_locked(&gate, 1);
+    up_pool_gate_unlock_broadcast(&gate);
+    CHECK_EQ(up_pool_gate_wait_all(&gate), -1);
+    CHECK_EQ(atomic_load(&w.runs), 1);      /* the worker DID run... */
+    /* ...the accounting is what we can no longer trust. One-shot: the flag is
+     * consumed, so a clean dispatch afterwards succeeds again. */
+    up_pool_gate_lock(&gate);
+    up_pool_gate_arm_locked(&gate, 1);
+    up_pool_gate_unlock_broadcast(&gate);
+    CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
+
+    up_pool_gate_request_exit(&gate);
+    pthread_join(w.thread, NULL);
+    up_pool_gate_destroy(&gate);
+    END();
+}
+
 /* Both pools call request_exit unconditionally from their stop path, which
  * can run before the gate was ever initialized (lazy init failed early) and
  * twice over (poison mid-playback, then Close). Neither may touch the
@@ -524,6 +633,9 @@ int main(void)
     test_pool_gate_exit_completes_unseen();
     test_pool_gate_post_failure_reported();
     test_pool_gate_request_exit_guards();
+    test_pool_gate_post_retry_recovers();
+    test_pool_gate_post_failure_survives_retries();
+    test_pool_gate_wait_times_out();
     test_detect_then_decide();
     test_explicit_at_max_boundary();
 

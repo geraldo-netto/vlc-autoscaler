@@ -62,7 +62,6 @@ at ~zero cost; no O(n²) patterns.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| CONC-1 | open | S | `up_pool_gate_worker_done` (`src/threading.h:358-363`): if the last finisher's `sem_post` fails it is not retried and **no** post reaches the semaphore, so `up_pool_gate_wait_all`'s `sem_wait` (`:369`) blocks forever on VLC's video thread — the `post_failed` flag it sets can only be read after a wait that never returns. | Not reachable today (the comment's EOVERFLOW-only claim holds: count at `SEM_VALUE_MAX` ⇒ the wait cannot block), but the "recovery" is a deadlock, not a recovery. A future sem re-init path or a libc returning another errno turns it into a hard playback hang with no diagnostic. Cheap hardening: retry the post in the finisher, or use `sem_timedwait`. Related: ERR-1. |
 
 Otherwise sound (full re-trace of every atomic order, both lifecycles, both drain paths): gate wake
 publication ordered by the go-lock; acq_rel `fetch_sub` + release sequence + sem barrier publishes
