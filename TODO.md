@@ -46,7 +46,6 @@ with an owner release. Permanent-failure retention is tracked under RES-1 and RE
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| PERF-1 | open | S | `zimg_pool_arm` clears every worker result under the dispatch gate lock (`src/scaler_zimg.c:511-524,864-870`), although every successful worker unconditionally overwrites it at `:502-505` and failed dispatches skip result inspection. | Remove the reset and `arm` hook. This avoids redundant O(worker-count) cache-line writes on every frame. |
 
 No other unparked finding: steady-state processing allocates no per-frame backend
 state and does not rebuild graphs.

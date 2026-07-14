@@ -169,11 +169,10 @@ typedef struct
     /* _Alignas(64) on the first member promotes the whole struct's
      * alignment to 64 and forces sizeof to a 64-byte multiple, so an
      * aligned-allocated array keeps each worker on its own cache line(s).
-     * Per dispatch the main thread writes per-worker fields (w->result reset;
-     * in zerocopy-dst mode also w->dst.{data,pitch}) and the worker writes
-     * w->result; without padding, two adjacent workers' writes invalidate
-     * each other's lines on every frame. Same fix as usm_worker_t in
-     * usm_pool.c. C11 disallows _Alignas on a typedef name, hence on the
+     * Per dispatch the main thread writes per-worker picture views and each
+     * worker writes its result; without padding, two adjacent workers' writes
+     * invalidate each other's lines on every frame. Same fix as usm_worker_t
+     * in usm_pool.c. C11 disallows _Alignas on a typedef name, hence on the
      * first member.
      *
      * Threads, the dispatch gate and the exit protocol belong to the shared
@@ -508,19 +507,10 @@ static void zimg_worker_run(stripe_worker_t *w)
     }
 }
 
-/* Pool hooks (worker_pool.h): one dispatch's work, and the per-dispatch state
- * reset that must happen under the gate lock — a waking worker must never see
- * the previous frame's result. */
+/* Pool hook (worker_pool.h): one dispatch's work. */
 static void zimg_pool_run(void *owner, int i)
 {
     zimg_worker_run(&zimg_workers((zimg_priv_t *)owner)[i]);
-}
-
-static void zimg_pool_arm(void *owner, int n_workers)
-{
-    stripe_worker_t *workers = zimg_workers((zimg_priv_t *)owner);
-    for (int i = 0; i < n_workers; i++)
-        workers[i].result = 0;
 }
 
 /* ---------- per-cell graph builder ---------- */
@@ -866,7 +856,6 @@ static const up_worker_pool_ops_t zimg_pool_ops = {
     .run            = zimg_pool_run,
     .prepare        = zimg_pool_prepare,
     .release        = zimg_pool_release,
-    .arm            = zimg_pool_arm,
     .on_spawn       = zimg_pool_on_spawn,
     .all_or_nothing = true,   /* a missing cell leaves the frame unwritten */
 };
@@ -1054,12 +1043,11 @@ static scaler_process_status_t zimg_check_worker_results(zimg_priv_t *p)
 
 static scaler_process_status_t zimg_dispatch_and_wait(zimg_priv_t *p)
 {
-    /* The pool arms the barrier, resets results under the gate lock, wakes all
-     * workers with one broadcast and waits once (worker_pool.h). A barrier
-     * failure poisons the pool and joins its threads before we return control
-     * to the picture owner. OBS-1: log once — the poison latches, so
-     * zimg_process short-circuits every later frame and never reaches here
-     * again. */
+    /* The pool arms the barrier, wakes all workers with one broadcast and
+     * waits once (worker_pool.h). A barrier failure poisons the pool and joins
+     * its threads before we return control to the picture owner. OBS-1: log
+     * once — the poison latches, so zimg_process short-circuits every later
+     * frame and never reaches here again. */
     if (up_worker_pool_dispatch(&p->pool) != 0) {
         if (p->lazy.log_obj)
             msg_Err((vlc_object_t *)p->lazy.log_obj,

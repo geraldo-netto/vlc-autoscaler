@@ -394,14 +394,14 @@ static inline int up_sem_wait_timeout(sem_t *s, long timeout_ms)
  * Done side: each worker finishes with an acq_rel fetch_sub on
  * `pending`; those RMWs form a release sequence, so the worker that
  * drives it to zero observes every other worker's writes, and its
- * sem_post -> the main thread's sem_wait publishes them all. The main
- * thread waits exactly once per dispatch (EINTR-retried); a non-EINTR
- * wait failure means the barrier is broken and the caller must poison
- * and stop the pool rather than proceed.
+ * sem_post wakes the main thread. The main thread then acquire-loads
+ * `pending == 0`, publishing all worker payloads before the caller reads
+ * them. It waits exactly once per dispatch (EINTR-retried); a wait failure
+ * or an early/stale wake means the barrier is broken and the caller must
+ * poison and stop the pool rather than proceed.
  *
- * The lock/arm/unlock split exists so a pool can reset per-worker state
- * (e.g. result codes) inside the critical section: a worker that wakes
- * must never observe stale values.
+ * The lock/arm/unlock split publishes the pending count and generation before
+ * any worker can wake for that dispatch.
  */
 typedef struct {
     pthread_mutex_t lock;
@@ -461,7 +461,7 @@ static inline int up_pool_gate_lock(up_pool_gate_t *g)
 }
 
 /* Arm the done-barrier for n workers and open the gate. Caller holds the
- * lock (up_pool_gate_lock) and has reset any per-worker state. */
+ * lock (up_pool_gate_lock). */
 static inline void up_pool_gate_arm_locked(up_pool_gate_t *g, int n)
 {
     atomic_store_explicit(&g->pending, n, memory_order_relaxed);
@@ -605,6 +605,8 @@ static inline int up_pool_gate_wait_all(up_pool_gate_t *g)
     if (atomic_load_explicit(&g->sync_failed, memory_order_acquire)) return -1;
     if (up_sem_wait_timeout(&g->all_done, UP_POOL_BARRIER_TIMEOUT_MS) != 0)
         return -1;
+    /* Acquire the workers' RMW release sequence before reading payloads. */
+    if (atomic_load_explicit(&g->pending, memory_order_acquire) != 0) return -1;
     if (atomic_load_explicit(&g->sync_failed, memory_order_acquire)) return -1;
     if (atomic_exchange_explicit(&g->post_failed, false,
                                  memory_order_acquire))

@@ -78,8 +78,6 @@ typedef struct {
     int  prepare_calls;
     int  construct_calls;
     int  release_calls;
-    int  arm_calls;
-    int  arm_n;            /* worker count the arm hook was given */
     int  spawn_calls;
     int  finalize_n;          /* -1 until finalize runs */
     atomic_int total_runs;
@@ -129,13 +127,6 @@ static void fake_run(void *owner, int i)
     atomic_fetch_add_explicit(&f->total_runs, 1, memory_order_relaxed);
 }
 
-static void fake_arm(void *owner, int n_workers)
-{
-    fake_pool_t *f = (fake_pool_t *)owner;
-    f->arm_calls++;
-    f->arm_n = n_workers;
-}
-
 static void fake_on_spawn(void *owner, int i, pthread_t thread)
 {
     (void)i; (void)thread;
@@ -152,7 +143,6 @@ static const up_worker_pool_ops_t partial_ops = {
     .run            = fake_run,
     .prepare        = fake_prepare,
     .release        = fake_release,
-    .arm            = fake_arm,
     .on_spawn       = fake_on_spawn,
     .finalize       = fake_finalize,
     .all_or_nothing = false,
@@ -163,14 +153,13 @@ static const up_worker_pool_ops_t strict_ops = {
     .run            = fake_run,
     .prepare        = fake_prepare,
     .release        = fake_release,
-    .arm            = fake_arm,
     .on_spawn       = fake_on_spawn,
     .finalize       = fake_finalize,
     .all_or_nothing = true,
 };
 
 /* Minimal ops: only the two required hooks, so the optional-hook NULL guards
- * are exercised too (the USM pool ships without release/arm/on_spawn). */
+ * are exercised too (the USM pool ships without release/on_spawn). */
 static const up_worker_pool_ops_t bare_ops = {
     .construct = fake_construct,
     .run       = fake_run,
@@ -242,8 +231,6 @@ static void test_threaded_dispatch_cycles(void)
     for (int i = 0; i < M; i++)
         CHECK_EQ(up_worker_pool_dispatch(&f.pool), 0);
     check_run_counts(&f, M);
-    CHECK_EQ(f.arm_calls, M);
-    CHECK_EQ(f.arm_n, N);   /* armed for exactly the workers that came up */
     CHECK_EQ(up_worker_pool_broken(&f.pool), 0);
 
     /* Already started: ensure is a no-op, prepare does not run twice. */
@@ -271,8 +258,6 @@ static void test_single_worker_runs_inline(void)
     CHECK_EQ(live_thread_count(), before);
 
     CHECK_EQ(up_worker_pool_dispatch(&f.pool), 0);
-    CHECK_EQ(f.arm_calls, 1);      /* the arm hook still runs (result reset) */
-    CHECK_EQ(f.arm_n, 1);
     check_run_counts(&f, 1);
     CHECK_EQ(up_pool_gate_ready(&f.pool.gate), 0);   /* no gate at all */
 
@@ -422,7 +407,6 @@ static void test_bare_ops(void)
     CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
     CHECK_EQ(up_worker_pool_dispatch(&f.pool), 0);
     check_run_counts(&f, 1);
-    CHECK_EQ(f.arm_calls, 0);
     CHECK_EQ(f.spawn_calls, 0);
     up_worker_pool_destroy(&f.pool);
     CHECK_EQ(f.release_calls, 0);

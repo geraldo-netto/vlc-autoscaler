@@ -26,9 +26,9 @@
  * every machine with <= 7 cores, so this is the common desktop path.
  *
  * Threading contract (inherited from the gate, see threading.h): the owner
- * writes per-dispatch worker state before up_worker_pool_dispatch (or inside
- * the `arm` hook, under the gate lock); workers publish their results through
- * the done barrier. No worker touches another worker's slot.
+ * writes per-dispatch worker state before up_worker_pool_dispatch; workers
+ * publish their results through the done barrier. No worker touches another
+ * worker's slot.
  *****************************************************************************/
 
 #ifndef AUTOUPSCALE_WORKER_POOL_H
@@ -82,11 +82,6 @@ typedef struct {
      * failed to spawn. Never called for a slot construct() rejected — that
      * one cleans up after itself. */
     void (*release)(void *owner, int index);
-
-    /* Optional. Called under the gate lock immediately before the wake, with
-     * this dispatch's worker count: reset per-dispatch state (result codes)
-     * a waking worker must not observe stale. */
-    void (*arm)(void *owner, int n_workers);
 
     /* Optional. Called right after a worker thread is created (CPU pinning). */
     void (*on_spawn)(void *owner, int index, pthread_t thread);
@@ -369,7 +364,6 @@ static inline void up_worker_pool_poison(up_worker_pool_t *p)
 static inline int up_worker_pool_dispatch(up_worker_pool_t *p)
 {
     if (p->inline_run) {
-        if (p->ops->arm) p->ops->arm(p->owner, 1);
         p->ops->run(p->owner, 0);
         return 0;
     }
@@ -379,7 +373,6 @@ static inline int up_worker_pool_dispatch(up_worker_pool_t *p)
         return -1;
     }
     up_pool_gate_arm_locked(&p->gate, p->n_workers);
-    if (p->ops->arm) p->ops->arm(p->owner, p->n_workers);
     if (up_pool_gate_unlock_broadcast(&p->gate) != 0) {
         up_worker_pool_poison(p);
         return -1;
