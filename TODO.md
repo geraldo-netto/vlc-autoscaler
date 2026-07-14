@@ -112,7 +112,6 @@ no-speculative-pattern-work bar.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | REL-3 | open | S | `tests/test_picture_view.c:54` builds its test `plane_t` **from the layout table it is testing** (`i_pixel_pitch = layout->pixel_pitch[i]`), so the NV12 assertion at `:142` is circular and cannot catch upstream VLC drift. | The table is correct against today's `vlc_fourcc_GetChromaDescription()` (verified), and `tests/abi_assert.c` checks field names/types, not these *values*. If VLC's `pixel_size` for a chroma ever changed, every frame of that chroma would silently fail `up_picture_plane_storage_ok` (all frames dropped, TRANSIENT). Fix: `_Static_assert` the table's `pixel_pitch[]` against `vlc_fourcc_GetChromaDescription(c)->pixel_size` in the VLC-linked TU, beside the existing fourcc asserts at `autoupscale.c:48-53`. |
-| SH-1 | open | S | `scripts/install-vlc-autoupscale-action.sh:43,59` — the generated `Exec=` lines interpolate `${WRAPPER}` (a `$HOME`-derived path) unquoted, but Desktop-Entry/Nemo-Action `Exec` is parsed with shell-like word splitting. | `HOME=/home/j smith` → `Exec=/home/j smith/.local/bin/vlc-autoupscale %U`; the launcher execs `/home/j` and both the *Open With* entry and the right-click action silently do nothing. Same for `$`, backtick or backslash in the path. Fix: `Exec="${WRAPPER}" %U` / `%F`. |
 
 ## portability/standards conformance
 
@@ -127,7 +126,6 @@ build flavour): no char-signedness dependence; shift exponents bounded; negative
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | ERR-1 | open | M | `pthread_cond_broadcast`'s and `pthread_mutex_lock`'s return values are ignored throughout the gate (`src/threading.h:313,326-330,343,369`), and the only recovery path is an **untimed** `sem_wait` — so a failed broadcast is unrecoverable by construction. | If `pthread_cond_broadcast` ever returns non-zero (EINVAL on a corrupted cond), no worker wakes, `pending` never reaches 0, nobody posts `all_done`, and `up_pool_gate_wait_all` blocks forever on VLC's video-output thread: playback hangs instead of dropping a frame and falling back. The test harness proves the gap — `tests/barrier_fault_inject.h:46-59` must pair its suppressed broadcast with an *injected `sem_wait` failure*, or the suite would hang exactly like production. Same root as CONC-1. |
-| SH-4 | open | S | `scripts/install-vlc-autoupscale-action.sh:10-16,23-27` — `set -eu` catches an *unset* `HOME` but not an *empty* one, so every derived path collapses to root-relative `/.local/...` and uninstall reports success having removed nothing. | `HOME= …/install-vlc-autoupscale-action.sh --uninstall` → `rm -f` on three nonexistent root-relative paths, exits 0, prints "Removed …" while the real files under the user's home are untouched. Guard with `: "${HOME:?}"`. |
 
 Otherwise clean: `pthread_create`, `aligned_alloc`, `clock_gettime`, `filter_NewPicture`, `zimg_*`,
 `sem_init`, `sched_getaffinity`, `sws_getContext` returns all checked; `sem_wait` EINTR-retried; sticky

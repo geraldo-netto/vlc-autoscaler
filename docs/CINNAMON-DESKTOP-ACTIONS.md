@@ -101,7 +101,7 @@ Nemo action (`~/.local/share/nemo/actions/vlc-autoupscale.nemo_action`):
 [Nemo Action]
 Name=Play with VLC (AutoUpscale)
 Comment=Play the selected media with the autoupscale video filter enabled
-Exec=/home/YOUR_USER/.local/bin/vlc-autoupscale %F
+Exec="/home/YOUR_USER/.local/bin/vlc-autoupscale" %F
 Icon-Name=vlc
 Selection=notnone
 Extensions=mp4;mkv;avi;mov;webm;m4v;ts;mpg;mpeg;wmv;flv;
@@ -109,8 +109,10 @@ Quote=double
 Dependencies=vlc;
 ```
 
-`Exec` must be an absolute path. `Quote=double` makes Nemo quote each selected
-path, so filenames with spaces are passed as single arguments.
+`Exec` must be an absolute path, and quoted — the Desktop Entry and Nemo Action
+specs word-split the `Exec` value, so an unquoted path containing a space runs
+the wrong program. `Quote=double` makes Nemo quote each selected path, so
+filenames with spaces are passed as single arguments.
 
 ### Tuning
 

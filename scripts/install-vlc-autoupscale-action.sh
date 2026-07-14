@@ -7,6 +7,12 @@
 #   scripts/install-vlc-autoupscale-action.sh --uninstall   # remove
 set -eu
 
+# SH-4: `set -u` catches an UNSET HOME but not an empty one, which would make
+# every derived path root-relative (/.local/...) — uninstall would then rm -f
+# three paths that do not exist, exit 0, and report success while the real
+# files under the user's home were untouched.
+: "${HOME:?HOME must be set to a non-empty path}"
+
 BIN_DIR="${HOME}/.local/bin"
 APP_DIR="${HOME}/.local/share/applications"
 ACTION_DIR="${HOME}/.local/share/nemo/actions"
@@ -16,6 +22,13 @@ DESKTOP="${APP_DIR}/vlc-autoupscale.desktop"
 ACTION="${ACTION_DIR}/vlc-autoupscale.nemo_action"
 
 SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+# SH-1: Desktop-Entry and Nemo-Action Exec values are parsed with shell-like
+# word splitting, so a $HOME containing a space ("/home/j smith") would make the
+# launcher try to exec /home/j and the entries would silently do nothing. Quote
+# the program path per the Desktop Entry spec: inside double quotes, the
+# characters \ " ` $ must each be escaped with a backslash.
+EXEC_PATH="\"$(printf '%s' "$WRAPPER" | sed 's/[\\"`$]/\\&/g')\""
 
 VIDEO_MIMES="video/mp4;video/x-matroska;video/x-msvideo;video/quicktime;video/webm;video/mpeg;video/x-ms-wmv;video/x-flv;video/mp2t;"
 VIDEO_EXTS="mp4;mkv;avi;mov;webm;m4v;ts;mpg;mpeg;wmv;flv;"
@@ -40,7 +53,7 @@ Version=1.0
 Name=VLC (AutoUpscale)
 GenericName=Media Player
 Comment=Play media in VLC with the autoupscale video filter enabled
-Exec=${WRAPPER} %U
+Exec=${EXEC_PATH} %U
 Icon=vlc
 Terminal=false
 Categories=AudioVideo;Player;Video;
@@ -56,7 +69,7 @@ install_action() {
 [Nemo Action]
 Name=Play with VLC (AutoUpscale)
 Comment=Play the selected media with the autoupscale video filter enabled
-Exec=${WRAPPER} %F
+Exec=${EXEC_PATH} %F
 Icon-Name=vlc
 Selection=notnone
 Extensions=${VIDEO_EXTS}
