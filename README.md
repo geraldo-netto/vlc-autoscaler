@@ -85,6 +85,11 @@ vlc --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=
 > down black screens, freezes, or garbage output, and a section on
 > getting audio to start at 100% volume on Linux.
 
+> **Cinnamon/Nemo desktop integration:**
+> [`docs/CINNAMON-DESKTOP-ACTIONS.md`](docs/CINNAMON-DESKTOP-ACTIONS.md)
+> installs a separate “VLC (AutoUpscale)” launcher, Open With entry, and
+> right-click action without replacing the stock VLC launcher.
+
 ## Does it run automatically when I play a video?
 
 Not by default — VLC video filters are opt-in. You have three ways to
@@ -513,10 +518,15 @@ tests/
 scripts/
   bench_matrix.sh         run bench_usm_pool across (threads × resolution × fill)
   coverage_report.sh      gcov per-file summary used by `make coverage`
+  install-vlc-autoupscale-action.sh
+                          install/uninstall the Cinnamon/Nemo integration
+  vlc-autoupscale.sh      VLC AutoUpscale launcher wrapper installed above
 
 docs/HOW_IT_WORKS.md      design notes
 docs/USAGE.md             command-line recipes + diagnostic ladder
 docs/PERFORMANCE.md       reproducible performance-measurement guidance
+docs/CINNAMON-DESKTOP-ACTIONS.md
+                          Cinnamon/Nemo launcher and right-click integration
 patches/                  optional VLC patches (workaround for chain depth limit)
 .github/workflows/ci.yml  build, test, smoke fuzz, stress, libFuzzer, cppcheck
 Makefile                  build, test, fuzz, stress, coverage, and analysis targets

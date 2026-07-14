@@ -731,4 +731,6 @@ the runtime choice (`avx512`, `avx2`, or `sse2`).
 - [README.md](../README.md) — install, build, and quick start
 - [docs/HOW_IT_WORKS.md](HOW_IT_WORKS.md) — internal design, threading
   model, perfmon, content probe
+- [Cinnamon/Nemo desktop integration](CINNAMON-DESKTOP-ACTIONS.md) — install
+  a separate AutoUpscale launcher, Open With entry, and right-click action
 - [patches/](../patches/) — optional VLC source patches
