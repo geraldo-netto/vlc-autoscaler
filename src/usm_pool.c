@@ -119,7 +119,6 @@ typedef struct usm_worker_s {
      * typedef name itself, hence placing it here. */
     alignas(64) pthread_t  thread;
     bool       thread_started;
-    bool       should_exit;   /* finish unseen generation, then exit */
 
     /* Dispatch gate, owned by the pool and shared with the zimg pool's
      * design via up_pool_gate_t (DUP-1) — see threading.h for the full
@@ -296,8 +295,7 @@ static void *usm_worker_main(void *arg)
 {
     usm_worker_t *w = (usm_worker_t *)arg;
     for (;;) {
-        if (!up_pool_gate_wait_for_go(w->gate, &w->seen_gen,
-                                      &w->should_exit))
+        if (!up_pool_gate_wait_for_go(w->gate, &w->seen_gen))
             break;
         usm_worker_run(w);
         up_pool_gate_worker_done(w->gate);
@@ -623,23 +621,10 @@ int up_usm_pool_apply(usm_pool_t *p,
     return usm_pool_run(p);
 }
 
-/* Tell every started worker to finish any unseen generation, then exit. */
-static void usm_pool_wake_all_for_exit(usm_pool_t *p)
-{
-    /* If the gate never initialized, no thread was ever spawned (spawn
-     * runs after gate init), so there is nothing to wake. */
-    if (!up_pool_gate_ready(&p->gate)) return;
-    up_pool_gate_lock(&p->gate);
-    for (int i = 0; i < p->n_threads; i++)
-        if (p->workers[i].thread_started)
-            p->workers[i].should_exit = true;
-    up_pool_gate_unlock_broadcast(&p->gate);
-}
-
 static void usm_pool_stop_workers(usm_pool_t *p)
 {
     if (!p->workers) return;
-    usm_pool_wake_all_for_exit(p);
+    up_pool_gate_request_exit(&p->gate);
     for (int i = 0; i < p->n_threads; i++) {
         if (!p->workers[i].thread_started) continue;
         pthread_join(p->workers[i].thread, NULL);

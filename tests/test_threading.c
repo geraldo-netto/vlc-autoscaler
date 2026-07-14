@@ -330,7 +330,6 @@ static void test_detect_cores_invariants(void)
 typedef struct {
     up_pool_gate_t *gate;
     uint64_t        seen_gen;
-    bool            should_exit;
     atomic_int      runs;
     pthread_t       thread;
 } gate_worker_t;
@@ -338,8 +337,7 @@ typedef struct {
 static void *gate_worker_main(void *arg)
 {
     gate_worker_t *w = (gate_worker_t *)arg;
-    while (up_pool_gate_wait_for_go(w->gate, &w->seen_gen,
-                                    &w->should_exit)) {
+    while (up_pool_gate_wait_for_go(w->gate, &w->seen_gen)) {
         atomic_fetch_add_explicit(&w->runs, 1, memory_order_relaxed);
         up_pool_gate_worker_done(w->gate);
     }
@@ -350,7 +348,6 @@ static void gate_worker_start(gate_worker_t *w, up_pool_gate_t *gate)
 {
     w->gate        = gate;
     w->seen_gen    = gate->generation;
-    w->should_exit = false;
     atomic_init(&w->runs, 0);
     CHECK_EQ(pthread_create(&w->thread, NULL, gate_worker_main, w), 0);
 }
@@ -374,10 +371,7 @@ static void test_pool_gate_dispatch_cycles(void)
         CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
     }
 
-    up_pool_gate_lock(&gate);
-    for (int i = 0; i < N; i++)
-        ws[i].should_exit = true;
-    up_pool_gate_unlock_broadcast(&gate);
+    up_pool_gate_request_exit(&gate);
     for (int i = 0; i < N; i++) {
         pthread_join(ws[i].thread, NULL);
         CHECK_EQ(atomic_load(&ws[i].runs), M);
@@ -398,17 +392,16 @@ static void test_pool_gate_exit_completes_unseen(void)
     CHECK_EQ(up_pool_gate_init(&gate), 0);
 
     static gate_worker_t w;
-    w.gate        = &gate;
-    w.seen_gen    = gate.generation;
-    w.should_exit = false;
+    w.gate     = &gate;
+    w.seen_gen = gate.generation;
     atomic_init(&w.runs, 0);
 
-    /* Arm a dispatch AND the exit flag before the worker even starts:
-     * it must run the unseen generation exactly once, then exit. */
+    /* Arm a dispatch AND request exit before the worker even starts: it
+     * must run the unseen generation exactly once, then exit. */
     up_pool_gate_lock(&gate);
     up_pool_gate_arm_locked(&gate, 1);
-    w.should_exit = true;
     up_pool_gate_unlock_broadcast(&gate);
+    up_pool_gate_request_exit(&gate);
 
     CHECK_EQ(pthread_create(&w.thread, NULL, gate_worker_main, &w), 0);
     CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
@@ -485,6 +478,26 @@ static void test_pool_gate_init_cond_failure(void)
     END();
 }
 
+/* Both pools call request_exit unconditionally from their stop path, which
+ * can run before the gate was ever initialized (lazy init failed early) and
+ * twice over (poison mid-playback, then Close). Neither may touch the
+ * uninitialized mutex or block. */
+static void test_pool_gate_request_exit_guards(void)
+{
+    BEGIN("gate request_exit: no-op on an uninitialized gate, idempotent");
+    up_pool_gate_t gate = { 0 };
+    up_pool_gate_request_exit(&gate);   /* never inited: must not touch lock */
+    CHECK_EQ(gate.exit_requested, 0);
+
+    CHECK_EQ(up_pool_gate_init(&gate), 0);
+    up_pool_gate_request_exit(&gate);
+    CHECK_EQ(gate.exit_requested, 1);
+    up_pool_gate_request_exit(&gate);   /* idempotent */
+    CHECK_EQ(gate.exit_requested, 1);
+    up_pool_gate_destroy(&gate);
+    END();
+}
+
 int main(void)
 {
     printf("Running threading tests...\n");
@@ -510,6 +523,7 @@ int main(void)
     test_pool_gate_dispatch_cycles();
     test_pool_gate_exit_completes_unseen();
     test_pool_gate_post_failure_reported();
+    test_pool_gate_request_exit_guards();
     test_detect_then_decide();
     test_explicit_at_max_boundary();
 

@@ -185,12 +185,9 @@ typedef struct
                                         * test on `thread` is not portable —
                                         * mirror usm_worker_t and gate join/
                                         * signal on this flag instead. */
-    /* should_exit (main->worker): set by zimg_wake_all_for_exit() under
-     * the gate lock before a broadcast; the worker reads it under the same
-     * lock and finishes any unseen generation before exiting. result is
-     * single-writer (worker) / single-reader (main), published by the
-     * gate's done barrier (see threading.h). */
-    bool               should_exit;
+    /* result is single-writer (worker) / single-reader (main), published by
+     * the gate's done barrier (see threading.h). The exit signal lives in
+     * the gate (up_pool_gate_request_exit). */
 
     /* Persistent: one graph + one tmp buffer per worker. */
     zimg_filter_graph *graph;
@@ -527,8 +524,7 @@ static void *worker_main(void *arg)
     stripe_worker_t *w = (stripe_worker_t *)arg;
     for (;;)
     {
-        if (!up_pool_gate_wait_for_go(w->gate, &w->seen_gen,
-                                      &w->should_exit))
+        if (!up_pool_gate_wait_for_go(w->gate, &w->seen_gen))
             break;
         zimg_worker_run(w);
         up_pool_gate_worker_done(w->gate);
@@ -835,8 +831,8 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
  * can't infer it from `w->thread` alone because pthread_t is opaque.
  *
  * A started worker MUST already have been told to exit via
- * zimg_wake_all_for_exit() before this joins it — that signal happens once,
- * under go_lock, for every worker at once.
+ * up_pool_gate_request_exit() before this joins it — that signal happens
+ * once, under the gate lock, for every worker at once.
  *
  * After return, all dynamic resources owned by `w` are released; the
  * struct itself is NOT zeroed (caller decides whether to reuse the slot).
@@ -854,27 +850,10 @@ static void release_worker_resources(stripe_worker_t *w, bool had_thread)
     if (w->col_tiled) free_plane_buffer(&w->tile_dst);
 }
 
-/*
- * Tell every started worker to complete any unseen generation, then exit.
- * The exit broadcast does not advance generation: an idle worker must not run
- * stale per-frame state during ordinary teardown.
- */
-static void zimg_wake_all_for_exit(zimg_priv_t *p)
-{
-    /* If the gate never initialized, no thread was ever spawned (construct
-     * runs after gate init), so there is nothing to wake. */
-    if (!up_pool_gate_ready(&p->gate)) return;
-    up_pool_gate_lock(&p->gate);
-    for (int i = 0; i < p->plan.n_threads; i++)
-        if (p->workers[i].thread_started)
-            p->workers[i].should_exit = true;
-    up_pool_gate_unlock_broadcast(&p->gate);
-}
-
 static void zimg_stop_workers(zimg_priv_t *p)
 {
     if (!p->workers) return;
-    zimg_wake_all_for_exit(p);
+    up_pool_gate_request_exit(&p->gate);
     for (int i = 0; i < p->plan.n_threads; i++) {
         stripe_worker_t *w = &p->workers[i];
         if (!w->thread_started) continue;

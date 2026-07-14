@@ -266,6 +266,7 @@ typedef struct {
     pthread_mutex_t lock;
     pthread_cond_t  cv;
     uint64_t        generation;   /* bumped per dispatch, guarded by lock */
+    bool            exit_requested; /* teardown signal, guarded by lock */
     atomic_int      pending;      /* live workers this dispatch */
     sem_t           all_done;     /* posted once when pending hits 0 */
     atomic_bool     post_failed;  /* CON-2: last finisher's post failed */
@@ -276,6 +277,7 @@ typedef struct {
 static inline int up_pool_gate_init(up_pool_gate_t *g)
 {
     g->generation = 0;
+    g->exit_requested = false;
     atomic_init(&g->pending, 0);
     atomic_init(&g->post_failed, false);
     g->cv_inited  = false;
@@ -333,20 +335,39 @@ static inline void up_pool_gate_unlock_broadcast(up_pool_gate_t *g)
  * Worker side: block until a new dispatch (returns true) or an exit
  * request with no unseen generation (returns false). An unseen dispatch
  * is completed before exit so fatal-barrier recovery can join without
- * leaving a partly-written frame. *should_exit is read under the gate
- * lock; the pool sets it under the same lock before broadcasting.
+ * leaving a partly-written frame. The exit flag lives in the gate and is
+ * read under the gate lock; up_pool_gate_request_exit sets it under the
+ * same lock before broadcasting.
  */
 static inline bool up_pool_gate_wait_for_go(up_pool_gate_t *g,
-                                            uint64_t *seen_gen,
-                                            const bool *should_exit)
+                                            uint64_t *seen_gen)
 {
     pthread_mutex_lock(&g->lock);
-    while (g->generation == *seen_gen && !*should_exit)
+    while (g->generation == *seen_gen && !g->exit_requested)
         pthread_cond_wait(&g->cv, &g->lock);
     bool run = g->generation != *seen_gen;
     *seen_gen = g->generation;
     pthread_mutex_unlock(&g->lock);
     return run;
+}
+
+/*
+ * Teardown side: tell every worker on this gate to finish any unseen
+ * generation, then exit. The broadcast does NOT advance generation — an
+ * idle worker must not run stale per-frame state during teardown.
+ *
+ * A gate that never initialized has no workers blocked on it (pools spawn
+ * threads only after a successful gate init), so this is a no-op there.
+ * Idempotent: a pool that poisons itself mid-playback and is closed later
+ * calls it twice.
+ */
+static inline void up_pool_gate_request_exit(up_pool_gate_t *g)
+{
+    if (!up_pool_gate_ready(g)) return;
+    pthread_mutex_lock(&g->lock);
+    g->exit_requested = true;
+    pthread_cond_broadcast(&g->cv);
+    pthread_mutex_unlock(&g->lock);
 }
 
 /* Worker side: signal completion. The last finisher posts the barrier.
