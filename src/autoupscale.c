@@ -854,6 +854,13 @@ static void EmitPerfAdvisory( filter_t *p_filter, const filter_sys_t *p_sys )
  */
 static void LogProbeVerdict( filter_t *p_filter, filter_sys_t *p_sys );
 
+static void DisableUsm( filter_sys_t *p_sys )
+{
+    p_sys->usm_amount_q8 = 0;
+    up_usm_pool_destroy( p_sys->usm_pool );
+    p_sys->usm_pool = NULL;
+}
+
 static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
                       const picture_t *p_in )
 {
@@ -878,6 +885,7 @@ static void RunProbe( filter_t *p_filter, filter_sys_t *p_sys,
                                           p_sys->usm_sharp_threshold ) )
     {
         p_sys->usm_skip_sharp = 1;
+        DisableUsm( p_sys );
         msg_Info( p_filter,
                   "AutoUpscale: source is heavily textured "
                   "(lap_mean=%llu > threshold=%d); skipping post-USM "
@@ -960,7 +968,7 @@ static int ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
         msg_Info( p_filter,   /* OBS-2: msg_Warn is suppressed by default */
                   "AutoUpscale: USM pool initialization or dispatch failed; "
                   "sharpening disabled for this playback" );
-        p_sys->usm_amount_q8 = 0;
+        DisableUsm( p_sys );
         return status;
     }
     if( !p_sys->usm_threads_logged )
