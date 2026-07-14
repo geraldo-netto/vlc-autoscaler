@@ -11,8 +11,9 @@
  *
  * Each variant has its public symbols suffixed (e.g. up_usm_pool_apply_avx2),
  * so all three coexist in the .so. THIS file exposes the un-suffixed public
- * API (up_usm_pool_create / destroy / apply) and forwards every call to one
- * variant chosen ONCE at .so load time, via __attribute__((constructor)).
+ * API (up_usm_pool_create / destroy / apply / effective_threads) and forwards
+ * every call to one variant chosen ONCE at .so load time, via
+ * __attribute__((constructor)).
  *
  * Why a load-time dispatch and not per-call?
  *
@@ -29,7 +30,7 @@
  * Why not __attribute__((target_clones))?
  *
  *   target_clones generates an IFUNC resolver and three function bodies per
- *   attributed function. We'd have to apply it to each of three public
+ *   attributed function. We'd have to apply it to each of four public
  *   functions AND it requires non-static linkage (defeating the static-inline
  *   inlining of the hot kernels into the worker_main loop). Compiling the
  *   whole TU at three -march levels into separate .o files lets each variant

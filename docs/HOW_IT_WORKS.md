@@ -364,7 +364,8 @@ struct scaler_backend_s {
     int  (*supports)(vlc_fourcc_t chroma, int algo);
     int  (*open)   (scaler_ctx_t *);
     scaler_process_status_t
-         (*process)(scaler_ctx_t *, const picture_t *src, picture_t *dst);
+         (*process)(scaler_ctx_t *, const picture_t *src,
+                    const picture_t *dst);
     void (*close)  (scaler_ctx_t *);
 };
 ```
@@ -584,8 +585,9 @@ binary across several CPU classes (for example distro packaging),
 (SSE2 / AVX2 / AVX-512) into three separate `.o` files with renamed
 public symbols. A thin dispatcher in `src/usm_pool_dispatch.c` runs at
 `.so` load time via `__attribute__((constructor))`, calls the shared
-full-level probes, and points three function pointers
-(`up_usm_pool_create/destroy/apply`) at the highest-supported variant:
+full-level probes, and points four function pointers
+(`up_usm_pool_create/destroy/apply/effective_threads`) at the
+highest-supported variant:
 
 ```c
 if (up_cpu_supports_v4())

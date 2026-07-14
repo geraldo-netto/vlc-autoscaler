@@ -4,9 +4,10 @@
  * entry-point prototypes (ABI-2)
  *****************************************************************************
  * usm_pool.c compiled with -DUSM_VARIANT=<name> renames its public
- * symbols to up_usm_pool_{create,destroy,apply}_<name>. Every consumer
+ * symbols to
+ * up_usm_pool_{create,destroy,apply,effective_threads}_<name>. Every consumer
  * (usm_pool_dispatch.c, tests/test_usm_pool_variants.c,
- * tests/fuzz_usm_variants.c) previously hand-declared all nine externs;
+ * tests/fuzz_usm_variants.c) previously hand-declared all twelve externs;
  * a prototype change kept in only some copies still compiled per-TU and
  * linked (same symbol name) — silent ABI mismatch at the call boundary.
  *
