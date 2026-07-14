@@ -454,9 +454,16 @@ static void worker_copy_out_tile(const stripe_worker_t *w)
 
 /* Place this worker's resampled output: a column tile copies its private dst
  * scratch into the VLC dst sub-rect; a plain stripe copies out when dst is not
- * zero-copy (else the graph already wrote VLC's picture). */
+ * zero-copy (else the graph already wrote VLC's picture).
+ *
+ * ERR-2: only after a successful graph run. tile_dst is aligned_alloc'd and
+ * never zeroed, so emitting after a failed process() would copy a tile-sized
+ * block of indeterminate heap (or a half-resampled tile) into VLC's picture.
+ * The frame is dropped afterwards either way, but the copy is both a read of
+ * uninitialized memory and wasted work. */
 static void worker_emit_output(const stripe_worker_t *w)
 {
+    if (w->result != 0)   return;
     if (w->col_tiled)     worker_copy_out_tile(w);    /* SCAL-3 */
     else if (w->copy_out) worker_copy_out_stripe(w);  /* PERF-5 */
 }

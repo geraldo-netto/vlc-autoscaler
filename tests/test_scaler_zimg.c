@@ -28,6 +28,8 @@
 #define ZIMG_TEST_DEFINE_MODULE_NAME
 #include "zimg_test_util.h"
 #include "barrier_fault_inject.h"
+
+#include <zimg.h>   /* ERR-2: __wrap_zimg_filter_graph_process signature */
 #include "../src/threading.h"
 
 #include <errno.h>
@@ -54,6 +56,37 @@ void *__wrap_aligned_alloc(size_t alignment, size_t size)
 static void zt_alloc_fail_at(int nth)
 {
     atomic_store_explicit(&g_alloc_fail_at, nth, memory_order_relaxed);
+}
+
+/* Linked with -Wl,--wrap=zimg_filter_graph_process: make every graph run fail
+ * so the ERR-2 emit-after-failure path can be exercised. Workers call this
+ * concurrently, hence the atomic. */
+static atomic_int g_process_fail;
+
+int __real_zimg_filter_graph_process(const zimg_filter_graph *graph,
+                                     const zimg_image_buffer_const *src,
+                                     const zimg_image_buffer *dst, void *tmp,
+                                     zimg_filter_graph_callback unpack_cb,
+                                     void *unpack_user,
+                                     zimg_filter_graph_callback pack_cb,
+                                     void *pack_user);
+int __wrap_zimg_filter_graph_process(const zimg_filter_graph *graph,
+                                     const zimg_image_buffer_const *src,
+                                     const zimg_image_buffer *dst, void *tmp,
+                                     zimg_filter_graph_callback unpack_cb,
+                                     void *unpack_user,
+                                     zimg_filter_graph_callback pack_cb,
+                                     void *pack_user)
+{
+    if (atomic_load_explicit(&g_process_fail, memory_order_relaxed))
+        return ZIMG_ERROR_UNKNOWN;
+    return __real_zimg_filter_graph_process(graph, src, dst, tmp, unpack_cb,
+                                            unpack_user, pack_cb, pack_user);
+}
+
+static void zt_process_fail(int on)
+{
+    atomic_store_explicit(&g_process_fail, on, memory_order_relaxed);
 }
 
 #include "test_harness.h"
@@ -948,6 +981,57 @@ static void test_pic_alloc_partial_failure(void)
     END();
 }
 
+/* ERR-2: a failed graph run must emit nothing. tile_dst / stripe scratch are
+ * aligned_alloc'd and never zeroed, so a copy-out after a failed process()
+ * would splatter indeterminate heap (or a half-resampled tile) into VLC's
+ * destination picture. The frame is dropped either way, but the copy is a
+ * frame-sized read of uninitialized memory. The dst canary must survive
+ * byte-for-byte on every emit path: column tile, stripe copy-out, and the
+ * zero-copy path (where the graph writes VLC's picture directly). */
+static int dst_is_all(const zt_pic_t *pic, uint8_t v)
+{
+    for (int k = 0; k < pic->pic.i_planes; k++) {
+        const plane_t *p = &pic->pic.p[k];
+        for (int y = 0; y < p->i_lines; y++) {
+            const uint8_t *row = p->p_pixels + (size_t)y * (size_t)p->i_pitch;
+            for (int x = 0; x < p->i_pitch; x++)
+                if (row[x] != v)
+                    return 0;
+        }
+    }
+    return 1;
+}
+
+static void test_process_failure_emits_nothing(void)
+{
+    BEGIN("failed graph run copies nothing into the dst picture (ERR-2)");
+    /* CFGS[0] is a plain row-striped config; the last entries are column
+     * tiled (cols > 1), which is the path that owns the un-zeroed scratch. */
+    static const struct { size_t cfg; int src_zc; int dst_zc; } CASES[] = {
+        { 0, 1, 1 },              /* rows, dst zero-copy: graph writes VLC dst */
+        { 0, 1, 0 },              /* rows, copy-out path */
+        { 0, 0, 0 },              /* copy-in + copy-out */
+        { NCFG - 1, 1, 1 },       /* column tiled: per-tile scratch */
+        { NCFG - 2, 1, 1 },
+    };
+    for (size_t i = 0; i < sizeof CASES / sizeof CASES[0]; i++) {
+        zt_pic_t out;
+        zt_process_fail(1);
+        const int rc = run_zimg(&CFGS[CASES[i].cfg], CASES[i].src_zc,
+                                CASES[i].dst_zc, 0xC5, 0xBEEFu, &out);
+        zt_process_fail(0);
+        if (rc == -2) {          /* open failed: nothing to assert */
+            zt_pic_free(&out);
+            g_cur_fail = 1;
+            continue;
+        }
+        CHECK(rc != 0);                     /* the frame is reported failed */
+        CHECK(dst_is_all(&out, 0xC5));      /* ...and nothing was written */
+        zt_pic_free(&out);
+    }
+    END();
+}
+
 static void test_picture_alloc_bounds(void)
 {
     BEGIN("zimg test picture allocation rejects unsafe dimensions");
@@ -983,6 +1067,7 @@ int main(void)
     test_barrier_failure_drains_and_sticks();
     test_pin_cpus_matches();
     test_tiling_matches_untiled();
+    test_process_failure_emits_nothing();
     test_run_zimg_failure_leaves_out_free_safe();
     test_pic_alloc_partial_failure();
     test_picture_alloc_bounds();
