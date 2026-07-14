@@ -99,11 +99,11 @@ static inline int up_compute_stripe_bounds(
 
 /*
  * SCAL-3: choose a (rows x cols) worker grid for `n_threads` workers given the
- * destination geometry. Rows partition HEIGHT (the existing horizontal
- * stripes); cols partition WIDTH (column tiles). Column tiling engages ONLY
- * when the height cannot host enough row-stripes to use every thread (very
- * wide / short frames) — otherwise cols stays 1 and the result is identical to
- * the row-stripe-only path.
+ * source and destination geometry. Rows partition HEIGHT (the existing
+ * horizontal stripes); cols partition WIDTH (column tiles). Column tiling
+ * engages ONLY when the height cannot host enough row-stripes to use every
+ * thread (very wide / short frames) — otherwise cols stays 1 and the result is
+ * identical to the row-stripe-only path.
  *
  *   stripe_min: minimum dst rows per stripe (height floor, > 0).
  *   col_min:    minimum dst cols per tile  (width floor,  > 0).
@@ -114,6 +114,13 @@ static inline int up_compute_stripe_bounds(
  * budget. The bounded search maximizes active workers, preferring more rows
  * on ties.
  */
+typedef struct {
+    int src_w;
+    int src_h;
+    int dst_w;
+    int dst_h;
+} up_tile_geom_t;
+
 static inline int up__tile_axis_limit(int extent, int minimum,
                                       int fallback, int budget)
 {
@@ -123,7 +130,45 @@ static inline int up__tile_axis_limit(int extent, int minimum,
     return limit;
 }
 
-static inline void up_decide_tile_grid(int n_threads, int dst_w, int dst_h,
+/*
+ * REL-2: the dst floors do NOT keep a cell non-degenerate. Both the src and
+ * the dst boundaries of a cell are aligned down to even, and the src range is
+ * derived from the (already aligned) dst range, so a small source against a
+ * large destination — or a one-row dst stripe, which
+ * --autoupscale-zimg-stripe-lines=1 permits — can collapse a cell's range onto
+ * a single value. up_compute_stripe_bounds then reports 0 and the
+ * all-or-nothing worker construct tears down the whole pool: sticky lazy-init
+ * failure, every frame dropped from the first one.
+ *
+ * The exact condition is not expressible as a simple ratio (the even-alignment
+ * of the dst boundary feeds back into the src boundary), so the partition is
+ * validated directly against the same function the workers will use. Bounded
+ * by UP_TILE_THREADS_MAX on both axes, this is at most ~4k iterations, once,
+ * at open.
+ */
+static inline int up__axis_partition_ok(int n, int src, int dst)
+{
+    if (src <= 0 || dst <= 0)
+        return 1;   /* geometry is invalid anyway; the caller rejects it */
+    up_stripe_bounds_t b;
+    for (int i = 0; i < n; i++)
+        if (!up_compute_stripe_bounds(i, n, src, dst, &b))
+            return 0;
+    return 1;
+}
+
+/* Largest cell count <= start that partitions the axis without a degenerate
+ * cell. Always >= 1: a single cell spans the whole axis. */
+static inline int up__largest_valid_split(int start, int src, int dst)
+{
+    for (int n = start; n > 1; n--)
+        if (up__axis_partition_ok(n, src, dst))
+            return n;
+    return 1;
+}
+
+static inline void up_decide_tile_grid(int n_threads,
+                                       const up_tile_geom_t *geom,
                                        int stripe_min, int col_min,
                                        int *rows, int *cols)
 {
@@ -131,15 +176,23 @@ static inline void up_decide_tile_grid(int n_threads, int dst_w, int dst_h,
     if (budget < 1) budget = 1;
     if (budget > UP_TILE_THREADS_MAX) budget = UP_TILE_THREADS_MAX;
 
-    int row_limit = up__tile_axis_limit(dst_h, stripe_min, budget, budget);
-    int col_limit = up__tile_axis_limit(dst_w, col_min, 1, budget);
+    const int row_limit = up__largest_valid_split(
+        up__tile_axis_limit(geom->dst_h, stripe_min, budget, budget),
+        geom->src_h, geom->dst_h);
+    const int col_limit = up__largest_valid_split(
+        up__tile_axis_limit(geom->dst_w, col_min, 1, budget),
+        geom->src_w, geom->dst_w);
+
     int best_rows = 1;
     int best_cols = 1;
     int best_cells = 1;
 
     for (int r = 1; r <= row_limit; r++) {
+        if (!up__axis_partition_ok(r, geom->src_h, geom->dst_h))
+            continue;
         int c = budget / r;
         if (c > col_limit) c = col_limit;
+        c = up__largest_valid_split(c, geom->src_w, geom->dst_w);
         int cells = r * c;
         if (cells >= best_cells) {
             best_rows = r;

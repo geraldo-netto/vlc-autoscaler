@@ -141,6 +141,8 @@ static inline int up_zimg_plane_idx(int idx, int swap)
  */
 typedef struct {
     int  worker_budget;   /* threads available, >= 1 */
+    int  src_w;
+    int  src_h;           /* source geometry (bounds the cell count: REL-2) */
     int  dst_w;
     int  dst_h;    /* destination geometry */
     int  stripe_min;      /* min dst rows per stripe */
@@ -163,8 +165,13 @@ static inline void up_zimg_resolve_io_plan(const up_zimg_io_req_t *req,
 {
     int rows;
     int cols;
-    up_decide_tile_grid(req->worker_budget, req->dst_w, req->dst_h,
-                        req->stripe_min,
+    const up_tile_geom_t geom = {
+        .src_w = req->src_w,
+        .src_h = req->src_h,
+        .dst_w = req->dst_w,
+        .dst_h = req->dst_h,
+    };
+    up_decide_tile_grid(req->worker_budget, &geom, req->stripe_min,
                         req->src_zerocopy ? req->col_min : 0,
                         &rows, &cols);
     out->n_rows       = rows;

@@ -404,6 +404,19 @@ static void test_stripe_bounds_ratio_preservation(void)
     END();
 }
 
+/* Source dims default to half the destination — the typical 2x upscale — so
+ * these cases keep exercising the dst-driven selection they were written for.
+ * The src-bound cases below pass their own geometry. */
+static void grid_2x(int n_threads, int dst_w, int dst_h,
+                    int stripe_min, int col_min, int *rows, int *cols)
+{
+    const up_tile_geom_t geom = {
+        .src_w = dst_w / 2, .src_h = dst_h / 2,
+        .dst_w = dst_w,     .dst_h = dst_h,
+    };
+    up_decide_tile_grid(n_threads, &geom, stripe_min, col_min, rows, cols);
+}
+
 /* SCAL-3 grid: rows*cols <= n, cols>1 only when height-bound. */
 static void test_decide_tile_grid(void)
 {
@@ -411,49 +424,110 @@ static void test_decide_tile_grid(void)
     int r, c;
 
     /* Tall enough: pure row striping, no columns. */
-    up_decide_tile_grid(8, 1920, 1080, 16, 64, &r, &c);
+    grid_2x(8, 1920, 1080, 16, 64, &r, &c);
     CHECK_EQ(r, 8); CHECK_EQ(c, 1);
 
     /* n_threads <= max_rows (1080/16=67): still cols==1. */
-    up_decide_tile_grid(16, 1920, 1080, 16, 64, &r, &c);
+    grid_2x(16, 1920, 1080, 16, 64, &r, &c);
     CHECK_EQ(r, 16); CHECK_EQ(c, 1);
 
     /* Wide + short: choose the product that uses all 16 workers. */
-    up_decide_tile_grid(16, 1920, 96, 16, 64, &r, &c);
+    grid_2x(16, 1920, 96, 16, 64, &r, &c);
     CHECK_EQ(r, 4); CHECK_EQ(c, 4);
     CHECK(r * c <= 16);
 
     /* Regression: row-first selection used only 8 of 14 workers. */
-    up_decide_tile_grid(14, 1920, 128, 16, 64, &r, &c);
+    grid_2x(14, 1920, 128, 16, 64, &r, &c);
     CHECK_EQ(r, 7); CHECK_EQ(c, 2);
 
     /* Equal 12-cell products prefer the grid with more row stripes. */
-    up_decide_tile_grid(13, 192, 96, 16, 64, &r, &c);
+    grid_2x(13, 192, 96, 16, 64, &r, &c);
     CHECK_EQ(r, 6); CHECK_EQ(c, 2);
 
     /* Column cap by width: dst_w=80 -> max_cols=80/64=1, so cols stays 1. */
-    up_decide_tile_grid(16, 80, 96, 16, 64, &r, &c);
+    grid_2x(16, 80, 96, 16, 64, &r, &c);
     CHECK_EQ(r, 6); CHECK_EQ(c, 1);
 
     /* Degenerate / invalid inputs clamp to >=1 and never overflow the budget.
      * -1, 0, 1, INT_MAX, INT_MIN for each param; the fuzzer sweeps the full
      * cross-product, these pin the contract as a regression guard. */
-    up_decide_tile_grid(0, 0, 0, 16, 64, &r, &c);
+    grid_2x(0, 0, 0, 16, 64, &r, &c);
     CHECK(r == 1 && c == 1);
-    up_decide_tile_grid(-1, 1920, 96, 16, 64, &r, &c);   /* n<1 -> 1 cell */
+    grid_2x(-1, 1920, 96, 16, 64, &r, &c);   /* n<1 -> 1 cell */
     CHECK(r == 1 && c == 1);
-    up_decide_tile_grid(1, 1920, 96, 16, 64, &r, &c);    /* n==1 -> 1 cell */
+    grid_2x(1, 1920, 96, 16, 64, &r, &c);    /* n==1 -> 1 cell */
     CHECK(r == 1 && c == 1);
-    up_decide_tile_grid(16, 1920, 96, -1, 64, &r, &c);   /* stripe_min<=0 */
+    grid_2x(16, 1920, 96, -1, 64, &r, &c);   /* stripe_min<=0 */
     CHECK(r >= 1 && c >= 1 && (long long)r * c <= 16);
-    up_decide_tile_grid(16, 1920, 96, 16, 0, &r, &c);    /* col_min<=0 -> cols 1 */
+    grid_2x(16, 1920, 96, 16, 0, &r, &c);    /* col_min<=0 -> cols 1 */
     CHECK_EQ(r, 6); CHECK_EQ(c, 1);
-    up_decide_tile_grid(1000, 8192, 8192, 1, 1, &r, &c);
+    grid_2x(1000, 8192, 8192, 1, 1, &r, &c);
     CHECK_EQ(r * c, UP_TILE_THREADS_MAX);
-    up_decide_tile_grid(INT_MAX, INT_MAX, INT_MAX, 16, 64, &r, &c);
+    grid_2x(INT_MAX, INT_MAX, INT_MAX, 16, 64, &r, &c);
     CHECK(r >= 1 && c >= 1);
-    up_decide_tile_grid(INT_MIN, INT_MIN, INT_MIN, INT_MIN, INT_MIN, &r, &c);
+    grid_2x(INT_MIN, INT_MIN, INT_MIN, INT_MIN, INT_MIN, &r, &c);
     CHECK(r == 1 && c == 1);
+    END();
+}
+
+/* Every cell the grid returns must resolve to a non-degenerate range on both
+ * axes — that is the property whose absence killed the backend (REL-2). */
+static int grid_cells_all_valid(const up_tile_geom_t *g, int rows, int cols)
+{
+    up_stripe_bounds_t b;
+    for (int i = 0; i < rows; i++)
+        if (!up_compute_stripe_bounds(i, rows, g->src_h, g->dst_h, &b))
+            return 0;
+    for (int i = 0; i < cols; i++)
+        if (!up_compute_stripe_bounds(i, cols, g->src_w, g->dst_w, &b))
+            return 0;
+    return 1;
+}
+
+/* REL-2: the grid used to look only at the destination. With a small source
+ * and a large destination the dst floors are satisfied while the source stripe
+ * rounds to zero rows, up_compute_stripe_bounds returns 0, and the
+ * all-or-nothing worker construct fails -> sticky lazy-init failure, every
+ * frame dropped (AUTO silently degraded to swscale; --autoupscale-backend=1
+ * dropped 100% of frames). */
+static void test_decide_tile_grid_src_bound(void)
+{
+    BEGIN("up_decide_tile_grid: source extent bounds the cell count (REL-2)");
+    int r, c;
+
+    /* The reported case: 320x100 -> 1280x400, 64 threads, stripe-lines=4.
+     * The old chooser returned 64 rows; 14 of those cells had an empty
+     * source range. */
+    const up_tile_geom_t reported = { 320, 100, 1280, 400 };
+    up_decide_tile_grid(64, &reported, 4, 64, &r, &c);
+    CHECK(r <= 50);   /* src_h/2 */
+    CHECK(grid_cells_all_valid(&reported, r, c));
+
+    /* Column axis has the same failure mode on a wide-but-narrow source. */
+    const up_tile_geom_t narrow_src = { 8, 8, 1920, 96 };
+    up_decide_tile_grid(64, &narrow_src, 16, 64, &r, &c);
+    CHECK(r <= 4 && c <= 4);
+    CHECK(grid_cells_all_valid(&narrow_src, r, c));
+
+    /* A source too small to split at all still yields one usable cell. */
+    const up_tile_geom_t tiny_src = { 2, 1, 640, 480 };
+    up_decide_tile_grid(32, &tiny_src, 16, 64, &r, &c);
+    CHECK_EQ(r, 1); CHECK_EQ(c, 1);
+    CHECK(grid_cells_all_valid(&tiny_src, r, c));
+
+    /* Sweep the ratios and thread counts that reach the degenerate region. */
+    for (int src_h = 1; src_h <= 64; src_h++)
+        for (int n = 1; n <= 64; n += 7)
+            for (int sm = 1; sm <= 16; sm += 5)
+            {
+                const up_tile_geom_t g = { 320, src_h, 1280, 4 * src_h };
+                up_decide_tile_grid(n, &g, sm, 64, &r, &c);
+                if (!grid_cells_all_valid(&g, r, c)) {
+                    printf("    degenerate cell: src_h=%d n=%d sm=%d "
+                           "-> %dx%d\n", src_h, n, sm, r, c);
+                    g_cur_fail = 1;
+                }
+            }
     END();
 }
 
@@ -464,7 +538,7 @@ static void test_resolve_io_plan(void)
     up_zimg_io_plan_t plan;
 
     /* Tall frame, both zero-copies on: rows-only, both preserved. */
-    up_zimg_io_req_t req = { 8, 1920, 1080, 16, 64, true, true };
+    up_zimg_io_req_t req = { 8, 960, 540, 1920, 1080, 16, 64, true, true };
     up_zimg_resolve_io_plan(&req, &plan);
     CHECK_EQ(plan.n_rows, 8); CHECK_EQ(plan.n_cols, 1);
     CHECK_EQ(plan.col_tiled, 0);
@@ -472,7 +546,7 @@ static void test_resolve_io_plan(void)
     CHECK_EQ(plan.n_threads, plan.n_rows * plan.n_cols);
 
     /* Wide + short: tiles engage, and col_tiled forces dst copy-out. */
-    req = (up_zimg_io_req_t){ 16, 1920, 96, 16, 64, true, true };
+    req = (up_zimg_io_req_t){ 16, 960, 48, 1920, 96, 16, 64, true, true };
     up_zimg_resolve_io_plan(&req, &plan);
     CHECK_EQ(plan.n_rows, 4); CHECK_EQ(plan.n_cols, 4);
     CHECK_EQ(plan.col_tiled, 1);
@@ -492,11 +566,13 @@ static void test_resolve_io_plan(void)
      * the property that keeps the open and first-frame call sites
      * consistent with each other. */
     static const up_zimg_io_req_t reqs[] = {
-        { 16, 1920,   96, 16, 64, true,  true  },
-        { 16, 1920,   96, 16, 64, false, true  },
-        {  8, 1920, 1080, 16, 64, true,  false },
-        { 64, 7680,   64, 16, 64, true,  true  },
-        {  1,  128,  128, 16, 64, false, false },
+        { 16,  960,   48, 1920,   96, 16, 64, true,  true  },
+        { 16,  960,   48, 1920,   96, 16, 64, false, true  },
+        {  8,  960,  540, 1920, 1080, 16, 64, true,  false },
+        { 64, 3840,   32, 7680,   64, 16, 64, true,  true  },
+        {  1,   64,   64,  128,  128, 16, 64, false, false },
+        /* REL-2: tiny source, large destination. */
+        { 64,  320,  100, 1280,  400,  4, 64, true,  true  },
     };
     for (size_t i = 0; i < sizeof reqs / sizeof reqs[0]; i++) {
         up_zimg_io_plan_t a, b;
@@ -552,6 +628,7 @@ int main(void)
 
     test_zimg_stripe_min_lines_boundaries();
     test_decide_tile_grid();
+    test_decide_tile_grid_src_bound();
     test_resolve_io_plan();
 
     return test_harness_report();

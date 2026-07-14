@@ -63,33 +63,55 @@ static int grid_floors_ok(int rows, int cols, int dst_w, int dst_h,
     return cols == 1 || (long long)cols * col_min <= dst_w;
 }
 
-static long long grid_cells(int n_threads, int dst_w, int dst_h,
+static long long grid_cells(int n_threads, const up_tile_geom_t *geom,
                             int stripe_min, int col_min)
 {
     int rows, cols;
-    up_decide_tile_grid(n_threads, dst_w, dst_h, stripe_min, col_min,
-                        &rows, &cols);
+    up_decide_tile_grid(n_threads, geom, stripe_min, col_min, &rows, &cols);
     return (long long)rows * cols;
 }
 
-static int check_grid(int n_threads, int dst_w, int dst_h,
+/* REL-2: a cell's SOURCE range is derived from its dst range and aligned down
+ * to even, so a grid the dst floors happily allow can still hand a cell zero
+ * source rows — up_compute_stripe_bounds then returns 0 and the all-or-nothing
+ * worker construct kills the zimg backend from the first frame. Every cell of
+ * every grid the chooser returns must therefore be non-degenerate on BOTH axes.
+ * Only meaningful when the geometry itself is valid; hostile/degenerate dims
+ * are covered by the shape and floor properties. */
+static int cells_nondegenerate(int rows, int cols, const up_tile_geom_t *geom)
+{
+    if (geom->src_w <= 0 || geom->src_h <= 0
+        || geom->dst_w <= 0 || geom->dst_h <= 0)
+        return 1;
+    up_stripe_bounds_t b;
+    for (int r = 0; r < rows; r++)
+        if (!up_compute_stripe_bounds(r, rows, geom->src_h, geom->dst_h, &b))
+            return 0;
+    for (int c = 0; c < cols; c++)
+        if (!up_compute_stripe_bounds(c, cols, geom->src_w, geom->dst_w, &b))
+            return 0;
+    return 1;
+}
+
+static int check_grid(int n_threads, const up_tile_geom_t *geom,
                       int stripe_min, int col_min)
 {
     int rows = -999, cols = -999;
-    up_decide_tile_grid(n_threads, dst_w, dst_h, stripe_min, col_min,
-                        &rows, &cols);
+    up_decide_tile_grid(n_threads, geom, stripe_min, col_min, &rows, &cols);
     long long cells = (long long)rows * cols;
 
     int bad = !grid_shape_ok(rows, cols, clamped_budget(n_threads))
-           || !grid_floors_ok(rows, cols, dst_w, dst_h, stripe_min, col_min)
+           || !grid_floors_ok(rows, cols, geom->dst_w, geom->dst_h,
+                              stripe_min, col_min)
+           || !cells_nondegenerate(rows, cols, geom)
            /* Monotonicity: one more thread never shrinks the grid. */
            || (n_threads > INT_MIN
-               && grid_cells(n_threads - 1, dst_w, dst_h,
-                             stripe_min, col_min) > cells);
+               && grid_cells(n_threads - 1, geom, stripe_min, col_min) > cells);
     if (bad) {
         fprintf(stderr, "FAIL: grid=%dx%d violates contract for "
-                "n=%d dw=%d dh=%d sm=%d cm=%d\n",
-                rows, cols, n_threads, dst_w, dst_h, stripe_min, col_min);
+                "n=%d sw=%d sh=%d dw=%d dh=%d sm=%d cm=%d\n",
+                rows, cols, n_threads, geom->src_w, geom->src_h,
+                geom->dst_w, geom->dst_h, stripe_min, col_min);
         return 1;
     }
     return 0;
@@ -108,11 +130,15 @@ static int plans_equal(const up_zimg_io_plan_t *a, const up_zimg_io_plan_t *b)
 /* PAT-1 plan invariants: cols collapse without src zero-copy, tiling
  * forces dst copy-out, counts stay consistent, and the resolver is a
  * fixed point of its own output flags. */
-static int check_plan(int n_threads, int dst_w, int dst_h,
+static int check_plan(int n_threads, const up_tile_geom_t *geom,
                       int stripe_min, int col_min)
 {
+    const int dst_w = geom->dst_w;
+    const int dst_h = geom->dst_h;
     const up_zimg_io_req_t req = {
-        .worker_budget = n_threads, .dst_w = dst_w, .dst_h = dst_h,
+        .worker_budget = n_threads,
+        .src_w = geom->src_w, .src_h = geom->src_h,
+        .dst_w = dst_w, .dst_h = dst_h,
         .stripe_min = stripe_min, .col_min = col_min,
         .src_zerocopy = (n_threads & 1) != 0,
         .dst_zerocopy = (dst_w & 1) != 0,
@@ -147,13 +173,15 @@ static int check_plan(int n_threads, int dst_w, int dst_h,
 
 static int run_one(const uint8_t *data, size_t size)
 {
-    if (size < 5 * sizeof(int32_t)) return 0;
-    int32_t v[5];
+    if (size < 7 * sizeof(int32_t)) return 0;
+    int32_t v[7];
     memcpy(v, data, sizeof v);
-    return check_grid((int)v[0], (int)v[1], (int)v[2],
-                      (int)v[3], (int)v[4])
-         + check_plan((int)v[0], (int)v[1], (int)v[2],
-                      (int)v[3], (int)v[4]);
+    const up_tile_geom_t geom = {
+        .src_w = (int)v[1], .src_h = (int)v[2],
+        .dst_w = (int)v[3], .dst_h = (int)v[4],
+    };
+    return check_grid((int)v[0], &geom, (int)v[5], (int)v[6])
+         + check_plan((int)v[0], &geom, (int)v[5], (int)v[6]);
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
@@ -172,7 +200,10 @@ static const int BV[] = {
 };
 #define NBV ((int)(sizeof BV / sizeof BV[0]))
 
-/* Exhaustive cross-product of the boundary-value table. */
+/* Exhaustive cross-product of the boundary-value table over
+ * (n_threads, dst_w, dst_h, stripe_min, col_min). The source is the typical
+ * production shape — an upscale by 2 — so this arm keeps its original meaning;
+ * hostile source dims get their own sweep below. */
 static int sweep_boundaries(void)
 {
     int fails = 0;
@@ -180,23 +211,54 @@ static int sweep_boundaries(void)
     for (int b = 0; b < NBV; b++)
     for (int c = 0; c < NBV; c++)
     for (int d = 0; d < NBV; d++)
-    for (int e = 0; e < NBV; e++)
-        fails += check_grid(BV[a], BV[b], BV[c], BV[d], BV[e]);
+    for (int e = 0; e < NBV; e++) {
+        const up_tile_geom_t geom = {
+            .src_w = BV[b] / 2, .src_h = BV[c] / 2,
+            .dst_w = BV[b],     .dst_h = BV[c],
+        };
+        fails += check_grid(BV[a], &geom, BV[d], BV[e]);
+    }
     return fails;
 }
 
-/* Pseudo-random raw ints (full range) for anything the sweep missed. */
+/* REL-2 arm: sweep the SOURCE dims against a few fixed destinations. A tiny
+ * source with a large destination is exactly what used to produce cells with
+ * an empty source range. */
+static int sweep_source_dims(void)
+{
+    static const int DST[][2] = {
+        { 1280, 400 }, { 1920, 1080 }, { 1920, 96 }, { 640, 480 }, { 2, 2 },
+    };
+    static const int SM[] = { 1, 4, 16 };
+    static const int CM[] = { 0, 64 };
+    int fails = 0;
+    for (int a = 0; a < NBV; a++)          /* n_threads */
+    for (int w = 0; w < NBV; w++)          /* src_w */
+    for (int h = 0; h < NBV; h++)          /* src_h */
+    for (size_t d = 0; d < sizeof DST / sizeof DST[0]; d++)
+    for (size_t s = 0; s < sizeof SM / sizeof SM[0]; s++)
+    for (size_t c = 0; c < sizeof CM / sizeof CM[0]; c++) {
+        const up_tile_geom_t geom = {
+            .src_w = BV[w],   .src_h = BV[h],
+            .dst_w = DST[d][0], .dst_h = DST[d][1],
+        };
+        fails += check_grid(BV[a], &geom, SM[s], CM[c]);
+    }
+    return fails;
+}
+
+/* Pseudo-random raw ints (full range) for anything the sweeps missed. */
 static int smoke_iter(long i)
 {
     (void)i;
-    uint8_t buf[20];
+    uint8_t buf[28];
     fuzz_smoke_fill(buf, sizeof buf);
     return run_one(buf, sizeof buf);
 }
 
 int main(int argc, char **argv)
 {
-    int fails = sweep_boundaries();
+    int fails = sweep_boundaries() + sweep_source_dims();
     if (fails) {
         fprintf(stderr, "decide_tile_grid boundary sweep FAILED: %d\n", fails);
         return 1;

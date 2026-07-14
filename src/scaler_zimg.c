@@ -905,9 +905,10 @@ static int try_spawn_one_worker(zimg_priv_t *p, int i,
 }
 
 /*
- * Construct all n_rows*n_cols grid cells. The grid (up_decide_tile_grid) makes
- * every cell >= stripe_min rows and >= col_min cols, so geometry never
- * degenerates. Allocation, graph build, or thread creation can fail. This pool
+ * Construct all n_rows*n_cols grid cells. The grid (up_decide_tile_grid) bounds
+ * the cell count by BOTH the dst floors (stripe_min rows, col_min cols) and the
+ * src extent (>= 2 src rows/cols per cell), so no cell can resolve to an empty
+ * source range. Allocation, graph build, or thread creation can fail. This pool
  * deliberately builds all-or-nothing rather than retrying a smaller grid: on any
  * cell failure, tear down the cells already built and report 0. The last row/
  * col always ends at dst_h/dst_w, so a full build covers the frame exactly.
@@ -1048,6 +1049,8 @@ static int zimg_open(scaler_ctx_t *ctx)
     int stripe_min_lines = up_zimg_stripe_min_lines(ctx->zimg.min_stripe_lines);
     const up_zimg_io_req_t req = {
         .worker_budget = n_threads,
+        .src_w         = ctx->src_w,
+        .src_h         = ctx->src_h,
         .dst_w         = ctx->dst_w,
         .dst_h         = ctx->dst_h,
         .stripe_min    = stripe_min_lines,
@@ -1227,6 +1230,8 @@ static void zimg_prepare_first_frame_io(zimg_priv_t *p,
      * request yields the identical plan. */
     const up_zimg_io_req_t req = {
         .worker_budget = p->worker_budget,
+        .src_w         = p->src_w,
+        .src_h         = p->src_h,
         .dst_w         = p->dst_w,
         .dst_h         = p->dst_h,
         .stripe_min    = up_zimg_stripe_min_lines(ctx->zimg.min_stripe_lines),
