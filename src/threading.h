@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
- * threading.h - pure thread-count decision logic for AutoUpscale
+ * threading.h - CPU/thread policy and pool dispatch synchronization
  *****************************************************************************
  * Header-only with zero VLC/FFmpeg deps. Core helpers:
  *
@@ -11,6 +11,9 @@
  *
  *   up_threads_decide(): pure logic that maps a user preference + a
  *     detected core count to a worker-count decision. Unit-tested.
+ *
+ *   up_pool_gate_*(): shared broadcast wake gate and bounded done barrier
+ *     used by the USM and zimg worker pools.
  *
  * Auto policy (user_pref == UP_THREADS_AUTO):
  *   total_cores / 2 - 2, clamped to the range [1, UP_THREADS_MAX].

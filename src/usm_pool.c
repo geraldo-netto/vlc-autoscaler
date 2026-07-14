@@ -116,20 +116,18 @@
 #define USM_POOL_SCRATCH_ROWS 5
 
 /*
- * Cache-line-aligned to prevent false sharing between adjacent workers.
- * Each worker writes its own `seen_gen` on every dispatch and its private
- * scratch rows; without padding, two workers whose structs share a
- * 64-byte cache line would invalidate each other's lines on every frame.
- * _Alignas(64) both aligns each instance AND rounds sizeof up to a
- * 64-byte multiple so an aligned_alloc'd array keeps the per-element
- * alignment.
+ * Cache-line-aligned worker payload. worker_pool.h stores payloads in an
+ * aligned array and requires each slot's size to be a cache-line multiple,
+ * so neighboring workers' frame-local state cannot occupy the same line.
+ * Thread records, including `seen_gen`, live in the pool's separate aligned
+ * thread array. _Alignas(64) both aligns each instance and rounds sizeof up
+ * to a 64-byte multiple so aligned_alloc preserves per-element alignment.
  */
 typedef struct usm_worker_s {
     /* _Alignas on the first member promotes the whole struct's alignment
      * to 64 and forces sizeof to be a 64-byte multiple, so an aligned
-     * array (one element per cache line) keeps every per-worker write
-     * off neighboring workers' cache lines. C11 disallows _Alignas on a
-     * typedef name itself, hence placing it here.
+     * array keeps neighboring payload slots from sharing cache lines. C11
+     * disallows _Alignas on a typedef name itself, hence placing it here.
      *
      * Threads, the dispatch gate and the exit protocol belong to the
      * shared pool (ARCH-2, worker_pool.h); this struct is pure payload. */

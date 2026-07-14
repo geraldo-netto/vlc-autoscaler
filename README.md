@@ -268,11 +268,12 @@ rows read-only and write only their own dst rows, so the sweep is
 race-free. The pool is lazy: workers and private scratch initialize on the
 first USM apply, not in `Open()`. With `--autoupscale-usm=0`, the plugin does
 not create or call the pool, so disabling USM has no pool activity. Each
-`usm_worker_t` is `alignas(64)` and the worker array is
-`aligned_alloc`'d so adjacent workers don't share a cache line — without
-this padding, two workers touching their per-frame fields and embedded
-dispatch state on every frame would invalidate each other's lines. Output is
-bit-identical to the single-threaded
+`usm_worker_t` payload is `alignas(64)`, and its `aligned_alloc`'d array
+places every payload on its own cache-line boundary. The payload holds only
+stripe geometry, scratch pointers, and per-frame pixel state. Aligned thread
+records and generation tracking live in the shared `worker_pool.h` lifecycle;
+its broadcast and done gate is implemented in `threading.h`. Both USM and zimg
+use that shared machinery. Output is bit-identical to the single-threaded
 path; that's verified end-to-end by the unit tests (`test_usm_pool.c`
 runs both implementations on synthetic data and asserts byte-for-byte
 match).
@@ -490,11 +491,15 @@ src/
   usm_pool.h              public API for the threaded USM worker pool
   usm_pool.c              threaded USM implementation (lazy worker spawn)
   usm_pool_dispatch.c     runtime SSE2/AVX2/AVX-512 dispatcher (MULTIVERSION=1)
+  usm_pool_variants.h     X-macro shared SIMD-variant API declarations
+  cpu_level.h             runtime x86-64 v3/v4 capability probes
   perfmon.h               pure EWMA perf monitor (header-only)
-  threading.h             pure thread-count decision (header-only)
-  zimg_helpers.h          pure pitch/lines/plane/stripe-bounds helpers
-  chroma_classify.h       pure hwaccel/Y-plane chroma predicates
-  scaler_zimg_chroma.h    pure chroma->zimg-subsample mapping (extracted for fuzzing)
+  threading.h             CPU topology/thread policy + shared dispatch gate
+  worker_pool.h           shared lazy worker lifecycle, dispatch, and teardown
+  plane_utils.h           backend-neutral plane copy + stripe/tile partitioning
+  zimg_helpers.h          zimg scratch and chroma-plane geometry helpers
+  chroma_classify.h       shared software-chroma metadata + classification
+  scaler_zimg_chroma.h    shared descriptor-to-zimg adapter
   content_probe.h         pure no-reference quality probe (Laplacian + block-edge)
   picture_view.h          validated crop-aware physical-plane views
   scaler_pick_logic.h     pure backend selection + open-fallback logic
@@ -517,6 +522,8 @@ tests/
 
 scripts/
   bench_matrix.sh         run bench_usm_pool across (threads × resolution × fill)
+  coverage_per_function.sh
+                          enforce the per-function gcov threshold
   coverage_report.sh      gcov per-file summary used by `make coverage`
   install-vlc-autoupscale-action.sh
                           install/uninstall the Cinnamon/Nemo integration
@@ -524,11 +531,13 @@ scripts/
 
 docs/HOW_IT_WORKS.md      design notes
 docs/USAGE.md             command-line recipes + diagnostic ladder
+docs/BENCHMARKS.md        reproducible benchmark procedure and interpretation
 docs/PERFORMANCE.md       reproducible performance-measurement guidance
 docs/CINNAMON-DESKTOP-ACTIONS.md
                           Cinnamon/Nemo launcher and right-click integration
 patches/                  optional VLC patches (workaround for chain depth limit)
-.github/workflows/ci.yml  build, test, smoke fuzz, stress, libFuzzer, cppcheck
+.github/workflows/ci.yml  build, test, fuzz, coverage, and analyzer CI
+sonar-project.properties  SonarQube analysis scope and exclusions
 Makefile                  build, test, fuzz, stress, coverage, and analysis targets
 ```
 

@@ -161,7 +161,6 @@ multiversion vector-ISA use.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| WIRE-2 | open | S | README's repository map (`README.md:479-522`) omits shipped source headers (`worker_pool.h`, `plane_utils.h`, `cpu_level.h`, `usm_pool_variants.h`), scripts, and docs, and still describes `threading.h` as thread-count-only. Its threaded-USM text also claims dispatch state is embedded in each USM worker (`README.md:255-269`), although that state moved to `worker_pool.h`. | Regenerate/update the map and architecture prose from the current tracked production tree. |
 
 All 14 module options otherwise have a production consumer; both scaler backends,
 runtime fallback, stats exports, and the multiversion dispatcher have real call sites.
