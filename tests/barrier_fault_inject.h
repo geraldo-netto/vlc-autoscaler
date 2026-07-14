@@ -11,6 +11,10 @@
 #include "../src/threading.h"
 
 static atomic_int g_fail_next_sem_wait;
+static atomic_int g_interrupt_next_sem_wait;
+static atomic_int g_interrupt_every_sem_wait;
+static atomic_int g_sem_clockwait_seen;
+static atomic_int g_sem_clockwait_wrong_clock;
 static atomic_int g_fail_sem_post_left;    /* consecutive posts still to fail */
 static atomic_int g_sem_post_burst_woke;   /* real post already issued */
 static atomic_int g_suppress_next_broadcast;
@@ -18,18 +22,51 @@ static atomic_int g_fail_next_broadcast;
 static atomic_int g_fail_next_mutex_lock;
 static pthread_t  g_mutex_lock_target;
 
-/* The done barrier waits with a deadline (CONC-1), so that is the call to
- * intercept — EINVAL stands in for a destroyed/corrupt semaphore. */
-int __real_sem_timedwait(sem_t *sem, const struct timespec *abstime);
-int __wrap_sem_timedwait(sem_t *sem, const struct timespec *abstime)
+static inline int barrier_fault_injected_wait_errno(void)
 {
+    if (atomic_load_explicit(&g_interrupt_every_sem_wait,
+                             memory_order_relaxed))
+        return EINTR;
+    if (atomic_exchange_explicit(&g_interrupt_next_sem_wait, 0,
+                                 memory_order_relaxed))
+        return EINTR;
     if (atomic_exchange_explicit(&g_fail_next_sem_wait, 0,
-                                 memory_order_relaxed)) {
-        errno = EINVAL;
+                                 memory_order_relaxed))
+        return EINVAL;
+    return 0;
+}
+
+/* Intercept the wait primitive selected by threading.h. EINVAL stands in for
+ * a destroyed semaphore; EINTR verifies that the original deadline is reused. */
+#if UP_HAVE_SEM_CLOCKWAIT
+int __real_sem_clockwait(sem_t *sem, clockid_t clock,
+                         const struct timespec *abstime);
+int __wrap_sem_clockwait(sem_t *sem, clockid_t clock,
+                         const struct timespec *abstime)
+{
+    atomic_store_explicit(&g_sem_clockwait_seen, 1, memory_order_relaxed);
+    if (clock != CLOCK_MONOTONIC)
+        atomic_store_explicit(&g_sem_clockwait_wrong_clock, 1,
+                              memory_order_relaxed);
+    const int injected = barrier_fault_injected_wait_errno();
+    if (injected != 0) {
+        errno = injected;
         return -1;
     }
-    return __real_sem_timedwait(sem, abstime);
+    return __real_sem_clockwait(sem, clock, abstime);
 }
+#else
+int __real_sem_trywait(sem_t *sem);
+int __wrap_sem_trywait(sem_t *sem)
+{
+    const int injected = barrier_fault_injected_wait_errno();
+    if (injected != 0) {
+        errno = injected;
+        return -1;
+    }
+    return __real_sem_trywait(sem);
+}
+#endif
 
 /*
  * CON-2: emulate sem_post's only real failure mode, EOVERFLOW — the count is
@@ -116,6 +153,25 @@ static inline void barrier_fault_inject_next_sem_wait(void)
     atomic_store_explicit(&g_fail_next_sem_wait, 1, memory_order_relaxed);
 }
 
+static inline void barrier_fault_interrupt_next_sem_wait(void)
+{
+    atomic_store_explicit(&g_interrupt_next_sem_wait, 1,
+                          memory_order_relaxed);
+}
+
+static inline void barrier_fault_interrupt_all_sem_waits(int enabled)
+{
+    atomic_store_explicit(&g_interrupt_every_sem_wait, enabled,
+                          memory_order_relaxed);
+}
+
+static inline int barrier_fault_used_monotonic_clock(void)
+{
+    return atomic_load_explicit(&g_sem_clockwait_seen, memory_order_relaxed)
+        && !atomic_load_explicit(&g_sem_clockwait_wrong_clock,
+                                 memory_order_relaxed);
+}
+
 static inline int barrier_fault_injection_consumed(void)
 {
     return atomic_load_explicit(&g_suppress_next_broadcast,
@@ -125,6 +181,10 @@ static inline int barrier_fault_injection_consumed(void)
         && atomic_load_explicit(&g_fail_next_mutex_lock,
                                 memory_order_relaxed) == 0
         && atomic_load_explicit(&g_fail_next_sem_wait,
+                                memory_order_relaxed) == 0
+        && atomic_load_explicit(&g_interrupt_next_sem_wait,
+                                memory_order_relaxed) == 0
+        && atomic_load_explicit(&g_interrupt_every_sem_wait,
                                 memory_order_relaxed) == 0;
 }
 

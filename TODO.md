@@ -63,7 +63,6 @@ state and does not rebuild graphs.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| CONC-1 | open | M | The supposedly bounded completion wait builds its deadline from `CLOCK_REALTIME` (`src/threading.h:263-277`). | A backward wall-clock adjustment extends the 10-second recovery wait by the adjustment. Use `sem_clockwait(..., CLOCK_MONOTONIC, ...)` when available plus a monotonic portable fallback. |
 
 The gate shutdown failure that can hang joins is tracked as ERR-1 rather than
 duplicated here.

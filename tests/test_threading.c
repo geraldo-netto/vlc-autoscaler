@@ -550,10 +550,54 @@ static void test_pool_gate_wait_error_is_reported(void)
     barrier_fault_inject_next_sem_wait();
     CHECK_EQ(up_pool_gate_wait_all(&gate), -1);
     CHECK_EQ(barrier_fault_injection_consumed(), 1);
+#if UP_HAVE_SEM_CLOCKWAIT
+    CHECK_EQ(barrier_fault_used_monotonic_clock(), 1);
+#endif
 
     up_pool_gate_destroy(&gate);
     END();
 }
+
+static void test_pool_gate_wait_retries_interrupt(void)
+{
+    BEGIN("pool gate: an interrupted wait keeps the monotonic deadline");
+    up_pool_gate_t gate;
+    CHECK_EQ(up_pool_gate_init(&gate), 0);
+
+    CHECK_EQ(sem_post(&gate.all_done), 0);
+    barrier_fault_interrupt_next_sem_wait();
+    CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
+    CHECK_EQ(barrier_fault_injection_consumed(), 1);
+#if UP_HAVE_SEM_CLOCKWAIT
+    CHECK_EQ(barrier_fault_used_monotonic_clock(), 1);
+#endif
+
+    up_pool_gate_destroy(&gate);
+    END();
+}
+
+#if !UP_HAVE_SEM_CLOCKWAIT
+static void test_sem_poll_interrupts_still_expire(void)
+{
+    BEGIN("semaphore polling: sustained interrupts cannot extend timeout");
+    sem_t sem;
+    CHECK_EQ(sem_init(&sem, 0, 0), 0);
+
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    barrier_fault_interrupt_all_sem_waits(1);
+    const int rc = up_sem_wait_timeout(&sem, 10);
+    const int wait_errno = errno;
+    barrier_fault_interrupt_all_sem_waits(0);
+
+    CHECK_EQ(rc, -1);
+    CHECK_EQ(wait_errno, ETIMEDOUT);
+    CHECK(elapsed_ms(&t0) < 1000);
+    CHECK_EQ(barrier_fault_injection_consumed(), 1);
+    CHECK_EQ(sem_destroy(&sem), 0);
+    END();
+}
+#endif
 
 /*
  * CONC-1, other half: the last finisher RETRIES its post. A transient failure
@@ -669,6 +713,10 @@ int main(void)
     test_pool_gate_post_failure_survives_retries();
     test_pool_gate_wait_times_out();
     test_pool_gate_wait_error_is_reported();
+    test_pool_gate_wait_retries_interrupt();
+#if !UP_HAVE_SEM_CLOCKWAIT
+    test_sem_poll_interrupts_still_expire();
+#endif
     test_detect_then_decide();
     test_explicit_at_max_boundary();
 

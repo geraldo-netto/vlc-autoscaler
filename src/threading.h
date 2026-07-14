@@ -236,25 +236,128 @@ static inline int up_threads_decide(int user_pref, int total_cores)
  * even a 64-thread 8K sweep under TSAN stays far below a second), so it can
  * only fire on a genuinely broken barrier.
  *
- * Suspend caveat: the deadline is CLOCK_REALTIME (what POSIX sem_timedwait
- * takes), which keeps running across a machine suspend. A suspend landing in
- * the narrow window while workers are mid-frame can therefore expire the
- * deadline; the cost is one dropped frame and a fail-over, against today's
- * permanent hang. A post that already arrived is still consumed without
- * blocking, expired deadline or not, so the common resume path is unaffected.
+ * CLOCK_MONOTONIC keeps wall-clock corrections from extending recovery. It
+ * deliberately stops during suspend on Linux: sleeping the machine pauses the
+ * dispatch budget instead of retiring a healthy backend immediately on resume.
  */
 #ifndef UP_POOL_BARRIER_TIMEOUT_MS
 #define UP_POOL_BARRIER_TIMEOUT_MS 10000
 #endif
 
 #define UP_NSEC_PER_SEC 1000000000L
+#define UP_POOL_BARRIER_POLL_NS 100000L
+
+#ifndef UP_HAVE_SEM_CLOCKWAIT
+#ifdef __GLIBC_PREREQ
+#if __GLIBC_PREREQ(2, 30) && defined(__USE_GNU)
+#define UP_HAVE_SEM_CLOCKWAIT 1
+#else
+#define UP_HAVE_SEM_CLOCKWAIT 0
+#endif
+#else
+#define UP_HAVE_SEM_CLOCKWAIT 0
+#endif
+#endif
+
+static inline int up__deadline_after_ms(struct timespec *deadline,
+                                        long timeout_ms)
+{
+    if (deadline == NULL || timeout_ms < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (clock_gettime(CLOCK_MONOTONIC, deadline) != 0) return -1;
+
+    const long seconds = timeout_ms / 1000;
+    const time_t delta = (time_t)seconds;
+    if ((long)delta != seconds
+        || __builtin_add_overflow(deadline->tv_sec, delta,
+                                  &deadline->tv_sec)) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+
+    deadline->tv_nsec += (timeout_ms % 1000) * 1000000L;
+    if (deadline->tv_nsec < UP_NSEC_PER_SEC) return 0;
+    deadline->tv_nsec -= UP_NSEC_PER_SEC;
+    if (__builtin_add_overflow(deadline->tv_sec, (time_t)1,
+                               &deadline->tv_sec)) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    return 0;
+}
+
+static inline int up__timespec_compare(const struct timespec *left,
+                                       const struct timespec *right)
+{
+    if (left->tv_sec < right->tv_sec) return -1;
+    if (left->tv_sec > right->tv_sec) return 1;
+    if (left->tv_nsec < right->tv_nsec) return -1;
+    return left->tv_nsec > right->tv_nsec;
+}
+
+#if !UP_HAVE_SEM_CLOCKWAIT
+
+static inline void up__next_poll_deadline(const struct timespec *now,
+                                          const struct timespec *deadline,
+                                          struct timespec *next)
+{
+    *next = *now;
+    if (next->tv_nsec <= UP_NSEC_PER_SEC - 1 - UP_POOL_BARRIER_POLL_NS) {
+        next->tv_nsec += UP_POOL_BARRIER_POLL_NS;
+    } else if (next->tv_sec < deadline->tv_sec) {
+        next->tv_sec++;
+        next->tv_nsec -= UP_NSEC_PER_SEC - UP_POOL_BARRIER_POLL_NS;
+    } else {
+        *next = *deadline;
+        return;
+    }
+    if (up__timespec_compare(next, deadline) > 0) *next = *deadline;
+}
+
+static inline int up__clock_nanosleep_until(const struct timespec *deadline)
+{
+    int rc;
+    do {
+        rc = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, deadline, NULL);
+    } while (rc == EINTR);
+    if (rc == 0) return 0;
+    errno = rc;
+    return -1;
+}
+
+static inline int up__sem_poll_until(sem_t *s,
+                                     const struct timespec *deadline)
+{
+    for (;;) {
+        if (sem_trywait(s) == 0) return 0;
+        const int wait_errno = errno;
+        if (wait_errno != EAGAIN && wait_errno != EINTR) return -1;
+
+        struct timespec now;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
+        if (up__timespec_compare(&now, deadline) >= 0) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        if (wait_errno == EINTR) continue;
+
+        struct timespec next;
+        up__next_poll_deadline(&now, deadline, &next);
+        if (up__clock_nanosleep_until(&next) != 0) return -1;
+    }
+}
+
+#endif
 
 /*
- * sem_timedwait with the standard EINTR retry (CON-3). Both worker pools use
- * a counting done-barrier whose final wait runs on VLC's video thread; libvlc
- * embedders routinely install non-SA_RESTART signal handlers, and an EINTR'd
- * wait returning early would let Filter() hand a picture downstream while
- * workers are still writing it.
+ * Monotonic semaphore wait with the standard EINTR retry (CON-3). Both worker
+ * pools use a counting done-barrier whose final wait runs on VLC's video
+ * thread; libvlc embedders routinely install non-SA_RESTART signal handlers,
+ * and an interrupted wait returning early would let Filter() hand a picture
+ * downstream while workers are still writing it. Older libcs poll sem_trywait
+ * against the same monotonic deadline in short absolute sleep slices.
  *
  * Returns 0 on success. Any other failure — ETIMEDOUT (no post arrived) or
  * EINVAL (destroyed/corrupt sem) — returns -1, and the caller must FAIL the
@@ -262,19 +365,17 @@ static inline int up_threads_decide(int user_pref, int total_cores)
  */
 static inline int up_sem_wait_timeout(sem_t *s, long timeout_ms)
 {
-    struct timespec ts;
-    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return -1;
-
-    /* Carry in one wider computation rather than a conditional fixup: the
-     * carry branch would otherwise depend on the wall-clock time of day. */
-    const int64_t deadline_ns = (int64_t)ts.tv_nsec
-                              + (int64_t)timeout_ms * 1000000;
-    ts.tv_sec  += (time_t)(deadline_ns / UP_NSEC_PER_SEC);
-    ts.tv_nsec  = (long)(deadline_ns % UP_NSEC_PER_SEC);
-
+    struct timespec deadline;
+    if (up__deadline_after_ms(&deadline, timeout_ms) != 0) return -1;
+#if UP_HAVE_SEM_CLOCKWAIT
     int rc;
-    do { rc = sem_timedwait(s, &ts); } while (rc == -1 && errno == EINTR);
+    do {
+        rc = sem_clockwait(s, CLOCK_MONOTONIC, &deadline);
+    } while (rc == -1 && errno == EINTR);
     return rc;
+#else
+    return up__sem_poll_until(s, &deadline);
+#endif
 }
 
 /*
