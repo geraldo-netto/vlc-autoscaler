@@ -362,7 +362,7 @@ plugin: $(BUILD)/$(PLUGIN).so abi-layout-check
 # already required there).
 .PHONY: abi-layout-check
 abi-layout-check:
-	@$(CC) $(WARN) -fsyntax-only $(VLC_CFLAGS) \
+	@$(CC) $(WARN) $(EXTRA_CFLAGS) -fsyntax-only $(VLC_CFLAGS) \
 	    -D__PLUGIN__ -DMODULE_STRING=\"autoupscale\" tests/abi_assert.c
 	@echo "  [ok] tests/stubs layout matches real VLC headers"
 
