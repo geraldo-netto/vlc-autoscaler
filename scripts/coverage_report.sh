@@ -5,14 +5,17 @@
 # headers and TUs, prints per-file line coverage, and exits non-zero if
 # any tracked file falls below the threshold.
 #
-# Usage: COV_DIR=build_dev/cov THRESHOLD=80 scripts/coverage_report.sh
+# Usage: COV_DIR=build_dev/cov THRESHOLD=90 scripts/coverage_report.sh
 
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 SCOPE_FILE="${COVERAGE_SCOPE_FILE:-$SCRIPT_DIR/coverage_scope.txt}"
 COV_DIR="${COV_DIR:-$REPO_ROOT/build/cov}"
-THRESHOLD="${THRESHOLD:-80}"
+if [[ -z "${THRESHOLD:-}" ]]; then
+    echo "ERROR: THRESHOLD is required (normally set by make coverage)." >&2
+    exit 2
+fi
 
 if [[ "$SCOPE_FILE" != /* ]]; then SCOPE_FILE="$REPO_ROOT/$SCOPE_FILE"; fi
 if [[ "$COV_DIR" != /* ]]; then COV_DIR="$REPO_ROOT/$COV_DIR"; fi

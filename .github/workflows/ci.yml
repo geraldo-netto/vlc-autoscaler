@@ -55,7 +55,7 @@ jobs:
             EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
           make clean
 
-      # BUILD-8: the test/fuzz/stress/coverage TUs build under -Werror too,
+      # The test/fuzz/stress/coverage TUs build under -Werror too,
       # so new warnings in harness code fail CI, not just plugin code. The
       # -Wno-unreachable-code-generic-assoc suppresses a clang false
       # positive inside VLC's own _Generic headers (gcc ignores the
@@ -92,7 +92,7 @@ jobs:
       - name: Compile benches incl. flat-skip kernel (build only)
         run: make build-bench EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
 
-      - name: Per-file and per-function coverage gates (minimum 80%)
+      - name: Per-file and per-function coverage gates
         run: make coverage EXTRA_CFLAGS=-Werror
 
       - name: Static analysis (cppcheck)

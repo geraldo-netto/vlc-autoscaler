@@ -792,6 +792,7 @@ bench-flatskip: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip
 # modules (upscale_logic.h, content_probe.h, etc.) precisely so it CAN be
 # unit-tested. See `make coverage-summary` for the per-module % numbers.
 COV_BUILD := $(BUILD)/cov
+COVERAGE_THRESHOLD ?= 90
 # Coverage profiles are compiler-specific; override these as a matched GCC pair.
 COV_CC      ?= gcc
 GCOV        ?= gcov
@@ -926,8 +927,8 @@ coverage: $(COV_BINS)
 	    (cd "$$text_dir" && $(GCOV) -r -m -o "$$cov_dir" "$$gcda" > /dev/null); \
 	    (cd "$$json_dir" && $(GCOV) -j -r -m -o "$$cov_dir" "$$gcda" > /dev/null); \
 	done
-	@COV_DIR=$(COV_BUILD) THRESHOLD=90 ./scripts/coverage_report.sh
-	@COV_DIR=$(COV_BUILD) THRESHOLD=90 ./scripts/coverage_per_function.sh
+	@COV_DIR=$(COV_BUILD) THRESHOLD=$(COVERAGE_THRESHOLD) ./scripts/coverage_report.sh
+	@COV_DIR=$(COV_BUILD) THRESHOLD=$(COVERAGE_THRESHOLD) ./scripts/coverage_per_function.sh
 
 coverage-summary: coverage
 

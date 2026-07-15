@@ -30,7 +30,7 @@ and still fast enough for real-time playback on modest hardware.
 | Concurrency stress | `make stress` and `make stress-zimg` |
 | Static analysis | `make analyze` |
 | Cyclomatic complexity | `make complexity` enforces CCN ≤ 10 |
-| Per-file and per-function coverage | `make coverage` enforces ≥ 90% |
+| Per-file and per-function coverage | `make coverage` enforces the configured gate |
 | Plugin build | `make plugin EXTRA_CFLAGS=-Werror` |
 | zimg integration | `make test-zimg` |
 
@@ -561,7 +561,7 @@ make test        # unit/contract suite under ASan + UBSan
 make fuzz-smoke  # deterministic fuzz suite under ASan + UBSan
 make fuzz        # libFuzzer build (clang); run e.g. build/fuzz_upscale_logic tests/corpus/
 make stress      # usm_pool concurrency stress, ASan + TSan
-make coverage    # gcov gates configured in the coverage scripts
+make coverage    # gcov per-file and per-function gates
 make analyze     # cppcheck across the source
 make install     # install plugin into VLC's plugins dir
 make uninstall
