@@ -38,9 +38,8 @@ are bounded.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| UB-12 | open | S | `tests/test_picture_view.c:97-103,307-320` records descriptor/subsampling prerequisite failures with nonfatal `CHECK`, then dereferences the possibly-null layout or shifts `1u` by the unchanged sentinel value 99. | A regression in either lookup path turns the test into null-dereference or invalid-shift UB instead of a clean failure; Clang Static Analyzer 18 reports both paths. Guard/continue after each failed prerequisite or use a fatal assertion. |
 
-No other UB finding after tracing shifts, allocation arithmetic, crop and
+No open UB finding after tracing shifts, allocation arithmetic, crop and
 plane bounds, fixed-point rounding, worker lifetimes, atomics, and in-place USM
 halo ownership.
 
@@ -125,8 +124,7 @@ this technical domain; another business/domain pattern would not clarify it.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No separate row. ERR-7 owns the teardown-correctness risk found by this scan;
-UB-12 owns the analyzer-detected test regression paths.
+No separate row. ERR-7 owns the teardown-correctness risk found by this scan.
 
 ## portability/standards conformance
 

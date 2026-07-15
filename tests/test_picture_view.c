@@ -96,6 +96,8 @@ static void check_format(vlc_fourcc_t chroma)
     init_picture(&test, chroma);
     const up_picture_format_layout_t *layout = up_picture_format_layout(chroma);
     CHECK(layout != NULL);
+    if (!layout)
+        return;
     CHECK(test.pic.format.i_x_offset == 0 && test.pic.format.i_y_offset == 0);
     CHECK(up_picture_view_init(&view, &test.pic, chroma, &region));
     CHECK(view.plane_count == layout->plane_count);
@@ -311,7 +313,10 @@ static void test_layout_matches_subsample_table(void)
             continue;
         unsigned sub_w = 99;
         unsigned sub_h = 99;
-        CHECK(up_chroma_subsample(chroma, &sub_w, &sub_h));
+        const bool found = up_chroma_subsample(chroma, &sub_w, &sub_h);
+        CHECK(found);
+        if (!found)
+            continue;
         /* Plane 0 is luma: never subsampled. Plane 1 carries the chroma
          * group size (both chroma planes share it on planar formats). */
         CHECK(layout->x_group_pixels[0] == 1);
