@@ -14,6 +14,7 @@ make bench-usm-halo
 make bench-flatskip
 make bench-zimg
 scripts/bench_matrix.sh build/bench_usm_pool
+scripts/bench_zimg_pinning.sh build/bench_scaler_zimg
 ```
 
 Run the benchmark binary without arguments for its current interface. The USM
@@ -85,3 +86,8 @@ make MARCH=x86-64 MULTIVERSION=1 check-multiversion-isa
 kernel for all content. Do not combine its numbers with production claims.
 Cross-variant production output equivalence is enforced by
 `tests/test_usm_pool_variants.c`.
+
+The pinning matrix compares scheduler placement with current first-allowed-CPU
+pinning under all-logical-CPU and one-thread-per-core affinity masks. Its
+default masks fit the 32-thread/16-core reference host; edit them to match the
+measured machine. Repeat the matrix before changing the opt-in pinning default.

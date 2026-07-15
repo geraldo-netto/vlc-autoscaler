@@ -2,10 +2,11 @@
 /*
  * bench_scaler_zimg.c — wall-clock throughput for the zimg backend.
  *
- * Usage: bench_scaler_zimg <threads> <chroma> <sw> <sh> <dw> <dh> [frames] [zc]
+ * Usage: bench_scaler_zimg <threads> <chroma> <sw> <sh> <dw> <dh> [frames]
+ *                          [zc] [pin]
  *   chroma: i420 | yv12 | i422 | i444   frames default 200   zc default 1
  *
- * Output CSV: threads,chroma,sw x sh,dw x dh,frames,zc,us_per_frame
+ * Output CSV: threads,chroma,sw x sh,dw x dh,frames,zc,pin,us_per_frame
  *
  * Source is filled once; only process() is timed (resampling is content-
  * independent in cost). This is the vehicle for measuring PERF-1 (parallel
@@ -29,7 +30,7 @@ static uint32_t chroma_of(const char *s)
 }
 
 struct bargs {
-    int threads, sw, sh, dw, dh, frames, zc;
+    int threads, sw, sh, dw, dh, frames, zc, pin;
     uint32_t chroma;
     const char *chroma_name;
 };
@@ -38,13 +39,14 @@ static int parse(int argc, char **argv, struct bargs *a)
 {
     if (argc < 7) {
         fprintf(stderr, "usage: %s <threads> <chroma> <sw> <sh> <dw> <dh> "
-                        "[frames] [zc]\n", argv[0]);
+                        "[frames] [zc] [pin]\n", argv[0]);
         return 2;
     }
     a->chroma_name = argv[2];
     a->chroma  = chroma_of(argv[2]);
     a->frames = 200;
     a->zc = 1;
+    a->pin = 0;
 
     const struct {
         int position;
@@ -59,6 +61,7 @@ static int parse(int argc, char **argv, struct bargs *a)
         { 6, 8, UP_MAX_DIM, &a->dh },
         { 7, 1, INT_MAX, &a->frames },
         { 8, 0, 1, &a->zc },
+        { 9, 0, 1, &a->pin },
     };
     for (size_t i = 0; i < sizeof numeric / sizeof *numeric; i++) {
         if (numeric[i].position >= argc) continue;
@@ -109,6 +112,7 @@ static int run_timed(const struct bargs *a, double *us_per_frame)
 
     scaler_ctx_t ctx;
     zt_ctx_init(&ctx, a->chroma, a->sw, a->sh, a->dw, a->dh, a->threads, a->zc);
+    ctx.pin_cpus = a->pin;
     int rc = 1;
     if (ctx.backend->open(&ctx) == 0) {
         rc = 0;
@@ -137,8 +141,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "bench run failed\n");
         return 1;
     }
-    printf("%d,%s,%dx%d,%dx%d,%d,%d,%.2f\n",
+    printf("%d,%s,%dx%d,%dx%d,%d,%d,%d,%.2f\n",
            a.threads, a.chroma_name, a.sw, a.sh, a.dw, a.dh,
-           a.frames, a.zc, us);
+           a.frames, a.zc, a.pin, us);
     return 0;
 }
