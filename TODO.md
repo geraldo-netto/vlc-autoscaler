@@ -1,28 +1,31 @@
 # TODO — full-project audit findings
 
-Full production rescan of the working tree based on HEAD `9d279d0` on 2026-07-15.
-Scope: all 43 tracked non-test/non-cache files, including production source and
+Full production rescan of the working tree based on HEAD `491bef9` on 2026-07-15.
+Scope: all 44 tracked non-test/non-cache files, including production source and
 public headers, build/release configuration, CI, scripts, documentation, and
 patches. Excluded: `tests/**`, test corpora and fixtures, generated build output,
 caches, ignored artifacts, and local untracked settings. Test paths named by
 in-scope build files were considered only as wiring; no test source or fixture
 was read or used as evidence. The working tree was clean at scan start.
 
-Validation was production-only: GCC and Clang `MULTIVERSION=1` plugin builds
-with `-Werror`; linked-symbol visibility and multiversion ISA gates; a GCC
-`-fanalyzer` plugin build; source-only Lizard 1.23.0 with CCN <= 10 and at most
-7 parameters; Bash syntax checks; ELF hardening inspection; and source-only
-cppcheck 2.13.0 (limited by the real VLC macro headers). `clang-tidy`,
-`scan-build`, ShellCheck, and actionlint were unavailable locally. No test was
-run. Row format: `id | status | effort | description | notes`.
+Validation was production-only: GCC and Clang single- and multiversion shared-
+object builds with `-Werror`; linked-symbol visibility and multiversion ISA
+gates; a GCC `-fanalyzer` build; Clang Static Analyzer 18 over both production
+configurations; source-only Lizard 1.23.0 with CCN <= 10 and at most 7
+parameters; Bash syntax checks; ELF hardening inspection; local documentation-
+link and option-wiring checks; and source-only cppcheck 2.13.0 (limited by the
+real VLC macro headers). `clang-tidy`, ShellCheck, and actionlint were
+unavailable locally. No test was run. Row format:
+`id | status | effort | description | notes`.
 
 ## security
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| SEC-1 | open | S | `.github/workflows/ci.yml:1-23,101-107,184-193` has no explicit least-privilege token permissions, and all three checkout steps retain credentials. | Repository-default token rights remain available while repository code and downloaded tools execute. Set `permissions: contents: read` and `persist-credentials: false` unless a job proves it needs more. |
-| SEC-2 | open | M | CI installs an unpinned PyPI `lizard` package and downloads a mutable Sonar build-wrapper ZIP without integrity verification (`.github/workflows/ci.yml:32-37,203-223`). | Pin the Python package version and hash; pin the wrapper artifact and verify its published checksum/signature before extraction and execution. |
-| SEC-3 | open | S | The plugin link does not request immediate binding (`Makefile:95-110,288-298`); fresh ELF inspection found GNU RELRO but no `BIND_NOW`. | Lazy-binding GOT entries can remain writable after load. Add `-Wl,-z,relro,-z,now` and assert the dynamic tags in CI. This is hardening, not evidence of an existing exploit. |
+| SEC-1 | open | S | `.github/workflows/ci.yml:1-23,104-110,187-196` has no explicit least-privilege token permissions, and all three checkout steps retain credentials. | Repository-default token rights remain available while repository code and downloaded tools execute. Set `permissions: contents: read` and `persist-credentials: false` unless a job proves it needs more. |
+| SEC-2 | open | M | CI installs an unpinned PyPI `lizard` package and downloads a mutable Sonar build-wrapper ZIP without integrity verification (`.github/workflows/ci.yml:32-36,206-226`). | Pin the Python package version and hash; pin the wrapper artifact and verify its published checksum/signature before extraction and execution. |
+| SEC-3 | open | S | The plugin link does not request immediate binding (`Makefile:96-110,289-298`); fresh ELF inspection found GNU RELRO but no `BIND_NOW`. | Lazy-binding GOT entries can remain writable after load. Add `-Wl,-z,relro,-z,now` and assert the dynamic tags in CI. This is hardening, not evidence of an existing exploit. |
+| SEC-4 | open | S | The troubleshooting recipe writes verbose VLC output to the fixed path `/tmp/autoupscale.log` (`docs/USAGE.md:423-430`). | A normally created log is world-readable and the predictable name permits symlink or concurrent clobbering; verbose output can expose media paths and URL credentials. Create a mode-0600 file with `mktemp`, store its path in a variable, and reuse that variable in both commands. |
 
 No additional security issue was found in the production media/configuration
 paths: geometry is validated before pointer formation, user integers are
@@ -58,9 +61,8 @@ backend state and does not rebuild graphs.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| SCAL-1 | open | M | CPU capacity uses `sched_getaffinity` and host `sysconf` only (`src/threading.h:131-175,201-224`); neither observes cgroup v2 `cpu.max` or v1 CFS quota. | A container with a broad cpuset but a small CPU quota can create far more zimg/USM workers than it can run. Clamp the affinity count by the effective cgroup quota. |
-| SCAL-2 | open | M | AUTO memory sizing uses host `sysinfo.totalram` (`src/autoupscale.c:386-403`), then selects 720p/1080p from that value (`src/upscale_logic.h:69-82`), ignoring cgroup memory limits. | Read cgroup v2 `memory.max` / v1 memory limit and use the smaller finite capacity. |
-| SCAL-3 | open | M | Thread pinning stores the first allowed logical CPU IDs and assigns workers round-robin (`src/threading.h:100-116`, `src/scaler_zimg.c:780-789`), without physical-core, SMT, or NUMA topology. | The opt-in setting can pack workers onto siblings or cross NUMA nodes poorly. Prefer one logical CPU per physical core, then siblings, or document an explicit CPU ordering policy. |
+
+No unparked scalability finding. Deferred items remain in **Open — parked**.
 
 ## concurrency
 
@@ -78,7 +80,7 @@ releasing their storage.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No open finding. Source-only `lizard -C 10 -a 7 src/` reports 239 functions,
+No open finding. Source-only `lizard -C 10 -a 7 src/` reports 238 functions,
 zero violations, and a maximum CCN of 10.
 
 ## code duplication
@@ -86,7 +88,7 @@ zero violations, and a maximum CCN of 10.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No open finding. Both coverage gates now consume one path-qualified manifest.
+No unparked duplication finding. Deferred items remain in **Open — parked**.
 
 ## architecture/modularity/SOLID
 
@@ -116,16 +118,18 @@ this technical domain; another business/domain pattern would not clarify it.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| REL-4 | open | M | `up_chroma_align_crop_even()` rounds a subsampled crop's origin and extent independently, at separate call sites (`src/chroma_classify.h:232-262`, `src/autoupscale.c:531-539,732-737`). | For example, `x=1,width=640` becomes `x=0,width=640`: the scaler includes one pixel outside the negotiated visible crop and drops the intended rightmost pixel. Align the `[start,end)` interval inward as one operation before target planning, propagate the resulting origin and extent together, and reject an empty interval. |
 
-No open finding. Zimg now escalates recurring alignment misses even when safe
-buffers occur between them, so fatal fallback cannot be postponed forever by
-an alternating picture pool.
+Zimg now escalates recurring alignment misses even when safe buffers occur
+between them, so fatal fallback cannot be postponed forever by an alternating
+picture pool.
 
 ## portability/standards conformance
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| PORT-1 | open | M | The GCC < 12 / Clang < 17 fallback in `src/cpu_level.h:25-48` treats AVX2+FMA+BMI+BMI2 as full x86-64-v3/v4 support, omitting the full inherited v2 level and required features such as F16C, LZCNT, and MOVBE. Full-level objects are selected at `Makefile:197-207` and the whole plugin is gated at `src/autoupscale.c:680-700`. | A masked VM CPU can pass the fallback and then execute an unsupported instruction. Require a compiler with full-level builtins for multiversion builds or implement complete CPUID/XGETBV level checks. |
+| PORT-1 | open | M | The GCC < 12 / Clang < 17 fallback in `src/cpu_level.h:25-48` treats AVX2+FMA+BMI+BMI2 as full x86-64-v3/v4 support, omitting the full inherited v2 level and required features such as F16C, LZCNT, and MOVBE. Full-level objects are selected at `Makefile:195-208` and the whole plugin is gated at `src/autoupscale.c:687-700`. | A masked VM CPU can pass the fallback and then execute an unsupported instruction. Require a compiler with full-level builtins for multiversion builds or implement complete CPUID/XGETBV level checks. |
+| PORT-2 | open | S | The generated Desktop Entry/Nemo `Exec` value applies only one quoting pass (`scripts/install-vlc-autoupscale-action.sh:26-32,47-56,66-76`). | Desktop Entry general-string decoding occurs before command-line quoting, and `%` also introduces field codes. Valid paths containing backslash, `%`, `$`, or related reserved characters can resolve to the wrong command or an invalid entry. Implement both escaping layers, double literal `%`, and validate the generated desktop file. |
 
 ## error handling
 
@@ -159,13 +163,17 @@ exports only the expected VLC entry points.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| BUILD-1 | open | S | CI's Clang step builds only `MULTIVERSION=0` and omits Clang visibility verification (`.github/workflows/ci.yml:47-73`), while README claims Clang support for SIMD variants (`README.md:617-618`). | Build and link both Clang configurations, then run visibility and linked-ISA gates under Clang too. |
-| BUILD-5 | open | M | Compiler, ISA, feature, and flag values (`Makefile:24-44,67-115,165-216`) are not freshness dependencies of object/link rules at `:288-301`. | Reusing one build directory after changing `CC`, `MARCH`, `EXTRA_CFLAGS`, `MULTIVERSION`, or zimg availability can silently retain incompatible output. Add a configuration-hash stamp or configuration-specific build directory. |
-| BUILD-6 | open | S | Empty `VLC_PLUGIN_BASE` becomes non-empty `/video_filter` (`Makefile:43-44`), while install/uninstall validate only the derived value and use unquoted paths (`Makefile:966-976`). | Validate a non-empty base in both targets before deriving the subdirectory, and quote every destination. |
-| BUILD-7 | open | S | The Sonar job runs for every pull request but requires `SONAR_TOKEN` (`.github/workflows/ci.yml:3-8,184-248`); fork pull requests do not receive repository secrets. | Gate Sonar to pushes/internal pull requests while retaining token-free build checks for forks. |
+| BUILD-1 | open | S | CI's Clang step builds only `MULTIVERSION=0` and omits Clang visibility verification (`.github/workflows/ci.yml:47-73`), while README claims Clang support for SIMD variants (`README.md:625-626`). | Build and link both Clang configurations, then run visibility and linked-ISA gates under Clang too. |
+| BUILD-5 | open | M | Compiler, ISA, feature, and flag values (`Makefile:20-45,68-115,166-217`) are not freshness dependencies of object/link rules at `:289-302`. | Reusing one build directory after changing `CC`, `MARCH`, `EXTRA_CFLAGS`, `MULTIVERSION`, or zimg availability can silently retain incompatible output. Add a configuration-hash stamp or configuration-specific build directory. |
+| BUILD-6 | open | S | Empty `VLC_PLUGIN_BASE` becomes non-empty `/video_filter` (`Makefile:44-45`), while install/uninstall validate only the derived value and use unquoted paths (`Makefile:991-1001`). | Validate a non-empty base in both targets before deriving the subdirectory, and quote every destination. |
+| BUILD-7 | open | S | The Sonar job runs for every pull request but requires `SONAR_TOKEN` (`.github/workflows/ci.yml:3-8,187-255`); fork pull requests do not receive repository secrets. | Gate Sonar to pushes/internal pull requests while retaining token-free build checks for forks. |
 | BUILD-9 | open | S | The shared coverage manifest omits shipped `plane_utils.h`, `cpu_level.h`, and `usm_pool_dispatch.c`, while listing non-production `cli_parse.h` (`scripts/coverage_scope.txt`; omitted logic at `src/plane_utils.h:30-205`, `src/cpu_level.h:25-48`, `src/usm_pool_dispatch.c:98-136`). | Those production units receive no per-file/function verdict. Add the omitted units to the manifest and document intentional exclusions. |
-| BUILD-10 | open | S | Threaded coverage is compiled without an explicit atomic profile-update mode (`Makefile:801-802,849-866`), CI suppresses negative-hit parse errors (`.github/workflows/ci.yml:225-241`), and the local parser treats every non-sentinel count, including a negative one, as covered (`scripts/coverage_report.sh:65-75`). | Concurrent counter updates can make coverage vary or over-report. Use `-fprofile-update=atomic`, remove the suppression, and reject non-numeric/negative counts. |
-| BUILD-11 | open | S | `PLUGIN_GOALS` omits the standalone `abi-layout-check` and `check-visibility` goals (`Makefile:46-58` versus `:282-285,303-324`). | Direct invocation without SDKs bypasses the friendly prerequisite check and fails deep in compilation. Add both goals to `PLUGIN_GOALS`. |
+| BUILD-10 | open | S | Threaded coverage is compiled without an explicit atomic profile-update mode (`Makefile:802,850-869`), CI suppresses negative-hit parse errors (`.github/workflows/ci.yml:228-244`), and the local parser treats every non-sentinel count, including a negative one, as covered (`scripts/coverage_report.sh:112-123`). | Concurrent counter updates can make coverage vary or over-report. Use `-fprofile-update=atomic`, remove the suppression, and reject non-numeric/negative counts. |
+| BUILD-11 | open | S | `PLUGIN_GOALS` omits the standalone `abi-layout-check` and `check-visibility` goals (`Makefile:50-59` versus `:283-325`). | Direct invocation without SDKs bypasses the friendly prerequisite check and fails deep in compilation. Add both goals to `PLUGIN_GOALS`. |
+| BUILD-12 | open | M | Overrideable cleanup roots reach recursive deletion without a safety invariant: `SCAN_ROOT` at `Makefile:963-975` and `BUILD` at `:1003-1016`. | Absolute checkout paths, tracked subdirectories, whitespace, or option-like values can delete or split unintended paths. Require non-empty dedicated build roots, reject the repository/source ancestors, quote every expansion, use `--`, and preferably require a build marker before removal. |
+| BUILD-13 | open | S | `coverage-zimg` suppresses both the instrumented harness and `gcov` exit status (`Makefile:717-731`), and Sonar publishes the resulting data (`.github/workflows/ci.yml:228-244`). | Informational percentage reporting does not justify a green target after a crash or corrupt/missing coverage. Preserve the report if useful, then propagate the harness status and fail on a missing or malformed gcov artifact. |
+| BUILD-14 | open | S | Zimg is an optional production dependency (`Makefile:36-42`; `README.md:625-641`), but every CI job installs it and no plugin build forces `HAVE_ZIMG=` (`.github/workflows/ci.yml:25-31,112-120,198-226`). | The shipped swscale-only conditional source graph can rot unnoticed. Add a clean zimg-disabled plugin build and visibility check. |
+| BUILD-15 | open | S | The libFuzzer failure upload and local ignore list omit the `oom-*` artifact class (`.github/workflows/ci.yml:127-185`, `.gitignore:21-25`). | OOM reproducers disappear when CI fails and dirty local worktrees. Retain/upload and ignore `oom-*`; consider uploading the already-ignored `slow-unit-*` class too. |
 
 ## observability
 
@@ -200,7 +208,13 @@ was found.
 
 | id | status | effort | description | why not now |
 |---|---|---|---|---|
+| DUP-4 | parked | S | Semantic Y/U/V to physical-plane mapping is implemented independently by `sws_plane_index()` and `up_zimg_plane_idx()` (`src/scaler_swscale.c:111-118`, `src/zimg_helpers.h:114-125`). | Deferred by project prioritization; both mappings currently agree, and centralization can wait for a related chroma-layout change. |
+| DUP-5 | parked | S | `docs/BENCHMARKS.md:1-44` and `docs/PERFORMANCE.md:1-41` duplicate the benchmark commands, recording requirements, noise cautions, thread/memory interpretation, and flat-skip warning. | Deferred by project prioritization; the documents are currently consistent and the duplication has no runtime impact. |
 | PERF-P1 | parked | M | In-place USM snapshots up to two halo rows per worker serially before each dispatch (`src/usm_pool.c:448-491`). | Folding snapshots into workers needs another readiness phase; profile the current copy cost before adding synchronization. |
+| PERF-P2 | parked | M | Multiversion dispatch always chooses the widest supported ISA (`src/usm_pool_dispatch.c:87-121`), although AVX-512 frequency effects and memory-bound throughput are host-specific. | No deployment-host regression has been measured, and a single-baseline build is an available workaround. Benchmark first; if confirmed, add a force/max-variant override or a measured selection policy. |
+| SCAL-1 | parked | M | CPU capacity uses `sched_getaffinity` and host `sysconf` only (`src/threading.h:131-175,201-224`); neither observes cgroup v2 `cpu.max` or v1 CFS quota. | Deferred by project prioritization; robust handling needs cgroup v1/v2 discovery and validation across nested or delegated controller layouts. |
+| SCAL-2 | parked | M | AUTO memory sizing uses host `sysinfo.totalram` (`src/autoupscale.c:386-403`), then selects 720p/1080p from that value (`src/upscale_logic.h:69-82`), ignoring cgroup memory limits. | Deferred by project prioritization; robust handling needs cgroup v1/v2 limit discovery, unlimited-value handling, and container validation. |
+| SCAL-3 | parked | M | Thread pinning stores the first allowed logical CPU IDs and assigns workers round-robin (`src/threading.h:100-116`, `src/scaler_zimg.c:780-789`), without physical-core, SMT, or NUMA topology. | Deferred by project prioritization; choosing a topology ordering policy needs cross-SMT/NUMA measurements and platform-specific discovery. |
 | SCAL-P1 | parked | L | Static equal-work cells plus a full-frame barrier make latency the slowest worker on heterogeneous or contended CPUs (`src/usm_pool.c:357-365,475-532`; `src/scaler_zimg.c:823-843,1042-1056`; `src/worker_pool.h:364-384`). | Dynamic stealing or heterogeneous sizing substantially complicates a correctness-sensitive frame path; require production profile evidence. |
 | SCAL-P2 | parked | M | Zimg memory and lazy graph-build time grow linearly with worker count because each cell owns a graph/tmp buffer and some own tile scratch (`src/scaler_zimg.c:183-214,713-739,797-805,823-859`). | Independent graphs keep processing lock-free and resources remain capped; revisit if high-thread memory profiles justify sharing. |
 | SCAL-P3 | parked | L | Zimg and USM keep separate persistent pools derived from the same CPU budget even though their passes run sequentially (`src/autoupscale.c:519-587,1053-1069,1167-1187`; `src/scaler_zimg.c:921-974`). | Sharing threads is structurally possible through `worker_pool.h`, but remains a large lifecycle change without a measured end-to-end bottleneck. |
@@ -225,3 +239,11 @@ non-findings:
 - Adding alignment assumptions to USM vector loops: valid row alignment depends
   on width/stride, and prior measurements found no actionable gain over
   unaligned moves.
+- Extending the performance timer over `RunProbe()`: the first 60-frame probe is
+  temporary diagnostic work, while the advisory deliberately measures the
+  steady scaler + USM settings it recommends changing. Including the probe in
+  the EWMA could produce a permanent warning for an overhead that has ended.
+- Treating zimg temporary-buffer alignment as an overflow seam: zimg 3.0.5 uses
+  checked internal size arithmetic, graph dimensions are capped at 32768, and
+  returned x86 temporary sizes are already 64-byte aligned; the value cannot
+  approach `SIZE_MAX - 63` on a reachable production graph.
