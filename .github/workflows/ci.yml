@@ -144,7 +144,7 @@ jobs:
           mkdir -p corpus_scaler_seam_work
           cp tests/corpus_scaler_seam/* corpus_scaler_seam_work/ 2>/dev/null || true
           build/fuzz_scaler_seam corpus_scaler_seam_work \
-            -max_total_time=90 -max_len=16 -print_final_stats=1
+            -max_total_time=90 -max_len=10 -print_final_stats=1
 
       - name: Run libFuzzer (upscale_logic)
         run: |

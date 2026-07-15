@@ -144,7 +144,7 @@ static int max_delta(const zt_pic_t *a, const zt_pic_t *b)
 
 static void run_one(const uint8_t *data, size_t size)
 {
-    if (size < 16) return;
+    if (size < 10) return;
     uint32_t chroma = CHROMAS[data[0] % (sizeof CHROMAS / sizeof *CHROMAS)];
     /* Down to 2px to exercise degenerate cells / tiny stripes; even keeps
      * subsampled chroma valid. The backend must stay memory-safe (and either
@@ -186,7 +186,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 static int smoke_iter(long i)
 {
     (void)i;
-    uint8_t buf[16];
+    uint8_t buf[10];
     fuzz_smoke_fill(buf, sizeof buf);
     run_one(buf, sizeof buf);
     return 0;
