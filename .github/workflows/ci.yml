@@ -60,6 +60,7 @@ jobs:
         run: |
           make plugin EXTRA_CFLAGS=-Werror
           make check-visibility EXTRA_CFLAGS=-Werror
+          make check-hardening EXTRA_CFLAGS=-Werror
           make clean
 
       - name: Build the VLC plugin without optional zimg (gcc, -Werror)

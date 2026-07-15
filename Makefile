@@ -59,6 +59,7 @@ VLC_PLUGIN_DIR  := $(VLC_PLUGIN_BASE)/video_filter
 # required SDKs — otherwise the first object compile dies on a cryptic
 # "vlc_common.h: No such file" long before any friendly message.
 PLUGIN_GOALS := all plugin install scan-build check-multiversion-isa \
+                check-hardening \
                 $(BUILD)/$(PLUGIN).so
 ifneq ($(filter $(PLUGIN_GOALS),$(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)),)
   ifeq ($(strip $(VLC_LIBS)),)
@@ -124,7 +125,7 @@ PLUGIN_CFLAGS := $(COMMON_CFLAGS) -fvisibility=hidden \
 # carries no warning flags cannot fail on them — CI's `EXTRA_CFLAGS=-Werror`
 # only ever reached the compile step. Pass $(WARN) and $(EXTRA_CFLAGS) to the
 # link too, so a prototype/type mismatch between TUs is a build failure.
-PLUGIN_LDFLAGS := -shared -Wl,-z,defs -flto $(WARN) $(EXTRA_CFLAGS) $(EXTRA_LDFLAGS)
+PLUGIN_LDFLAGS := -shared -Wl,-z,defs,-z,relro,-z,now -flto $(WARN) $(EXTRA_CFLAGS) $(EXTRA_LDFLAGS)
 PLUGIN_LIBS    := $(VLC_LIBS) $(SWS_LIBS) -lpthread
 
 ifdef HAVE_ZIMG
@@ -344,7 +345,7 @@ check-multiversion-isa:
 	@exit 2
 endif
 
-.PHONY: all plugin abi-layout-check check-multiversion-isa test check check-visibility fuzz fuzz-smoke fuzz-seam analyze semantic-analysis scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
+.PHONY: all plugin abi-layout-check check-hardening check-multiversion-isa test check check-visibility fuzz fuzz-smoke fuzz-seam analyze semantic-analysis scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
 
 all: plugin
 
@@ -402,6 +403,13 @@ check-visibility: $(BUILD)/$(PLUGIN).so
 	     echo "$$bad"; exit 1; \
 	 fi; \
 	 echo "check-visibility OK: $$entries vlc_entry* symbol(s) exported, nothing else"
+
+check-hardening: $(BUILD)/$(PLUGIN).so
+	@readelf -lW $< | grep -q 'GNU_RELRO' || { \
+	    echo "check-hardening FAILED: GNU_RELRO segment missing"; exit 1; }
+	@readelf -dW $< | grep -q 'BIND_NOW' || { \
+	    echo "check-hardening FAILED: BIND_NOW dynamic flag missing"; exit 1; }
+	@echo "check-hardening OK: RELRO + immediate binding enabled"
 
 # --------- unit tests ---------
 # `test` runs the suites only; `check` adds the lizard complexity gate.
