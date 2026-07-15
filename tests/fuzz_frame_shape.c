@@ -221,15 +221,15 @@ static void check_round_up(int w, int h)
     check_lines_result("round-up", h, rl, h);
 }
 
-static void check_zimg_plane_idx_range(void)
+static void check_physical_plane_index_range(void)
 {
-    /* zimg plane index is in [0, 2] for any swap value. */
+    /* Physical plane index is in [0, 2] for any swap value. */
     for (int swap = 0; swap < 2; swap++) {
         for (int idx = 0; idx < 3; idx++) {
-            int z = up_zimg_plane_idx(idx, swap);
-            if (z < 0 || z > 2) {
-                FAIL("zimg_plane_idx(%d,%d)=%d out of range",
-                     idx, swap, z);
+            int physical = up_chroma_physical_plane_index(idx, swap != 0);
+            if (physical < 0 || physical > 2) {
+                FAIL("physical_plane_index(%d,%d)=%d out of range",
+                     idx, swap, physical);
             }
         }
     }
@@ -248,7 +248,7 @@ static void check_plane_geometry(int w, int h)
 
     check_plane_pitch_lines(w, h);
     check_round_up(w, h);
-    check_zimg_plane_idx_range();
+    check_physical_plane_index_range();
 }
 
 static int stripe_inputs_out_of_range(int n, int src_h, int dst_h)

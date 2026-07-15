@@ -88,6 +88,26 @@ static void test_software_descriptor_table(void)
     END();
 }
 
+static void test_physical_plane_index_identity(void)
+{
+    BEGIN("plane index: unswapped layout preserves every plane");
+    CHECK_EQ(up_chroma_physical_plane_index(0, false), 0);
+    CHECK_EQ(up_chroma_physical_plane_index(1, false), 1);
+    CHECK_EQ(up_chroma_physical_plane_index(2, false), 2);
+    CHECK_EQ(up_chroma_physical_plane_index(3, false), 3);
+    END();
+}
+
+static void test_physical_plane_index_yv12(void)
+{
+    BEGIN("plane index: YV12 swaps only semantic U/V");
+    CHECK_EQ(up_chroma_physical_plane_index(0, true), 0);
+    CHECK_EQ(up_chroma_physical_plane_index(1, true), 2);
+    CHECK_EQ(up_chroma_physical_plane_index(2, true), 1);
+    CHECK_EQ(up_chroma_physical_plane_index(3, true), 3);
+    END();
+}
+
 /* ---------- up_chroma_is_opaque: opaque chromas detected ---------- */
 
 static void test_opaque_vaapi(void)
@@ -414,6 +434,8 @@ int main(void)
     printf("Running chroma_classify tests...\n");
 
     test_software_descriptor_table();
+    test_physical_plane_index_identity();
+    test_physical_plane_index_yv12();
 
     /* up_chroma_is_opaque positive cases */
     test_opaque_vaapi();

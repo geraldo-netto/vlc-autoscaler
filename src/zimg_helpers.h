@@ -2,9 +2,9 @@
 /*****************************************************************************
  * zimg_helpers.h - zimg-specific geometry helpers for scaler_zimg.c
  *****************************************************************************
- * Scratch pitch/line sizing, chroma plane geometry, and the YV12 plane
- * index swap. Header-only with zero VLC, libzimg, or pthread deps so
- * unit tests and fuzzers can include it directly. The backend-neutral
+ * Scratch pitch/line sizing and chroma plane geometry. Header-only with no VLC,
+ * libzimg, or pthread dependencies, so unit tests and fuzzers can include it
+ * directly. The backend-neutral
  * plane copy and 1D partition helpers live in plane_utils.h (ARCH-2).
  *****************************************************************************/
 
@@ -109,19 +109,6 @@ static inline int up_plane_lines(int h, int sub_h)
 {
     if (h <= 0 || sub_h < 0) return 0;
     return up_round_up_lines(up_chroma_dim(h, sub_h));
-}
-
-/*
- * zimg_plane_idx(idx, swap): plane index map. zimg expects YUV order
- * (Y=0, U=1, V=2). VLC's YV12 chroma is stored V before U, so we swap
- * indices 1 and 2 when reading/writing YV12 planes.
- */
-static inline int up_zimg_plane_idx(int idx, int swap)
-{
-    if (!swap) return idx;
-    if (idx == 1) return 2;
-    if (idx == 2) return 1;
-    return idx;
 }
 
 /*

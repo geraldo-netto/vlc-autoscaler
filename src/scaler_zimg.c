@@ -73,6 +73,7 @@
 #endif
 
 #include "scaler.h"
+#include "chroma_classify.h"
 #include "picture_view.h"
 #include "upscale_logic.h"
 #include "threading.h"
@@ -1037,8 +1038,8 @@ static void point_workers_planes(zimg_priv_t *p,
 {
     const int swap = p->yv12_swap_uv;
     const int iy = 0;
-    const int iu = up_zimg_plane_idx(1, swap);
-    const int iv = up_zimg_plane_idx(2, swap);
+    const int iu = up_chroma_physical_plane_index(1, swap != 0);
+    const int iv = up_chroma_physical_plane_index(2, swap != 0);
     stripe_worker_t *workers = zimg_workers(p);
     for (int i = 0; i < up_worker_pool_count(&p->pool); i++) {
         plane_view_t *view = worker_view_for(&workers[i], side, zerocopy);

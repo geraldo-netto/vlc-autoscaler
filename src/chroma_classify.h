@@ -26,6 +26,9 @@
  *     adapter it covers semi-planar NV12/NV21 too: they are 4:2:0 whether or
  *     not zimg can consume them.
  *
+ *   up_chroma_physical_plane_index(plane, swap_uv) - map semantic Y/U/V order
+ *     to the physical plane order used by the VLC picture.
+ *
  *   up_chroma_align_crop_even(c, w, h, x, y) - round a crop window down to
  *     even on each subsampled axis. Any NULL argument is skipped.
  *
@@ -139,6 +142,15 @@ up_chroma_descriptor(uint32_t c)
         if (up_chroma_descriptors[i].chroma == c)
             return &up_chroma_descriptors[i];
     return NULL;
+}
+
+static inline int up_chroma_physical_plane_index(int semantic_plane,
+                                                 bool uv_planes_swapped)
+{
+    if (!uv_planes_swapped) return semantic_plane;
+    if (semantic_plane == 1) return 2;
+    if (semantic_plane == 2) return 1;
+    return semantic_plane;
 }
 
 static inline bool up_chroma_layout_has_y(up_chroma_layout_t layout)

@@ -80,7 +80,7 @@ releasing their storage.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No open finding. Source-only `lizard -C 10 -a 7 src/` reports 238 functions,
+No open finding. Source-only `lizard -C 10 -a 7 src/` reports 237 functions,
 zero violations, and a maximum CCN of 10.
 
 ## code duplication
@@ -208,7 +208,6 @@ was found.
 
 | id | status | effort | description | why not now |
 |---|---|---|---|---|
-| DUP-4 | parked | S | Semantic Y/U/V to physical-plane mapping is implemented independently by `sws_plane_index()` and `up_zimg_plane_idx()` (`src/scaler_swscale.c:111-118`, `src/zimg_helpers.h:114-125`). | Deferred by project prioritization; both mappings currently agree, and centralization can wait for a related chroma-layout change. |
 | DUP-5 | parked | S | `docs/BENCHMARKS.md:1-44` and `docs/PERFORMANCE.md:1-41` duplicate the benchmark commands, recording requirements, noise cautions, thread/memory interpretation, and flat-skip warning. | Deferred by project prioritization; the documents are currently consistent and the duplication has no runtime impact. |
 | PERF-P1 | parked | M | In-place USM snapshots up to two halo rows per worker serially before each dispatch (`src/usm_pool.c:448-491`). | Folding snapshots into workers needs another readiness phase; profile the current copy cost before adding synchronization. |
 | PERF-P2 | parked | M | Multiversion dispatch always chooses the widest supported ISA (`src/usm_pool_dispatch.c:87-121`), although AVX-512 frequency effects and memory-bound throughput are host-specific. | No deployment-host regression has been measured, and a single-baseline build is an available workaround. Benchmark first; if confirmed, add a force/max-variant override or a measured selection policy. |

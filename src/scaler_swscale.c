@@ -108,15 +108,6 @@ static int sws_open( scaler_ctx_t *ctx )
     return 0;
 }
 
-/* libswscale's YUV420P descriptor expects semantic Y/U/V, while VLC stores
- * YV12 physically as Y/V/U. Other formats keep their physical plane order. */
-static int sws_plane_index( const up_chroma_descriptor_t *desc, int plane )
-{
-    if( !desc || !desc->uv_planes_swapped || plane == 0 )
-        return plane;
-    return plane == 1 ? 2 : 1;
-}
-
 /* dst is the output frame. The picture_t itself is only read; the pixel
  * storage it points to is written through the plane view, so dst is const. */
 static scaler_process_status_t sws_process( scaler_ctx_t *ctx,
@@ -149,13 +140,15 @@ static scaler_process_status_t sws_process( scaler_ctx_t *ctx,
 
     for( int i = 0; i < src_view.plane_count && i < 4; i++ )
     {
-        const int plane = sws_plane_index( desc, i );
+        const int plane = up_chroma_physical_plane_index(
+            i, desc->uv_planes_swapped );
         src_data[i]   = src_view.plane[plane].pixels;
         src_stride[i] = src_view.plane[plane].pitch;
     }
     for( int i = 0; i < dst_view.plane_count && i < 4; i++ )
     {
-        const int plane = sws_plane_index( desc, i );
+        const int plane = up_chroma_physical_plane_index(
+            i, desc->uv_planes_swapped );
         dst_data[i]   = dst_view.plane[plane].pixels;
         dst_stride[i] = dst_view.plane[plane].pitch;
     }

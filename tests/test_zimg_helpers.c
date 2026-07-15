@@ -154,28 +154,6 @@ static void test_plane_geometry_extreme_height(void)
     END();
 }
 
-/* ---------- zimg_plane_idx ---------- */
-
-static void test_zimg_plane_idx_no_swap(void)
-{
-    BEGIN("zimg_plane_idx: swap=0 is identity");
-    CHECK_EQ(up_zimg_plane_idx(0, 0), 0);
-    CHECK_EQ(up_zimg_plane_idx(1, 0), 1);
-    CHECK_EQ(up_zimg_plane_idx(2, 0), 2);
-    CHECK_EQ(up_zimg_plane_idx(3, 0), 3);  /* untouched outside [0..2] */
-    END();
-}
-
-static void test_zimg_plane_idx_yv12_swap(void)
-{
-    BEGIN("zimg_plane_idx: swap=1 swaps U/V (planes 1,2)");
-    CHECK_EQ(up_zimg_plane_idx(0, 1), 0);  /* Y unchanged */
-    CHECK_EQ(up_zimg_plane_idx(1, 1), 2);  /* U <-> V */
-    CHECK_EQ(up_zimg_plane_idx(2, 1), 1);
-    CHECK_EQ(up_zimg_plane_idx(3, 1), 3);  /* untouched */
-    END();
-}
-
 /* ---------- copy_plane ---------- */
 
 static void test_copy_plane_same_stride(void)
@@ -609,9 +587,6 @@ int main(void)
     test_plane_lines_basic();
     test_plane_lines_odd_height();
     test_plane_geometry_extreme_height();
-
-    test_zimg_plane_idx_no_swap();
-    test_zimg_plane_idx_yv12_swap();
 
     test_copy_plane_same_stride();
     test_copy_plane_different_strides();
