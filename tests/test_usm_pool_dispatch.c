@@ -19,7 +19,7 @@ struct usm_pool_s {
     uint8_t sentinel;
 };
 
-static usm_pool_t stub_pool;
+static usm_pool_t stub_pool = { .sentinel = 0xA5 };
 
 /* Define the nine suffixed entry points the dispatcher binds to. They are
  * inert: the tests check selection and forwarding, never the kernels. */
@@ -76,6 +76,7 @@ static void test_public_api_forwards(void)
 
     usm_pool_t *pool = up_usm_pool_create(4, 64, 64, 8);
     CHECK(pool != NULL);
+    CHECK(pool->sentinel == 0xA5);
     uint8_t dst[16] = { 0 };
     const uint8_t src[16] = { 0 };
     CHECK(up_usm_pool_apply(pool, dst, 16, src, 16, 128) == 0);
