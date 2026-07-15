@@ -725,6 +725,13 @@ stress: $(BUILD)/stress_usm_pool $(BUILD)/stress_usm_pool_tsan
 # VLC + zimg headers and drive open/process/close on hand-built pictures (see
 # tests/zimg_test_util.h). Kept OUT of `make test` (which stays VLC-free);
 # run explicitly. Built only when libzimg was detected.
+.PHONY: require-zimg
+require-zimg:
+	@if [ -z "$(HAVE_ZIMG)" ]; then \
+	    echo "error: zimg support is required for this verification gate" >&2; \
+	    exit 2; \
+	 fi
+
 ifdef HAVE_ZIMG
 ZIMG_H_CFLAGS  := -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS) $(EXTRA_CFLAGS)
 ZIMG_H_LIBS    := $(VLC_LIBS) $(ZIMG_LIBS) -lpthread

@@ -43,6 +43,13 @@ jobs:
         run: |
           make plugin EXTRA_CFLAGS=-Werror
           make check-visibility EXTRA_CFLAGS=-Werror
+          make clean
+
+      - name: Build the VLC plugin without optional zimg (gcc, -Werror)
+        run: |
+          make plugin HAVE_ZIMG= EXTRA_CFLAGS=-Werror
+          make check-visibility HAVE_ZIMG= EXTRA_CFLAGS=-Werror
+          make clean
 
       # BUILD-4: also compile the shipped plugin under clang so clang-only
       # warnings and codegen don't go untested. -Wno-unreachable-code-generic-
@@ -76,7 +83,9 @@ jobs:
         run: make check EXTRA_CFLAGS=-Werror
 
       - name: zimg backend invariants (ASan + UBSan)
-        run: make test-zimg EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
+        run: |
+          make require-zimg
+          make test-zimg EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
 
       - name: Smoke fuzz (ASan + UBSan)
         run: make fuzz-smoke EXTRA_CFLAGS=-Werror
@@ -85,7 +94,9 @@ jobs:
         run: make stress EXTRA_CFLAGS=-Werror
 
       - name: zimg backend stress (ASan + UBSan + TSan)
-        run: make stress-zimg EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
+        run: |
+          make require-zimg
+          make stress-zimg EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
 
       # BUILD-5: the USM_POOL_FLAT_SKIP=1 code path only compiles in the
       # bench binaries; build (not run) them so that opt-in path can't rot.
