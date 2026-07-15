@@ -10,8 +10,8 @@
  * allocation failure, thread-spawn failure, per-slot construct failure under
  * both spawn policies, and a broken completion barrier.
  *
- * Fault injection: --wrap on aligned_alloc (slot arrays), pthread_create
- * (spawn), pthread_setcancelstate, and the barrier primitives
+ * Fault injection: --wrap on aligned_alloc (slot arrays), pthread_create/join
+ * (owned worker lifecycle), pthread_setcancelstate, and the barrier primitives
  * (tests/barrier_fault_inject.h).
  *****************************************************************************/
 
@@ -19,9 +19,7 @@
 #include "barrier_fault_inject.h"
 #include "test_harness.h"
 
-#include <dirent.h>
 #include <errno.h>
-#include <time.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -33,6 +31,8 @@ static atomic_int g_fail_aligned_alloc_nth;   /* 1-based; 0 = never */
 static atomic_int g_aligned_alloc_calls;
 static atomic_int g_spawn_budget;             /* -1 = unlimited */
 static atomic_int g_fail_cancel_state = -1;
+static atomic_int g_thread_create_calls;
+static atomic_int g_thread_join_calls;
 
 void *__real_aligned_alloc(size_t alignment, size_t size);
 void *__wrap_aligned_alloc(size_t alignment, size_t size)
@@ -56,7 +56,21 @@ int __wrap_pthread_create(pthread_t *th, const pthread_attr_t *attr,
     if (budget == 0) return EAGAIN;
     if (budget > 0)
         atomic_fetch_sub_explicit(&g_spawn_budget, 1, memory_order_relaxed);
-    return __real_pthread_create(th, attr, fn, arg);
+    const int rc = __real_pthread_create(th, attr, fn, arg);
+    if (rc == 0)
+        atomic_fetch_add_explicit(&g_thread_create_calls, 1,
+                                  memory_order_relaxed);
+    return rc;
+}
+
+int __real_pthread_join(pthread_t thread, void **retval);
+int __wrap_pthread_join(pthread_t thread, void **retval)
+{
+    const int rc = __real_pthread_join(thread, retval);
+    if (rc == 0)
+        atomic_fetch_add_explicit(&g_thread_join_calls, 1,
+                                  memory_order_relaxed);
+    return rc;
 }
 
 int __real_pthread_setcancelstate(int state, int *old_state);
@@ -76,6 +90,8 @@ static void fault_reset(void)
     atomic_store(&g_aligned_alloc_calls, 0);
     atomic_store(&g_spawn_budget, -1);
     atomic_store(&g_fail_cancel_state, -1);
+    atomic_store(&g_thread_create_calls, 0);
+    atomic_store(&g_thread_join_calls, 0);
 }
 
 /* ---------- fake owner ---------- */
@@ -201,31 +217,6 @@ static void check_run_counts(fake_pool_t *f, int expected)
     CHECK_EQ(atomic_load(&f->run_cancel_enabled), 0);
 }
 
-static long live_thread_count(void)
-{
-    DIR *d = opendir("/proc/self/task");
-    if (!d) return -1;
-    long n = 0;
-    for (const struct dirent *e = readdir(d); e; e = readdir(d))
-        if (e->d_name[0] != '.') n++;
-    closedir(d);
-    return n;
-}
-
-/* pthread_join returns once the thread has terminated, but the kernel task
- * entry can linger in /proc for a moment after that — poll instead of racing
- * it. Returns the count reached (== target on success). */
-static long await_thread_count(long target)
-{
-    const struct timespec tick = { .tv_sec = 0, .tv_nsec = 1000000 };  /* 1 ms */
-    long n = live_thread_count();
-    for (int i = 0; i < 2000 && n != target; i++) {
-        nanosleep(&tick, NULL);
-        n = live_thread_count();
-    }
-    return n;
-}
-
 /* ---------- tests ---------- */
 
 static void test_threaded_dispatch_cycles(void)
@@ -257,25 +248,26 @@ static void test_threaded_dispatch_cycles(void)
 }
 
 /* PERF-1: a one-worker pool spawns no thread and needs no gate — the work
- * runs on the calling thread. Counting /proc/self/task proves it directly. */
+ * runs on the calling thread. The create wrapper proves it directly. */
 static void test_single_worker_runs_inline(void)
 {
     BEGIN("single worker: no thread spawned, dispatch runs on the caller");
     fake_pool_t f;
     fake_init(&f, &partial_ops, 1);
 
-    const long before = live_thread_count();
     CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
     CHECK_EQ(up_worker_pool_inline(&f.pool), 1);
     CHECK_EQ(up_worker_pool_count(&f.pool), 1);
     CHECK_EQ(f.spawn_calls, 0);
-    CHECK_EQ(live_thread_count(), before);
+    CHECK_EQ(atomic_load(&g_thread_create_calls), 0);
 
     CHECK_EQ(up_worker_pool_dispatch(&f.pool), 0);
     check_run_counts(&f, 1);
     CHECK_EQ(up_pool_gate_ready(&f.pool.gate), 0);   /* no gate at all */
 
     up_worker_pool_destroy(&f.pool);
+    CHECK_EQ(atomic_load(&g_thread_create_calls), 0);
+    CHECK_EQ(atomic_load(&g_thread_join_calls), 0);
     END();
 }
 
@@ -440,20 +432,20 @@ static void check_gate_failure_poisons_and_stops(void (*inject)(void))
     fake_pool_t f;
     fake_init(&f, &partial_ops, 3);
     CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
-
-    const long with_workers = live_thread_count();
-    CHECK(with_workers >= 3);
+    CHECK_EQ(atomic_load(&g_thread_create_calls), 3);
+    CHECK_EQ(atomic_load(&g_thread_join_calls), 0);
 
     inject();
     CHECK_EQ(up_worker_pool_dispatch(&f.pool), -1);
     CHECK_EQ(barrier_fault_injection_consumed(), 1);
     CHECK_EQ(up_worker_pool_broken(&f.pool), 1);
-    /* Threads joined by the poison, not left parked on the gate. */
-    CHECK_EQ(await_thread_count(with_workers - 3), with_workers - 3);
+    CHECK_EQ(atomic_load(&g_thread_join_calls), 3);
 
     /* Poison is idempotent — Close() runs it again through destroy. */
     up_worker_pool_poison(&f.pool);
     up_worker_pool_destroy(&f.pool);
+    CHECK_EQ(atomic_load(&g_thread_create_calls), 3);
+    CHECK_EQ(atomic_load(&g_thread_join_calls), 3);
     CHECK_EQ(f.release_calls, 3);
 }
 
@@ -472,17 +464,18 @@ static void check_exit_failure_cancels_and_stops(void (*inject)(void))
     fake_pool_t f;
     fake_init(&f, &partial_ops, 3);
     CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
-
-    const long with_workers = live_thread_count();
-    CHECK(with_workers >= 3);
+    CHECK_EQ(atomic_load(&g_thread_create_calls), 3);
+    CHECK_EQ(atomic_load(&g_thread_join_calls), 0);
     inject();
     up_worker_pool_poison(&f.pool);
 
     CHECK_EQ(barrier_fault_injection_consumed(), 1);
-    CHECK_EQ(await_thread_count(with_workers - 3), with_workers - 3);
+    CHECK_EQ(atomic_load(&g_thread_join_calls), 3);
     CHECK_EQ(pthread_mutex_trylock(&f.pool.gate.lock), 0);
     CHECK_EQ(pthread_mutex_unlock(&f.pool.gate.lock), 0);
     up_worker_pool_destroy(&f.pool);
+    CHECK_EQ(atomic_load(&g_thread_create_calls), 3);
+    CHECK_EQ(atomic_load(&g_thread_join_calls), 3);
     CHECK_EQ(f.release_calls, 3);
 }
 

@@ -141,10 +141,12 @@ BARRIER_WRAP_LDFLAGS := -Wl,--wrap=pthread_cond_timedwait \
 # test_threading fault-injects condition initialization and deadline clocks.
 THREADING_WRAP_LDFLAGS := -Wl,--wrap=pthread_cond_init \
 	-Wl,--wrap=clock_gettime $(BARRIER_WRAP_LDFLAGS)
-USM_POOL_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc
-# worker_pool fault injection: allocation, spawn, and worker cancellation state.
+USM_POOL_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc \
+	-Wl,--wrap=pthread_create
+# worker_pool fault injection and owned thread-lifecycle accounting.
 WORKER_POOL_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc \
-    -Wl,--wrap=pthread_create -Wl,--wrap=pthread_setcancelstate
+	-Wl,--wrap=pthread_create -Wl,--wrap=pthread_join \
+	-Wl,--wrap=pthread_setcancelstate
 WORKER_POOL_FUZZ_WRAP_LDFLAGS := -Wl,--wrap=pthread_create
 # CONC-1: the lost-wake regression waits out the barrier deadline, so shrink it
 # from the shipped 10 s to something a test suite can afford.

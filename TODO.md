@@ -128,7 +128,6 @@ this technical domain; another business/domain pattern would not clarify it.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| REL-15 | open | S | `tests/test_usm_pool.c:363-402` and `tests/test_worker_pool.c:204-226,438-483` assert exact process-wide `/proc/self/task` deltas around owned workers. | ASan/runtime helper threads may appear or retire between snapshots; fresh repeated runs failed in both suites, including worker-pool expected 2/actual 1. Assert wrapped `pthread_create`/join accounting or owned pool state rather than global task counts. |
 | REL-16 | open | S | Documentation cross-references are stale: `docs/CINNAMON-DESKTOP-ACTIONS.md:117-127` sends users to `docs/USAGE.md` for a “full option table” although the complete 14-option table is at `README.md:109-127`; the README tree and corpus inventory (`README.md:520-529`; `docs/HOW_IT_WORKS.md:935-947`) omit the tracked/CI-run `corpus_scaler_seam`. | Point tuning readers at the actual option table and include the seam corpus/harness in the project and corpus inventories. |
 
 ## portability/standards conformance

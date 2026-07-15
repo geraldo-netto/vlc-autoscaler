@@ -19,9 +19,9 @@
 #include "barrier_fault_inject.h"
 #include "prng.h"   /* DUP-2: shared xorshift32 */
 
-#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdatomic.h>
@@ -32,6 +32,7 @@
 static atomic_int g_fail_next_aligned_alloc;
 static atomic_uint g_aligned_alloc_calls;
 static atomic_size_t g_max_aligned_alloc_size;
+static atomic_uint g_pthread_create_calls;
 
 void *__real_aligned_alloc(size_t alignment, size_t size);
 void *__wrap_aligned_alloc(size_t alignment, size_t size)
@@ -50,6 +51,27 @@ void *__wrap_aligned_alloc(size_t alignment, size_t size)
         return NULL;
     }
     return __real_aligned_alloc(alignment, size);
+}
+
+int __real_pthread_create(pthread_t *, const pthread_attr_t *,
+                          void *(*)(void *), void *);
+int __wrap_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
+                          void *(*start)(void *), void *arg)
+{
+    atomic_fetch_add_explicit(&g_pthread_create_calls, 1,
+                              memory_order_relaxed);
+    return __real_pthread_create(thread, attr, start, arg);
+}
+
+static void reset_pthread_create_calls(void)
+{
+    atomic_store_explicit(&g_pthread_create_calls, 0, memory_order_relaxed);
+}
+
+static unsigned pthread_create_call_count(void)
+{
+    return atomic_load_explicit(&g_pthread_create_calls,
+                                memory_order_relaxed);
 }
 
 static void fail_next_aligned_alloc(void)
@@ -362,19 +384,9 @@ static void test_default_policy_caps_useful_threads(void)
 
 /* PERF-1: a single-stripe pool must not spawn a thread at all — the whole
  * point is to skip the broadcast + sem round-trip (~7 us/dispatch, measured)
- * that buys nothing with one worker. Counting /proc/self/task entries proves
- * it directly; the byte-identity checks below prove the inline sweep produces
+ * that buys nothing with one worker. The pthread_create wrapper proves it
+ * directly; the byte-identity checks below prove the inline sweep produces
  * exactly what the threaded pool would have. */
-static long live_thread_count(void)
-{
-    DIR *d = opendir("/proc/self/task");
-    if (!d) return -1;
-    long n = 0;
-    for (const struct dirent *e = readdir(d); e; e = readdir(d))
-        if (e->d_name[0] != '.') n++;
-    closedir(d);
-    return n;
-}
 
 static void test_single_thread_runs_inline(void)
 {
@@ -383,9 +395,10 @@ static void test_single_thread_runs_inline(void)
     const int amount = up_usm_amount_pct_to_q8(30);
     static uint8_t buf[W * H];
 
-    const long before = live_thread_count();
+    reset_pthread_create_calls();
     usm_pool_t *p = up_usm_pool_create(1, W, H, 0);
     CHECK(p != NULL);
+    CHECK_EQ(pthread_create_call_count(), 0);
     if (!p) { END(); return; }
 
     /* The pool is lazy: the first apply is what would have spawned. Run
@@ -394,18 +407,17 @@ static void test_single_thread_runs_inline(void)
         CHECK(up_usm_pool_apply(p, buf, W, buf, W, amount) == 0);
 
     CHECK(up_usm_pool_effective_threads(p) == 1);
-    const long during = live_thread_count();
-    if (before > 0 && during > 0)
-        CHECK(during == before);   /* no worker thread was created */
+    CHECK_EQ(pthread_create_call_count(), 0);
 
     up_usm_pool_destroy(p);
-    CHECK(live_thread_count() == before);
+    CHECK_EQ(pthread_create_call_count(), 0);
 
     /* And the inline sweep is byte-identical to the threaded pool's output
      * (both already match the single-threaded oracle). */
     CHECK(run_compare(1, 640, 360, amount, 0x51) == 0);
     CHECK(run_compare_inplace(1, 640, 360, amount, 0x52) == 0);
     CHECK(run_compare(1, 63, 17, amount, 0x53) == 0);   /* odd dims */
+    CHECK_EQ(pthread_create_call_count(), 0);
     END();
 }
 
