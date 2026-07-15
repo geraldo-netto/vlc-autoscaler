@@ -1,736 +1,182 @@
-# AutoUpscale — Command Line Recipes
+# Usage and troubleshooting
 
-This document collects working VLC command lines for the autoupscale
-filter, with the **trade-offs** and **failure modes** of each.
+Start with the simplest command. Add overrides only to solve a measured problem.
 
-If a recipe doesn't work for your video, the [Diagnostic ladder](#diagnostic-ladder)
-at the bottom walks you through narrowing down the cause.
+## Playback
 
-## Quick table — which recipe should I use?
-
-| Situation | Recipe |
-|---|---|
-| **You want a sane default that just works** | [**Recipe 9: Quiet, stable upscaling**](#recipe-9-quiet-stable-upscaling-recommended-for-everyday-use) |
-| First time, just want it to work | [Recipe 1: Minimal](#recipe-1-minimal) |
-| You ran the recipe from the README and got recursion errors | [Recipe 2: Transcode bypass](#recipe-2-transcode-pipeline-bypassing-the-recursion-limit) |
-| You see occasional black screens | [Recipe 4: Without postproc](#recipe-4-without-postproc-recommended-default) |
-| Hardware-decoded source (VAAPI/VDPAU/4K source) | [Recipe 5: HW-decode safe](#recipe-5-hw-decode-safe) |
-| Maximum quality, you have CPU to spare | [Recipe 6: Quality-first](#recipe-6-quality-first) |
-| Low-latency live stream | [Recipe 7: Low-latency](#recipe-7-low-latency) |
-| You want to encode to a file, not display | [Recipe 8: Save to file](#recipe-8-save-to-file) |
-| Log is full of `pulse audio output warning` and dropped frames | [Reducing log noise](#reducing-log-noise-pulseaudio-clock-errors-and-frame-drops) |
-| Diagnosing a specific bug | [Diagnostic ladder](#diagnostic-ladder) |
-
----
-
-## Recipe 1: Minimal
-
-The simplest possible invocation. The filter sits in VLC's normal video
-filter chain and AUTO-detects target resolution.
+Direct VLC filter chain:
 
 ```sh
 vlc --video-filter=autoupscale path/to/video.mp4
 ```
 
-**What it does:**
-- Source is opened normally (HW decode if available, falls back to SW)
-- AutoUpscale picks the target: nothing if source ≥ 720p, otherwise 720p
-  or 1080p depending on source size and the 4× ratio cap
-- Output goes to the screen
+This is the lowest-overhead path. VLC may compensate for the filter's format
+change before display, however, so the renderer may not receive the enlarged
+frame dimensions.
 
-**When it works:**
-- Sub-720p source (the filter's design point)
-- Source chroma is one of I420, YV12, I422, I444, NV12, NV21, RGB24, RGBA,
-  or BGRA (VLC will normally download hardware chromas to a CPU format)
-
-**When it breaks:**
-- Hardware-decoded sources may hit `Too high level of recursion (3)` because
-  VLC's hardware-download and chroma-compensation chain around autoupscale can
-  exhaust the chain solver's depth. See [Recipe 2](#recipe-2-transcode-pipeline-bypassing-the-recursion-limit).
-- 4K-or-higher source: AutoUpscale bypasses (won't downscale), so
-  filter does nothing.
-
-**Why this isn't the default in the README:**
-This is the canonical form. The README's example uses `--sout` because it
-also avoids VLC's filter-chain depth limit at high resolutions, but for
-typical 480p→1080p use this is fine.
-
----
-
-## Recipe 2: Transcode pipeline (bypassing the recursion limit)
-
-This places `postproc` and AutoUpscale inside the transcode stage, whose filter
-chain is separate from the display chain, so VLC's `CHAIN_LEVEL_MAX=2` (error
-at level > 2 = 3) does not bite. If the source does not benefit from
-`postproc`, use Recipe 4.
+Transcode display path:
 
 ```sh
-vlc --autoupscale-threads=16 \
-    --postproc-q=6 \
-    --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,
-                       venc=x264{preset=ultrafast,tune=zerolatency},
-                       vfilter=postproc:autoupscale}:display' \
-    path/to/video.mp4
+vlc --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=autoupscale}:display' path/to/video.mp4
 ```
 
-**What it does:**
-- Transcodes the video stream through postproc → autoupscale → x264
-- Encoded H.264 + AAC are then displayed
-- Bypasses the `CHAIN_LEVEL_MAX=2` chroma-chain limit that affects the direct display path
+Use this when direct playback reports `Too high level of recursion (3)` or when
+the enlarged dimensions must reach the display. It adds a real-time encode and
+decode, so it costs more CPU. Keep audio in the same transcode pipeline to avoid
+parallel-path drift.
 
-**When it works:**
-- Most sub-720p content from MP4/MKV containers
-- Hardware-decoded sources (the recursion limit bites them but transcode is upstream)
-- Mixed-codec sources (audio re-encoded to AAC alongside video to H.264)
-
-**When it breaks:**
-- **`postproc filter warning: Quantification table was not set by video decoder.`**
-  appears on most ffmpeg-decoded sources. With frame-threaded H.264 (default),
-  postproc receives stale or missing QP data and may produce inconsistent
-  output, including occasional black or near-black frames during scene changes.
-  → Drop `postproc:` (see [Recipe 4](#recipe-4-without-postproc-recommended-default)).
-- **`picture is too late to be displayed (missing N ms)`** in the log means
-  the pipeline can't keep up. If the combined work exceeds the source's frame
-  budget, frames drop;
-  in worst cases the vout shows the previous buffer (often black).
-  → Use [Recipe 7](#recipe-7-low-latency) or lower target resolution.
-- **CPU usage is high.** This recipe adds host-dependent H.264 encoding work
-  on top of the upscale. If you don't need a re-encoded stream
-  (e.g. you're not network-streaming this), use [Recipe 1](#recipe-1-minimal) instead.
-
-**Tunable parameters:**
-- `--autoupscale-threads=N` — workers for the upscaler. The automatic policy
-  reserves capacity for VLC and other libraries. Set lower for more headroom,
-  or higher only after measuring the deployment workload.
-- `vb=10000` — video bitrate in kbps. Higher = better quality, more CPU.
-- `preset=ultrafast` — x264 speed/quality tradeoff. `ultrafast` is fastest
-  but lowest quality; `medium` is balanced; `slow` is high-quality but may
-  drop frames in real time.
-
----
-
-## Recipe 3: Pure display, target=1080p
-
-Skip transcode entirely. Rely on VLC's normal display chain. Works for
-most software-decoded sources.
+For damaged legacy video, test deblocking before scaling:
 
 ```sh
-vlc --video-filter=autoupscale \
-    --autoupscale-target=2 \
-    --autoupscale-threads=16 \
-    path/to/video.mp4
+vlc --postproc-q=6 --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=postproc:autoupscale}:display' path/to/video.mp4
 ```
 
-**What `--autoupscale-target=2` means:**
-- 0 = AUTO (default; never picks above 1080p; uses ratio cap)
-- 1 = 720p
-- 2 = 1080p
-- 3 = 1440p
-- 4 = 4K (3840×2160)
-- 5 = 5K (5120×2880)
-- 6 = 8K (7680×4320)
+Do not enable `postproc` by default. Missing decoder quantization data can make
+it ineffective or unstable, and clean sources do not benefit.
 
-**When it works:**
-- Software-decoded H.264/HEVC of any sub-target source
-- 480p → 1080p, 540p → 1080p, 720p → 1440p, etc.
-- One-pass real-time playback without re-encoding
+## Common profiles
 
-**When it breaks:**
-- Hardware-decoded sources at high target resolutions: chain depth limit
-  may fire. → Use [Recipe 5](#recipe-5-hw-decode-safe).
-- Display refresh > target fps causes some judder; not autoupscale's fault
-  but worth noting.
-
-**Trade-off vs Recipe 2:**
-- This recipe is **simpler and lower-CPU** (no re-encode).
-- This recipe **fails on more configurations** because it relies on VLC's
-  display chain rather than transcode chain.
-
----
-
-## Recipe 4: Without postproc (RECOMMENDED DEFAULT)
+Force 1080p:
 
 ```sh
-vlc --autoupscale-threads=16 \
-    --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,
-                       venc=x264{preset=ultrafast,tune=zerolatency},
-                       vfilter=autoupscale}:display' \
-    path/to/video.mp4
+vlc --video-filter=autoupscale --autoupscale-target=2 path/to/video.mp4
 ```
 
-(Same as [Recipe 2](#recipe-2-transcode-pipeline-bypassing-the-recursion-limit)
-but with **no `postproc:` prefix** in `vfilter=`.)
-
-**Why this is recommended over Recipe 2:**
-- `postproc` was originally meant for severely compressed legacy content
-  (DVD-era MPEG-2). On modern H.264/HEVC sources, it depends on
-  quantization tables that ffmpeg's threaded decoder doesn't always provide
-  in time. The result: a startup warning, and occasional output glitches.
-- AutoUpscale already produces a high-quality result via Spline36 + USM.
-  Running postproc first **fights** the upscaler — it deblocks edges that
-  the upscaler then has to reconstruct anyway.
-- Removing postproc usually **improves** perceived quality and removes
-  one source of intermittent black/garbage frames.
-
-**When you'd still want postproc:**
-- Source is genuinely low-quality MPEG-2 with visible blocking
-- Source is sub-DVD bitrate H.264 with heavy macroblocking
-- You've A/B-tested and verified postproc helps your specific content
-
----
-
-## Recipe 5: HW-decode safe
-
-For sources where VLC chooses VAAPI, VDPAU, or another hardware decoder
-and you hit `Too high level of recursion (3)`.
+Reduce work when playback misses its frame budget:
 
 ```sh
-vlc --avcodec-hw=none \
-    --autoupscale-threads=16 \
-    --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,
-                       venc=x264{preset=ultrafast,tune=zerolatency},
-                       vfilter=autoupscale}:display' \
-    path/to/video.mp4
+vlc --video-filter=autoupscale --autoupscale-target=1 --autoupscale-algo=1 --autoupscale-usm=0 path/to/video.mp4
 ```
 
-**What `--avcodec-hw=none` does:**
-- Forces VLC to use software decode regardless of available HW acceleration
-- Avoids VLC's hardware→software converter (one less filter in the chain)
-- Eliminates the chain-depth recursion that was caused by inserting that
-  converter ahead of autoupscale
-
-**Cost:**
-- Software decode adds host- and codec-dependent CPU work
-- High-resolution sources can become CPU-bound; use a smaller target
-- AutoUpscale's own multi-threading is unaffected
-
-**Alternative: patch VLC.** The repo ships
-`patches/vlc-3.0-raise-chain-level.patch` which raises `CHAIN_LEVEL_MAX`
-from 2 to 5 in `modules/video_chroma/chain.c`. If you build VLC yourself
-this is a permanent fix; if you use distro packages, the `--avcodec-hw=none`
-session workaround and Recipe 2's transcode-stage placement are available
-alternatives.
-
----
-
-## Recipe 6: Quality-first
-
-When you have CPU to spare and want the best output.
+Use conservative zimg buffer paths:
 
 ```sh
-vlc --autoupscale-threads=24 \
-    --autoupscale-target=2 \
-    --autoupscale-algo=3 \
-    --autoupscale-usm=50 \
-    --autoupscale-content-probe=1 \
-    --autoupscale-zerocopy-dst=0 \
-    path/to/video.mp4
+vlc --video-filter=autoupscale --autoupscale-backend=1 --autoupscale-zerocopy-src=0 --autoupscale-zerocopy-dst=0 path/to/video.mp4
 ```
 
-**What changed vs Recipe 1:**
-- `--autoupscale-algo=3` — Spline36 (the highest-quality resampler).
-  Default is already 3, this just makes it explicit.
-  - 0 = Bilinear (fastest, blurriest)
-  - 1 = Bicubic
-  - 2 = Lanczos
-  - 3 = Spline36 (recommended for upscaling)
-- `--autoupscale-usm=50` — stronger sharpening (default 20). Range 0-200.
-  At 50, edges are visibly crisper; at 100 it starts to look "digital";
-  at 200 it produces ringing.
-- `--autoupscale-content-probe=1` — diagnostic logging on. The probe
-  measures source detail and warns if upscaling a heavily-compressed
-  source is making it worse.
-- `--autoupscale-zerocopy-dst=0` — workers write to scratch buffers,
-  then copy out to VLC's destination picture. Slightly slower than
-  the default zero-copy path but eliminates a class of edge-case bugs
-  (see Recipe 9). Its source-side companion is `--autoupscale-zerocopy-src=0`
-  (copy each source stripe into scratch first); set both for the most
-  conservative path.
-
-**Cost:**
-- Any nonzero USM amount performs essentially the same convolution work;
-  50% changes strength, not the number of passes
-- Spline36 is already default, so no change there
-- The copy-out path adds one frame-sized memory copy; cost depends on host,
-  resolution, and memory pressure
-
-**When NOT to use this:**
-- Real-time playback of 60 fps source: budget too tight
-- 4K target: USM time scales with output size, not source
-
----
-
-## Recipe 7: Low-latency
-
-For live streams, RTSP, or very latency-sensitive playback.
+Disable hardware decode when VLC cannot construct the converter chain:
 
 ```sh
-vlc --file-caching=300 \
-    --network-caching=300 \
-    --clock-jitter=0 \
-    --clock-synchro=0 \
-    --autoupscale-threads=8 \
-    --autoupscale-usm=0 \
-    --video-filter=autoupscale \
-    rtsp://your.stream/here
+vlc --avcodec-hw=none --video-filter=autoupscale path/to/video.mp4
 ```
 
-**What each option does:**
-- `--file-caching=300` and `--network-caching=300` — request 300 ms of
-  input buffering. Distro/build defaults vary, so compare against your VLC
-  configuration rather than assuming one universal baseline.
-- `--clock-jitter=0 --clock-synchro=0` — disable VLC's clock-drift correction.
-  Better for live streams where the source clock IS the truth.
-- `--autoupscale-threads=8` — fewer workers means lower per-frame overhead
-  from thread dispatch (the synchronization is small but non-zero)
-- `--autoupscale-usm=0` — disables sharpening entirely. The plugin never
-  creates or calls the USM pool, so there is no USM worker or scratch setup.
-
-**Cost:**
-- Lower buffering means more sensitive to network jitter; if your source
-  has bursty delivery, you'll get more dropped frames
-- Disabling sharpening loses image quality
-
-**Trade-off:** lower buffering and disabled USM reduce latency and work, but
-the exact latency and quality change depend on the source, network, and VLC
-build. Measure with the stream you care about.
-
----
-
-## Recipe 8: Save to file
-
-Encode the upscaled video to a file instead of displaying.
+Write an upscaled file:
 
 ```sh
-vlc -I dummy --no-audio \
-    --autoupscale-threads=24 \
-    --autoupscale-target=2 \
-    --sout='#transcode{vcodec=h264,vb=12000,
-                       venc=x264{preset=medium,crf=18},
-                       vfilter=autoupscale}:standard{access=file,mux=mp4,dst=output.mp4}' \
-    --play-and-exit \
-    path/to/input.mp4
+vlc -I dummy --no-audio --autoupscale-target=2 --sout='#transcode{vcodec=h264,vb=12000,venc=x264{preset=medium,crf=18},vfilter=autoupscale}:standard{access=file,mux=mp4,dst=output.mp4}' --play-and-exit path/to/input.mp4
 ```
 
-**What changed:**
-- `-I dummy` — no GUI, runs in headless mode
-- `--no-audio` — skip audio entirely (add it back with the audio transcode
-  options from Recipe 2 if you want sound)
-- `preset=medium crf=18` — slower but much higher quality x264 settings
-  than ultrafast (which is for real-time). `crf=18` is roughly visually
-  lossless; `crf=23` is a smaller file at default quality.
-- `standard{access=file,mux=mp4,dst=output.mp4}` — write to disk
-- `--play-and-exit` — quit when done
-
-**When it works:**
-- Any input file that VLC can play
-- Encoding speed is determined by `preset=` and must be measured on the target
-  machine with representative content.
-
-**Verifying output:**
-```sh
-# Check resolution
-ffprobe -v error -select_streams v:0 \
-    -show_entries stream=width,height,r_frame_rate output.mp4
-
-# Compute MD5 of decoded frames (compare across runs)
-ffmpeg -hide_banner -loglevel error -i output.mp4 -f md5 -
-```
-
----
-
-## Diagnostic ladder
-
-When something's broken — black screens, freezes, garbage output, no upscale —
-run these recipes **in order** and note where the symptom changes. That
-isolates which component is at fault.
-
-### Step 1: Bypass autoupscale entirely
+Verify its dimensions:
 
 ```sh
-vlc --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,
-                       venc=x264{preset=ultrafast,tune=zerolatency}}:display' \
-    path/to/video.mp4
+ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate output.mp4
 ```
 
-- **If symptom persists** → autoupscale is innocent; the bug is in
-  VLC's decoder, transcoder, or vout. File a bug with VLC, not us.
-- **If symptom goes away** → autoupscale or its filter chain is involved.
-  Continue to step 2.
+## Tuning order
 
-### Step 2: Add autoupscale, no postproc
+When the performance advisory appears, change one setting at a time:
+
+1. `--autoupscale-algo=2` for Lanczos.
+2. `--autoupscale-algo=1` for bicubic.
+3. `--autoupscale-usm=0` to remove sharpening work.
+4. `--autoupscale-backend=2` to force swscale.
+5. `--autoupscale-target=1` to force 720p.
+
+Leave `--autoupscale-threads=0` unless same-host measurements show a better
+value. More workers can increase dispatch, cache, and memory-bandwidth costs.
+Pinning is for measured dedicated-host cases, not ordinary desktop playback.
+
+## Diagnose output failures
+
+Run these checks in order with the same input:
+
+1. Confirm VLC works without the plugin:
+
+   ```sh
+   vlc path/to/video.mp4
+   ```
+
+2. Enable only AutoUpscale:
+
+   ```sh
+   vlc --video-filter=autoupscale path/to/video.mp4
+   ```
+
+3. Force zimg and disable direct picture access:
+
+   ```sh
+   vlc --video-filter=autoupscale --autoupscale-backend=1 --autoupscale-zerocopy-src=0 --autoupscale-zerocopy-dst=0 path/to/video.mp4
+   ```
+
+4. Remove concurrency and USM:
+
+   ```sh
+   vlc --video-filter=autoupscale --autoupscale-backend=1 --autoupscale-threads=1 --autoupscale-target=1 --autoupscale-usm=0 --autoupscale-zerocopy-src=0 --autoupscale-zerocopy-dst=0 path/to/video.mp4
+   ```
+
+Interpretation:
+
+- Failure without the plugin points to VLC, decoding, output, or the input.
+- Success with copy paths points to source or destination zero-copy handling.
+- Success with one worker points to grid/thread behavior or throughput.
+- Success without USM points to the sharpening path.
+- Forced zimg declining means the build or chroma does not support zimg; repeat
+  the baseline with backend `2` to test swscale.
+
+Capture a private diagnostic log:
 
 ```sh
-vlc --autoupscale-threads=16 \
-    --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,
-                       venc=x264{preset=ultrafast,tune=zerolatency},
-                       vfilter=autoupscale}:display' \
-    path/to/video.mp4
+log=$(mktemp "${TMPDIR:-/tmp}/autoupscale.XXXXXX")
+chmod 600 "$log"
+vlc --verbose=2 --video-filter=autoupscale path/to/video.mp4 2>&1 | tee "$log"
+grep -iE 'autoupscale|filter|chroma|recursion|error|fail|warning' "$log"
 ```
 
-- **If symptom appears** → bug is in autoupscale itself. Continue to step 3.
-- **If symptom is gone** → bug was caused by postproc (the most common
-  culprit, see [Recipe 4](#recipe-4-without-postproc-recommended-default)).
-  You're done.
+Include the exact command, plugin commit, VLC version, source dimensions/chroma,
+engagement line, and relevant errors in a bug report. Remove or redact media
+paths, URLs, and credentials before sharing the log.
 
-### Step 3: Force zimg and disable zero-copy
+## Known VLC interactions
 
-The zero-copy switches affect only zimg. First confirm the engagement log says
-`backend=zimg`, then force zimg and disable both sides to rule out its direct
-buffer paths. If forced zimg declines, this diagnostic does not apply to that
-source/build.
+### Hardware decode
+
+The plugin cannot read opaque GPU surfaces. It declines them so VLC can insert
+a CPU-readable conversion and retry. If chain construction fails, use the
+transcode display path or `--avcodec-hw=none`. The optional
+`patches/vlc-3.0-raise-chain-level.patch` raises VLC 3.0's converter-chain limit
+for users who build VLC themselves; it does not prevent the direct display
+chain from resizing output again.
+
+### Audio drift and late frames
+
+First determine whether processing is slower than the source frame budget. If
+so, use the tuning order above. If the issue persists without AutoUpscale, fix
+the VLC/audio path instead. Caching can absorb startup or input jitter but
+cannot fix sustained throughput:
 
 ```sh
-vlc --autoupscale-threads=16 \
-    --autoupscale-backend=1 \
-    --autoupscale-zerocopy-dst=0 \
-    --autoupscale-zerocopy-src=0 \
-    --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,
-                       venc=x264{preset=ultrafast,tune=zerolatency},
-                       vfilter=autoupscale}:display' \
-    path/to/video.mp4
+vlc --file-caching=3000 --network-caching=3000 path/to/video.mp4
 ```
 
-- **If symptom appears** → bug is in autoupscale's core path (not
-  zerocopy-specific). Continue to step 4.
-- **If symptom is gone** → bug is in a zero-copy path. Narrow it by
-  re-enabling one side at a time (`zerocopy-dst=1` then `zerocopy-src=1`);
-  keep the offending side at 0 as a workaround. File a bug report with the
-  verbose log; we'd want to investigate.
+Choose the correct audio device in VLC or with your PipeWire/PulseAudio tools.
+Do not use compressor gain as a substitute for an unmuted output stream.
 
-### Step 4: Single thread, lowest target
+### Plugin not engaged
+
+Check registration and verbose logs:
 
 ```sh
-vlc --autoupscale-threads=1 \
-    --autoupscale-backend=1 \
-    --autoupscale-target=1 \
-    --autoupscale-zerocopy-dst=0 \
-    --autoupscale-zerocopy-src=0 \
-    --autoupscale-usm=0 \
-    --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,
-                       venc=x264{preset=ultrafast,tune=zerolatency},
-                       vfilter=autoupscale}:display' \
-    path/to/video.mp4
+vlc --list | grep autoupscale
+vlc --verbose=2 --video-filter=autoupscale path/to/video.mp4
 ```
 
-- **If symptom appears** → bug is in the deterministic core (no threading,
-  no USM, simplest target). Capture full `--verbose=2` output and file a
-  bug report. This is rare — the unit tests + concurrency stress tests
-  cover this path heavily.
-- **If symptom is gone** → narrow further: enable threads OR USM OR higher
-  target one at a time to isolate which dimension triggers it.
-
-### Step 5: Capture diagnostic info
-
-If you've reached this step, please include in any bug report:
-
-```sh
-vlc --verbose=2 [your-failing-command] 2>&1 | tee /tmp/autoupscale.log
-grep -iE "autoupscale|filter|chroma|recursion|error|fail|warning" /tmp/autoupscale.log
-```
-
-We want to see:
-- Source chroma fourcc (look for `source chroma:` lines)
-- The `AutoUpscale engaged: ...` line confirming dimensions and backend
-- Any `filter chain:` messages
-- Any errors or warnings
-- Whether `postproc filter warning: Quantification table` appears
-
----
-
-## Audio: starting at full volume
-
-VLC 3.x doesn't have a `--volume=N` option (it was deprecated in 2.1).
-Volume is controlled by the audio output plugin (PulseAudio in your case)
-plus VLC's saved-volume-on-exit behavior. Three ways to fix audio
-starting at 0%:
-
-### Method 1 (recommended): Edit `~/.config/vlc/vlcrc`
-
-Find or add these lines:
-
-```ini
-# Don't save the GUI volume when VLC exits — start at the saved baseline
-# every time
-qt-autosave-volume=0
-```
-
-Restart VLC, set the volume to 100% manually once via the slider, exit.
-The next session will start at 100%. (With `qt-autosave-volume=0`, VLC
-won't lower the saved baseline when you exit at 0%, so this only matters
-for one round trip.)
-
-### Method 2: Per-app volume in PulseAudio
-
-PulseAudio remembers per-app volume separately from VLC's slider. If
-PulseAudio remembers VLC at 0%, no VLC option fixes it — you have to
-reset it at the audio server level:
-
-```sh
-# Find VLC's stream in PulseAudio
-pactl list sink-inputs | grep -B2 -A20 vlc
-
-# Reset its volume to 100% (use the index from above)
-pactl set-sink-input-volume <index> 100%
-
-# Or set the per-app default for VLC permanently:
-pactl set-sink-input-mute <index> 0
-```
-
-### Method 3: `--gain` (workaround, not a real volume control)
-
-`--gain=N` adds compressor pre-amp. Range 0.0-8.0; 1.0 is unity.
-
-```sh
-vlc --gain=1.0 [other options] path/to/video.mp4
-```
-
-**Caveats:**
-- This is the COMPRESSOR pre-amp, not the volume slider. If the slider is
-  at 0%, gain doesn't help (0 × anything = 0).
-- Gain values > 2.0 cause clipping/distortion on most content.
-- Most useful for boosting genuinely quiet audio, not for fixing a 0%
-  startup volume.
-
-### Why your audio "starts at 0"
-
-Your log shows VLC connecting to a Bluetooth sink:
-
-```
-pulse audio output debug: changing sink 6947: bluez_output.F4_4E_FD_01_53_0F.1 (BW01)
-```
-
-Bluetooth devices in PulseAudio often have their own remembered volume
-that's separate from VLC's slider. The combination "VLC slider at 100%"
-+ "Bluetooth sink remembered at 0% from last connection" produces silence.
-Use **Method 2** (`pactl set-sink-input-volume`) — it's the only level
-that lets you set the per-device volume directly.
-
----
-
-## Reducing log noise: PulseAudio clock errors and frame drops
-
-If you see message floods like these in your VLC log:
-
-```
-pulse audio output warning: starting late (<invalid timestamp>)
-main audio output warning: playback way too late (...): flushing buffers
-vlcpulse audio output debug: write index corrupt
-pulse audio output debug: cannot synchronize start
-pulse audio output debug: deferring start (<invalid timestamp>)
-pulse audio output debug: underflow
-main audio output warning: playback way too early (<invalid timestamp>): playing silence
-avcodec decoder warning: late frames, dropping frame
-```
-
-…the extreme timestamp values are not real timing measurements — they are
-symptoms of a **broken audio clock**.
-VLC computes "lateness = expected − now" and gets nonsense, retries,
-underflows, recovers, and the video decoder drops frames trying to
-keep up with the wandering audio clock.
-
-This is a VLC / PulseAudio / source-file interaction; it's **not**
-caused by autoupscale. The plugin doesn't touch audio or timestamps.
-But there are several flags that quiet the noise and stabilize playback.
-
-> **Note on master-clock control:** VLC 4.x adds a runtime
-> `--clock-master=` option that lets you make video the canonical
-> clock (audio resamples to follow). VLC 3.x — including 3.0.20 — does
-> **not** expose this; the master is fixed to audio when audio is
-> present. If you're on VLC 4.x you can use it; on 3.x the only
-> levers are the ones below.
-
-### Approach 1: Switch audio output to ALSA (bypass PulseAudio)
-
-Most of the `pulse audio output` and `vlcpulse` messages come from
-PulseAudio's clock-sync layer. Going direct to ALSA skips that entire
-stack:
-
-```sh
-vlc --aout=alsa ...
-```
-
-Or persistently in `~/.config/vlc/vlcrc`: `aout=alsa`.
-
-Trade-off: you lose PulseAudio's per-app routing and Bluetooth
-support, but you also stop having PulseAudio's bugs reported to you.
-ALSA's clock is taken directly from the sound card, which doesn't
-suffer the same desync problems.
-
-### Approach 2: Increase caching to absorb clock jitter
-
-```sh
-vlc --file-caching=2000 --network-caching=2000 ...
-```
-
-Requesting 2 seconds gives the audio pipeline more headroom before declaring
-underflow; the default varies by VLC build and input type. This doesn't
-fix the root cause but reduces the rate of complaints.
-
-### Approach 3: Enable audio time-stretching
-
-```sh
-vlc --audio-time-stretch ...
-```
-
-When the audio clock drifts, VLC speeds up or slows down audio
-playback (without changing pitch) to stay aligned with video. This
-is enabled by default in some VLC builds and disabled in others —
-explicitly turning it on prevents the frame-drop cascade in many
-cases. Negligible CPU cost.
-
-### Approach 4: Compensate fixed audio desync
-
-If your source file has a constant audio offset, give VLC the
-correction directly (in milliseconds):
-
-```sh
-vlc --audio-desync=50 ...    # play audio 50 ms LATER than video
-vlc --audio-desync=-100 ...  # play audio 100 ms EARLIER than video
-```
-
-This doesn't help with random clock jitter, but it does help if your
-log shows a **consistent** "way too late by N seconds" value across
-playbacks of the same file.
-
-### Approach 5: Lower verbosity (suppress messages without fixing them)
-
-Most of those messages are at warning or debug level. They show up
-when you run with `--verbose=1` or `--verbose=2`:
-
-```sh
-vlc ...                # no --verbose flag: only errors shown
-vlc --verbose=0 ...    # explicit
-vlc --quiet ...        # equivalent to --verbose=0
-```
-
-If you didn't pass `--verbose=2` but still see them, check
-`~/.config/vlc/vlcrc` for a `verbose=2` line.
-
-### Approach 6: Disable audio entirely (if you don't need it)
-
-```sh
-vlc --no-audio ...
-```
-
-Kills the audio pipeline — no audio clock to be broken, no decoder
-racing to keep up with it. Frame dropping stops because video uses
-its own clock. This is what every test command in this codebase
-uses; it's the most certain way to eliminate the entire class of
-warning.
-
-### Approach 7: Confirm autoupscale isn't contributing
-
-Quick sanity check that the filter isn't the cause:
-
-```sh
-vlc --no-video-filter your_video.mp4
-```
-
-If frame drops persist without the filter, the cause is upstream
-(decoder, demuxer, audio pipeline). If they vanish without the filter
-and reappear with it, you may be:
-
-- Targeting too high a resolution for your CPU at the source's
-  framerate. Lower `--autoupscale-target` (try `=2` for 1080p or
-  `=1` for 720p).
-- Running an unexpectedly low ISA baseline. A default
-  `MARCH=native MULTIVERSION=0` build reports `simd=default`; a
-  `MULTIVERSION=1` build reports `simd=avx512`, `avx2`, or `sse2`.
-  Check the build flags before treating the label as a performance problem.
-
----
-
-## Recipe 9: Quiet, stable upscaling (recommended for everyday use)
-
-A starting-point invocation that combines autoupscale's tested defaults
-with the noise mitigations from above. This is verified to start cleanly
-in VLC 3.0.20.
-
-```sh
-vlc \
-  --aout=alsa \
-  --audio-time-stretch \
-  --file-caching=2000 \
-  --network-caching=2000 \
-  --no-stats \
-  --verbose=0 \
-  --autoupscale-target=0 \
-  --autoupscale-threads=0 \
-  --autoupscale-content-probe=1 \
-  --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast},vfilter=autoupscale}:display' \
-  /path/to/your/video.mp4
-```
-
-**What each flag does:**
-
-| Flag | Why |
-|---|---|
-| `--aout=alsa` | Bypass PulseAudio's clock-sync layer. Eliminates `vlcpulse` warnings entirely. Drop this if you need Bluetooth or per-app PulseAudio routing — leave it in if you're tired of the warnings and have ALSA configured. |
-| `--audio-time-stretch` | Audio adjusts to track the input PTS instead of forcing video to chase a wandering audio clock. Reduces the frame-drop cascade when timestamps drift. |
-| `--file-caching=2000` | Request a 2-second file buffer; the VLC/build default varies. |
-| `--network-caching=2000` | Same buffer for network sources. |
-| `--no-stats` | Suppresses end-of-playback statistics dump. |
-| `--verbose=0` | Only show actual errors; hide warnings and debug. |
-| `--autoupscale-target=0` | AUTO mode — picks 720p or 1080p based on source. Never goes above 1080p in AUTO. |
-| `--autoupscale-threads=0` | Auto policy, counting only CPUs allowed by the process's taskset/cgroup affinity and reserving capacity for the rest of the media pipeline. |
-| `--autoupscale-pin-threads=0` | Off by default. `1` pins scaler workers across the exact allowed CPU IDs (Linux, best-effort) — only worth it on a dedicated high-core/NUMA transcode box where you measured a gain; can hurt on a shared desktop. |
-| `--autoupscale-content-probe=1` | Enables the observe-only advisory after the fixed initial observation window. Setting it to 0 suppresses the advisory; metrics still run when the USM sharpness threshold needs them. |
-| `#transcode{...}:display` | Re-encode in a single pipeline, then display. Avoids the recursion mode that `vfilter=` directly into display sometimes hits. |
-| `vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast}` | Encode video with x264 ultrafast and keep audio in the same pipeline via AAC. Actual frame cost is host- and content-dependent. |
-
-**For file output instead of display**, replace `:display` with:
-
-```
-:standard{access=file,mux=mp4,dst=/path/to/output.mp4}
-```
-
-**For target other than AUTO**, replace `--autoupscale-target=0` with:
-
-| Value | Meaning |
-|---|---|
-| `1` | force 720p |
-| `2` | force 1080p |
-| `3` | force 1440p |
-| `4` | force 4K |
-| `5` | force 5K |
-| `6` | force 8K |
-
-Note that targets above 1080p require source ≥ 1/4 the target height
-(the ratio cap) and significant CPU. Verify the chosen target with the
-engagement log and end-of-playback frame-drop count.
-
-**If you need the chain-recursion fix**, apply
-`patches/vlc-3.0-raise-chain-level.patch` to your VLC source and
-rebuild — that's a compile-time patch that raises the internal
-`CHAIN_LEVEL_MAX` constant, not a runtime flag. See [Recipe 2](#recipe-2-transcode-pipeline-bypassing-the-recursion-limit)
-for context on when this is needed.
-
-**Verifying it's working:** the engagement log line shows up at
-`--verbose=2` (above we suppressed it). To confirm autoupscale ran:
-
-```sh
-vlc --verbose=2 [rest of args] 2>&1 | grep "AutoUpscale engaged"
-```
-
-Expected output includes the negotiated geometry and live configuration:
-
-```
-AutoUpscale engaged: <source> -> <target> (backend=... preset=... algo=... \
-  usm=... fps_target=... threads_budget=... cores=... mem=... simd=...)
-```
-
-`simd=default` is expected for the default single-baseline
-`MARCH=native MULTIVERSION=0` build. With `MULTIVERSION=1`, the label reports
-the runtime choice (`avx512`, `avx2`, or `sse2`).
-
----
-
-## See also
-
-- [README.md](../README.md) — install, build, and quick start
-- [docs/HOW_IT_WORKS.md](HOW_IT_WORKS.md) — internal design, threading
-  model, perfmon, content probe
-- [Cinnamon/Nemo desktop integration](CINNAMON-DESKTOP-ACTIONS.md) — install
-  a separate AutoUpscale launcher, Open With entry, and right-click action
-- [patches/](../patches/) — optional VLC source patches
+AUTO intentionally declines sources at or above `skip-above` (720p by default),
+plans that would downscale, and incompatible chromas. Use an explicit target
+only when you intend to process a source above the AUTO threshold.
+
+## Related guides
+
+- [Configuration and build reference](../README.md)
+- [Architecture](ARCHITECTURE.md)
+- [Performance and benchmarking](BENCHMARKS.md)
+- [Cinnamon/Nemo integration](DESKTOP_INTEGRATION.md)

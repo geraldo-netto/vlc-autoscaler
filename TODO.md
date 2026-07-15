@@ -1,30 +1,20 @@
 # TODO — full-project audit findings
 
-Full-project rescan of the working tree based on HEAD `33b67fe` on 2026-07-15.
-Scope: all 261 tracked project files, including production source/public headers,
-tests and fuzzers, all 162 tracked corpus seeds, build/release configuration, CI,
-scripts, documentation, and patches. Corpus payload sizes and formats were
-checked against their harness parsers. Excluded only `.git`, ignored/generated
-build output, and cache files/directories; no tracked project file was excluded.
-The working tree was clean at scan start.
+Full-project rescan of HEAD `7b81245` plus the documentation working tree on
+2026-07-15. Scope: every production source/public header, test, fuzzer and
+corpus seed, build/release file, workflow, script, document, and patch. Excluded
+only `.git`, ignored/generated build output, and caches.
 
-Validation: full manual inspection across every category; GCC C11 unit/contract
-tests with `-Werror`, ASan, and UBSan; all deterministic fuzz-smoke targets with
-`CLANG=gcc`; benchmark builds; declared-shell syntax checks; relative Markdown
-link validation; and Lizard 1.17.31 over `src/` plus `tests/` (924 functions,
-zero CCN > 10) in the preceding full scan. The 2026-07-15 refresh reran the
-complete GCC unit/contract suite with `-Werror` and declared-interpreter shell
-syntax checks; both passed. Lizard was unavailable during the refresh, so its
-recorded result could not be independently repeated. Repeated sanitizer runs
-reproduced process-wide thread-count flakes, and GCC `-fanalyzer` corroborated
-test OOM paths. The mandatory coverage
-target currently fails one per-function gate. The default fuzz-smoke invocation
-also cannot start without Clang, while the same targets pass with GCC. Local
-plugin and zimg verification could not start because their SDK metadata is
-absent. GCC-built ASan/UBSan stress passed all 27 configurations; its TSan
-binary compiled but the local runtime aborted on an unsupported memory mapping.
-Clang-specific checks, cppcheck, clang-tidy/scan-build, ShellCheck, and actionlint
-were unavailable. Row format:
+Validation: refreshed manual inspection across every category; GCC C11
+unit/contract tests with `-Werror`, ASan, and UBSan; every deterministic
+fuzz-smoke target with `CLANG=gcc`; declared-interpreter shell syntax; relative
+Markdown links; unsafe-API and temporary-path searches; and review of all
+changes since the preceding full scan. The preceding scan's benchmark builds,
+coverage, stress, corpus-parser checks, and Lizard 1.17.31 result (924
+functions, zero CCN > 10) remain applicable to unchanged code. Local VLC/zimg
+SDK metadata is absent, and cppcheck, Lizard, clang-tidy/scan-build, ShellCheck,
+actionlint, and markdownlint were unavailable, so those checks were not rerun.
+Row format:
 `id | status | effort | description | notes`.
 
 ## security
@@ -32,7 +22,6 @@ were unavailable. Row format:
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | SEC-2 | open | M | CI installs an unpinned PyPI `lizard` package and downloads a mutable Sonar build-wrapper ZIP without integrity verification (`.github/workflows/ci.yml:32-36,206-226`). | Pin the Python package version and hash; pin the wrapper artifact and verify its published checksum/signature before extraction and execution. |
-| SEC-4 | open | S | The troubleshooting recipe writes verbose VLC output to the fixed path `/tmp/autoupscale.log` (`docs/USAGE.md:423-430`). | A normally created log is world-readable and the predictable name permits symlink or concurrent clobbering; verbose output can expose media paths and URL credentials. Create a mode-0600 file with `mktemp`, store its path in a variable, and reuse that variable in both commands. |
 | SEC-5 | open | S | `tests/test_install_action.sh:5-37` creates a predictable `${TMPDIR:-/tmp}/vlc-autoscaler-install-test.$$` tree, recursively removes it, writes executable `PATH` stubs there, and invokes the installer. | In a shared temporary directory an attacker can pre-create or race components to redirect writes or swap the executed stub. Use `mktemp -d` (mode 0700), arm cleanup only after creation, and make signal traps clean up and exit. |
 
 No additional security issue was found in the production media/configuration
@@ -129,6 +118,7 @@ this technical domain; another business/domain pattern would not clarify it.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| REL-17 | open | S | `tests/test_usm_pool_dispatch.c:78-79` checks `pool != NULL` with the non-terminating `CHECK` macro, then unconditionally dereferences `pool->sentinel`; cppcheck fails CI with `nullPointerRedundantCheck`. | Guard the dereference in the same short-circuit expression or return after recording a null result. Run `make analyze` to confirm cppcheck and the subsequent Clang analyzer both execute. |
 
 ## portability/standards conformance
 
@@ -171,7 +161,7 @@ plugin link could not be repeated locally because the required SDKs are absent.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| BUILD-1 | open | S | CI's Clang step builds only `MULTIVERSION=0` and omits Clang visibility verification (`.github/workflows/ci.yml:47-73`), while README claims Clang support for SIMD variants (`README.md:625-626`). | Build and link both Clang configurations, then run visibility and linked-ISA gates under Clang too. |
+| BUILD-1 | open | S | CI's Clang step builds only `MULTIVERSION=0` and omits Clang visibility verification (`.github/workflows/ci.yml:60-68`), while the compatibility contract supports Clang (`README.md:120-123`). | Build and link both Clang configurations, then run visibility and linked-ISA gates under Clang too. |
 | BUILD-6 | open | S | Empty `VLC_PLUGIN_BASE` becomes non-empty `/video_filter` (`Makefile:44-45`), while install/uninstall validate only the derived value and use unquoted paths (`Makefile:998-1009`). | Validate a non-empty base in both targets before deriving the subdirectory, and quote every destination. |
 | BUILD-7 | open | S | The Sonar job runs for every pull request but requires `SONAR_TOKEN` (`.github/workflows/ci.yml:3-8,187-255`); fork pull requests do not receive repository secrets. | Gate Sonar to pushes/internal pull requests while retaining token-free build checks for forks. |
 | BUILD-11 | open | S | `PLUGIN_GOALS` omits the standalone `abi-layout-check` and `check-visibility` goals (`Makefile:50-59` versus `:283-325`). | Direct invocation without SDKs bypasses the friendly prerequisite check and fails deep in compilation. Add both goals to `PLUGIN_GOALS`. |
