@@ -169,7 +169,6 @@ exports only the expected VLC entry points.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | OBS-2 | open | S | Help and state comments say `target-fps=0` disables performance monitoring (`src/autoupscale.c:123-127,298-300`; `README.md:118,179-181`), but EWMA/stat monitoring remains active and only the advisory is disabled (`src/perfmon.h:61-71,102-134`). | Change help/docs to “disable the performance advisory” and keep the telemetry behavior explicit. |
-| OBS-3 | open | S | Actionable swscale failures, USM allocation failure, and stat-variable creation failure use `msg_Warn` (`src/scaler_swscale.c:35-41,136-173`; `src/autoupscale.c:575-586,658-675`), although this project treats that level as hidden by VLC 3's default verbosity; the visible outer scaler message is generic (`src/autoupscale.c:1167-1178`). | Promote these material, bounded-frequency degradation messages to the visible one-shot level so the specific lost feature/reason is observable. |
 
 ## wiring gaps
 

@@ -2,13 +2,40 @@
 #include <vlc_common.h>
 #include <vlc_picture.h>
 
-#undef msg_Dbg
-#define msg_Dbg(obj, ...) ((void)(obj))
-
-#include "../src/scaler_swscale.c"
-
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+
+static int g_info_calls;
+static int g_warn_calls;
+static char g_last_log[256];
+
+static void capture_log(int info, void *obj, const char *format, ...)
+{
+    (void)obj;
+    if (info) g_info_calls++;
+    else      g_warn_calls++;
+    va_list ap;
+    va_start(ap, format);
+    (void)vsnprintf(g_last_log, sizeof g_last_log, format, ap);
+    va_end(ap);
+}
+
+static void reset_logs(void)
+{
+    g_info_calls = 0;
+    g_warn_calls = 0;
+    g_last_log[0] = '\0';
+}
+
+#undef msg_Dbg
+#define msg_Dbg(obj, ...) ((void)(obj))
+#undef msg_Info
+#define msg_Info(obj, ...) capture_log(1, (obj), __VA_ARGS__)
+#undef msg_Warn
+#define msg_Warn(obj, ...) capture_log(0, (obj), __VA_ARGS__)
+
+#include "../src/scaler_swscale.c"
 
 /* cppcheck-suppress unusedStructMember ; keeps the stub struct non-empty */
 struct SwsContext { int tag; };
@@ -181,10 +208,18 @@ static void test_process_status_and_forwarding(void)
         CHECK(g_dst[i] == &dst_data[i] && g_dst_stride[i] == 700 + i);
     }
     CHECK(g_src[3] == NULL && g_dst[3] == NULL);
+    vlc_object_t log_obj = { 0 };
+    ctx.log_obj = &log_obj;
+    reset_logs();
     g_scale_result = ctx.dst_h - 1;
     CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_TRANSIENT);
+    CHECK(g_info_calls == 1 && g_warn_calls == 0);
+    CHECK(strcmp(g_last_log,
+                 "swscale: sws_scale emitted fewer lines than the target "
+                 "height; dropping frame(s) (logged only once)") == 0);
     g_scale_result = -1;
     CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_TRANSIENT);
+    CHECK(g_info_calls == 1 && g_warn_calls == 0);
     END();
 }
 
@@ -192,8 +227,8 @@ static void test_geometry_rejection_recovers(void)
 {
     BEGIN("malformed geometry is transient and the next frame recovers");
     scaler_ctx_t ctx = make_ctx(VLC_CODEC_I420, UP_ALGO_LANCZOS);
-    /* Non-NULL log object so the OBS-3 one-shot geometry warning path in
-     * sws_warn_once actually runs (first reject fires it, the rest latch). */
+    /* Non-NULL log object so the OBS-3 one-shot geometry diagnostic runs
+     * (the first reject emits it, and the remaining rejects are latched). */
     vlc_object_t log_obj = { 0 };
     ctx.log_obj = &log_obj;
     sws_priv_t priv = { .ctx = &g_sws_ctx, .av_fmt = AV_PIX_FMT_YUV420P };
@@ -203,6 +238,7 @@ static void test_geometry_rejection_recovers(void)
     init_picture(&dst, dst_data, 700, ctx.chroma, ctx.dst_w, ctx.dst_h);
     ctx.priv = &priv;
     g_scale_result = ctx.dst_h;
+    reset_logs();
 
     uint8_t *src_u = src.p[1].p_pixels;
     src.p[1].p_pixels = NULL;
@@ -219,6 +255,10 @@ static void test_geometry_rejection_recovers(void)
     CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_TRANSIENT);
     src.p[0].i_pitch = src_pitch;
     CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_OK);
+    CHECK(g_info_calls == 1 && g_warn_calls == 0);
+    CHECK(strcmp(g_last_log,
+                 "swscale: frame geometry unusable (crop/stride/subsample "
+                 "mismatch); dropping frame(s) (logged only once)") == 0);
     END();
 }
 

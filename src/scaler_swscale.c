@@ -27,18 +27,18 @@ typedef struct
     enum AVPixelFormat av_fmt;
     /* OBS-3: one-shot latches so a persistently bad stream logs a reason once
      * instead of spamming every frame — symmetric with zimg's bad-geometry
-     * warning. */
-    int                geom_warned;
-    int                short_warned;
+     * diagnostic. */
+    int                geom_logged;
+    int                short_logged;
 } sws_priv_t;
 
-/* OBS-3: emit a one-shot swscale failure reason, latched via *warned. */
-static void sws_warn_once( const scaler_ctx_t *ctx, int *warned,
-                           const char *reason )
+/* OBS-3: emit a visible one-shot swscale failure reason. */
+static void sws_log_once( const scaler_ctx_t *ctx, int *logged,
+                          const char *reason )
 {
-    if( !ctx->log_obj || *warned ) return;
-    *warned = 1;
-    msg_Warn( ctx->log_obj, "swscale: %s (logged only once)", reason );
+    if( !ctx->log_obj || *logged ) return;
+    *logged = 1;
+    msg_Info( ctx->log_obj, "swscale: %s (logged only once)", reason );
 }
 
 static enum AVPixelFormat ChromaToAVFmt( vlc_fourcc_t c )
@@ -136,9 +136,9 @@ static scaler_process_status_t sws_process( scaler_ctx_t *ctx,
     if( !up_picture_view_init( &src_view, src, ctx->chroma, &src_region )
      || !up_picture_view_init( &dst_view, dst, ctx->chroma, &dst_region ) )
     {
-        sws_warn_once( ctx, &p->geom_warned,
-                       "frame geometry unusable (crop/stride/subsample "
-                       "mismatch); dropping frame(s)" );
+        sws_log_once( ctx, &p->geom_logged,
+                      "frame geometry unusable (crop/stride/subsample "
+                      "mismatch); dropping frame(s)" );
         return SCALER_PROCESS_TRANSIENT;
     }
 
@@ -167,9 +167,9 @@ static scaler_process_status_t sws_process( scaler_ctx_t *ctx,
      * 0 or a negative error) leaves the destination partially filled, so
      * fail rather than forward a half-written frame. */
     if( rc < ctx->dst_h )
-        sws_warn_once( ctx, &p->short_warned,
-                       "sws_scale emitted fewer lines than the target height; "
-                       "dropping frame(s)" );
+        sws_log_once( ctx, &p->short_logged,
+                      "sws_scale emitted fewer lines than the target height; "
+                      "dropping frame(s)" );
     return scaler_process_lines_status( rc, ctx->dst_h );
 }
 

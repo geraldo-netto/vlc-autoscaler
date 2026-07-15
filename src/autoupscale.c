@@ -580,7 +580,7 @@ static void InitUsmPool( filter_sys_t *p_sys, filter_t *p_filter,
     if( p_sys->usm_pool )
         p_sys->usm_amount_q8 = up_usm_amount_pct_to_q8( usm_pct );
     else
-        msg_Warn( p_filter,
+        msg_Info( p_filter,
                   "USM pool create failed (%dx%d, %d threads); "
                   "sharpening disabled",
                   target.width, target.height, n_threads );
@@ -669,7 +669,7 @@ static int CreateStatsVars( filter_t *p_filter )
             continue;
         for( size_t j = 0; j < i; j++ )
             var_Destroy( p_filter, k_stats_vars[j] );
-        msg_Warn( p_filter,
+        msg_Info( p_filter,
                   "AutoUpscale: stat variable creation failed; "
                   "autoupscale-ewma-us/-frames/-dropped export disabled" );
         return 0;

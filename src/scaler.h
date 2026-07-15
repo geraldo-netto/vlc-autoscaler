@@ -64,7 +64,7 @@ typedef struct scaler_ctx_s
     }                       zimg;
 
     vlc_fourcc_t            chroma;     /* same on input and output */
-    vlc_object_t           *log_obj;    /* for msg_Dbg/msg_Warn */
+    vlc_object_t           *log_obj;    /* backend diagnostics */
 } scaler_ctx_t;
 
 static inline up_picture_region_t
