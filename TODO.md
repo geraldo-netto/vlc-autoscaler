@@ -66,11 +66,12 @@ backend state and does not rebuild graphs.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| CONC-2 | open | L | The 10-second timeout bounds only the completion-semaphore wait. On failure, dispatch synchronously poisons the pool and performs blocking joins (`src/threading.h:227-247,507-545,603-617`; `src/worker_pool.h:161-175,240-257,349-384`) while cancellation remains disabled during owner callbacks. | A callback still running at the deadline delays `Filter()` until it completes, so this is not an end-to-end dispatch bound. Document that limitation, add cooperative cancellation only where owner invariants/backend APIs permit it, or isolate execution if a hard bound is required; never release storage while a worker may still access it. |
 
-Gate publication, the completion release sequence, cancellation cleanup while
-blocked, partial spawn, and normal teardown otherwise showed no data race or
-valid-state deadlock.
+No open finding. Gate publication, the completion release sequence,
+cancellation cleanup while blocked, partial spawn, and normal teardown showed
+no data race or valid-state deadlock. The completion deadline is explicitly
+not an end-to-end callback bound; recovery joins active callbacks before
+releasing their storage.
 
 ## code complexity
 
@@ -128,17 +129,18 @@ this technical domain; another business/domain pattern would not clarify it.
 |---|---|---|---|---|
 
 No separate open finding. Relevant allocation, backend, picture, clock,
-synchronization, and processing failures are propagated or deliberately treated
-as invariant-only cases. CONC-2 covers the remaining unbounded recovery path.
+synchronization, and processing failures are propagated or deliberately
+treated as invariant-only cases. The documented recovery contract preserves
+worker storage until synchronous retirement completes.
 
 ## resource management
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No separate open finding. Permanent USM/backend failures now retire their pools
-and resources; CONC-2 covers the case where safe retirement cannot complete
-because a worker has not terminated.
+No separate open finding. Permanent USM/backend failures retire their pools and
+resources. Safe retirement waits for active callbacks before releasing their
+storage; that deliberately has no hard end-to-end deadline.
 
 ## API/ABI stability
 

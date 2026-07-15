@@ -12,7 +12,7 @@
  *   up_threads_decide(): pure logic that maps a user preference + a
  *     detected core count to a worker-count decision. Unit-tested.
  *
- *   up_pool_gate_*(): shared broadcast wake gate and bounded done barrier
+ *   up_pool_gate_*(): shared broadcast wake gate and bounded completion wait
  *     used by the USM and zimg worker pools.
  *
  * Auto policy (user_pref == UP_THREADS_AUTO):
@@ -223,21 +223,26 @@ static inline int up_threads_decide(int user_pref, int total_cores)
 }
 
 /*
- * CONC-1: the done-barrier's wait is BOUNDED.
+ * CONC-1: the completion-condition wait is BOUNDED.
  *
  * The final wait runs on VLC's video-output thread. It is timed so a lost
  * completion signal cannot leave that thread waiting forever. Failure poisons
  * the pool; the caller never forwards a picture whose workers may still be
  * writing it.
  *
- * The timeout is orders of magnitude above any real dispatch (a worker handles
- * one stripe of one frame: tens of microseconds to a few milliseconds, and
- * even a 64-thread 8K sweep under TSAN stays far below a second), so it can
- * only fire on a genuinely broken barrier.
+ * CONC-2: this is not an end-to-end dispatch deadline. Recovery requests exit
+ * and joins every worker before releasing storage. Cancellation is disabled
+ * while an owner callback runs, so a callback still active at the deadline
+ * finishes before the join returns. A hard execution bound would require
+ * callback-specific cooperative cancellation or process isolation.
  *
- * CLOCK_MONOTONIC keeps wall-clock corrections from extending recovery. It
- * deliberately stops during suspend on Linux: sleeping the machine pauses the
- * dispatch budget instead of retiring a healthy backend immediately on resume.
+ * The timeout is deliberately orders of magnitude above a normal dispatch to
+ * avoid retiring a healthy pool during ordinary scheduling delays.
+ *
+ * CLOCK_MONOTONIC keeps wall-clock corrections from extending the completion
+ * wait. It deliberately stops during suspend on Linux: sleeping the machine
+ * pauses the dispatch budget instead of retiring a healthy backend immediately
+ * on resume.
  */
 #ifndef UP_POOL_BARRIER_TIMEOUT_MS
 #define UP_POOL_BARRIER_TIMEOUT_MS 10000

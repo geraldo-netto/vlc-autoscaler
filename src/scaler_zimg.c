@@ -1041,9 +1041,10 @@ static scaler_process_status_t zimg_dispatch_and_wait(zimg_priv_t *p)
 {
     /* The pool arms the barrier, wakes all workers with one broadcast and
      * waits once (worker_pool.h). A barrier failure poisons the pool and joins
-     * its threads before we return control to the picture owner. OBS-1: log
-     * once — the poison latches, so zimg_process short-circuits every later
-     * frame and never reaches here again. */
+     * its threads before we return control to the picture owner; an active
+     * graph callback can extend that safe retirement beyond the wait deadline.
+     * OBS-1: log once — the poison latches, so zimg_process short-circuits
+     * every later frame and never reaches here again. */
     if (up_worker_pool_dispatch(&p->pool) != 0) {
         if (p->lazy.log_obj)
             msg_Err((vlc_object_t *)p->lazy.log_obj,

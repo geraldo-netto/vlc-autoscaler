@@ -77,7 +77,9 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
  * before dst is touched, and UP_USM_APPLY_OUTPUT_UNCERTAIN when dispatch fails
  * after workers may have written dst. The latter drains and joins the workers,
  * leaves the pool in a sticky failed state, and requires the caller to discard
- * the destination frame.
+ * the destination frame. The completion wait is timed, but safe retirement is
+ * synchronous and may wait for an already-running worker callback; this API
+ * does not promise a hard end-to-end execution deadline.
  *
  * (Convention matches the rest of the project: 0 = success, negative
  * = failure. Was inverted in earlier versions; flipped 2026-05.)

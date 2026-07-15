@@ -283,7 +283,9 @@ arms an atomic `pending` count, increments a generation under a mutex, and
 wakes the pool with one `pthread_cond_broadcast`. The last worker to decrement
 `pending` signals a dedicated completion condition; the main thread waits once
 against a monotonic deadline. A wait failure drains and joins the dispatched
-pool before returning a sticky failure.
+pool before returning a sticky failure. The deadline bounds only the condition
+wait: retirement remains synchronous and may wait for an already-running USM
+callback so its buffers are never released while still in use.
 
 **Lazy init.** Like the zimg backend, the USM pool's worker spawn and
 private scratch allocation happen on the first `apply()` call rather than
@@ -752,7 +754,9 @@ full-width direct source reads. The backend then lazily:
 
 If a completion-barrier wait fails, the pool is marked fatal, any dispatched
 generation is drained, and every worker is joined before the frame returns to
-its owner. Later calls fail without touching the picture.
+its owner. The deadline bounds the completion wait, not that safe retirement:
+an already-running zimg graph callback is allowed to finish before join returns.
+Later calls fail without touching the picture.
 
 At each `Filter()` call the backend first builds shared, crop-aware
 `picture_view` objects. They validate chroma, plane layout, pointers, pixel

@@ -240,8 +240,9 @@ static inline void up__pool_cancel_started(up_worker_pool_t *p)
 /* Tell every started worker to finish any unseen generation, then exit, and
  * reap them. If the gate itself cannot issue that wake, deferred cancellation
  * is the independent termination path; threading.h releases the mutex that
- * pthread_cond_wait reacquires before running cancellation cleanup. Safe on a
- * pool that never started or already stopped. */
+ * pthread_cond_wait reacquires before running cancellation cleanup. An active
+ * owner callback is deliberately not cancellable and must finish before join.
+ * Safe on a pool that never started or already stopped. */
 static inline void up_worker_pool_stop(up_worker_pool_t *p)
 {
     if (p->threads == NULL) return;
@@ -357,9 +358,11 @@ static inline void up_worker_pool_poison(up_worker_pool_t *p)
  * done-barrier and bump the generation under the gate lock, wake all workers
  * with a single broadcast, then wait once on the counting barrier.
  *
- * Returns 0 once every worker has completed. A non-EINTR barrier failure
- * poisons the pool (threads stopped and joined) and returns -1; the caller
- * must treat the dispatch as fatal, not retry it.
+ * Returns 0 once every worker has completed. A barrier failure poisons the
+ * pool (threads stopped and joined) and returns -1; the caller must treat the
+ * dispatch as fatal, not retry it. The completion wait has a monotonic bound,
+ * but synchronous retirement does not: join waits for an owner callback that
+ * was already running so its storage cannot be released underneath it.
  */
 static inline int up_worker_pool_dispatch(up_worker_pool_t *p)
 {

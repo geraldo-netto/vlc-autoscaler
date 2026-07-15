@@ -208,6 +208,12 @@ encoder, audio, vout, and other libraries. Override with
 `--autoupscale-threads=N`; the explicit preference is still capped by the
 process affinity mask and each pool's geometry minimum.
 
+The shared completion wait has a 10-second monotonic deadline so a lost wake
+cannot park VLC's video-output thread forever. This is a synchronization-fault
+detector, not a hard execution deadline: failure retires the pool and joins
+its workers synchronously, and an already-running zimg or USM callback must
+finish before its storage can be released.
+
 **Implementation note:** both options default to zero-copy. On an aligned,
 row-only grid, graphs read VLC's source and write its destination directly.
 First-frame misalignment switches the affected side to persistent,
