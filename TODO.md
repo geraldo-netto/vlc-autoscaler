@@ -50,9 +50,8 @@ and close paths retain explicit ownership and paired releases.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| PERF-2 | open | M | Without `sem_clockwait`, every threaded dispatch polls `sem_trywait` and sleeps to the next fixed 100 us point (`src/threading.h:250-263,303-352,369-381`; dispatch at `src/worker_pool.h:364-384`). | Completion just after a poll cannot wake the caller, adding up to 100 us tail latency plus repeated clock/sleep syscalls to each zimg or USM pass. Use an interruptible completion condition variable configured for `CLOCK_MONOTONIC`, or an equivalent monotonic primitive. |
 
-No other unparked finding: steady-state processing allocates no per-frame
+No unparked finding: steady-state processing allocates no per-frame
 backend state and does not rebuild graphs.
 
 ## scalability

@@ -16,15 +16,38 @@
 
 /* Fault injection (linked with -Wl,--wrap=pthread_cond_init): make the next
  * pthread_cond_init fail once so up_pool_gate_init's mutex-cleanup path runs. */
-static atomic_int g_fail_next_cond_init;
+static atomic_int g_fail_cond_init_after;
+static atomic_int g_monotonic_cond_init;
+static atomic_bool g_fake_monotonic_clock;
+static struct timespec g_fake_monotonic_time;
 extern int __real_pthread_cond_init(pthread_cond_t *,
                                     const pthread_condattr_t *);
 int __wrap_pthread_cond_init(pthread_cond_t *cond,
                              const pthread_condattr_t *attr)
 {
-    if (atomic_exchange(&g_fail_next_cond_init, 0))
+    const int remaining = atomic_load(&g_fail_cond_init_after);
+    if (remaining > 0
+        && atomic_fetch_sub(&g_fail_cond_init_after, 1) == 1)
         return EAGAIN;
+    if (attr != NULL) {
+        clockid_t clock;
+        if (pthread_condattr_getclock(attr, &clock) == 0
+            && clock == CLOCK_MONOTONIC)
+            atomic_store(&g_monotonic_cond_init, 1);
+    }
     return __real_pthread_cond_init(cond, attr);
+}
+
+int __real_clock_gettime(clockid_t clock_id, struct timespec *time);
+int __wrap_clock_gettime(clockid_t clock_id, struct timespec *time)
+{
+    if (clock_id == CLOCK_MONOTONIC
+        && atomic_exchange_explicit(&g_fake_monotonic_clock, false,
+                                    memory_order_acquire)) {
+        *time = g_fake_monotonic_time;
+        return 0;
+    }
+    return __real_clock_gettime(clock_id, time);
 }
 
 /*
@@ -402,6 +425,37 @@ static void test_pool_gate_cancel_releases_wait_lock(void)
     END();
 }
 
+static void *gate_completion_wait_main(void *arg)
+{
+    up_pool_gate_t *gate = (up_pool_gate_t *)arg;
+    return (void *)(intptr_t)up_pool_gate_wait_all(gate);
+}
+
+static void test_pool_gate_cancel_releases_done_lock(void)
+{
+    BEGIN("pool gate: cancelling completion wait releases its lock");
+    up_pool_gate_t gate;
+    CHECK_EQ(up_pool_gate_init(&gate), 0);
+    CHECK_EQ(up_pool_gate_lock(&gate), 0);
+    up_pool_gate_arm_locked(&gate, 1);
+    CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
+
+    atomic_store(&g_done_timedwait_seen, 0);
+    pthread_t waiter;
+    CHECK_EQ(pthread_create(&waiter, NULL, gate_completion_wait_main, &gate), 0);
+    const struct timespec tick = { .tv_sec = 0, .tv_nsec = 1000000 };
+    for (int i = 0; i < 1000 && !barrier_fault_used_timed_completion_wait(); i++)
+        nanosleep(&tick, NULL);
+    CHECK_EQ(barrier_fault_used_timed_completion_wait(), 1);
+    CHECK_EQ(pthread_cancel(waiter), 0);
+    CHECK_EQ(pthread_join(waiter, NULL), 0);
+    CHECK_EQ(pthread_mutex_trylock(&gate.done_lock), 0);
+    CHECK_EQ(pthread_mutex_unlock(&gate.done_lock), 0);
+
+    up_pool_gate_destroy(&gate);
+    END();
+}
+
 /* The exit contract both pools depend on for fatal-barrier recovery: a
  * worker asked to exit still completes a dispatch it has not yet seen. */
 static void test_pool_gate_exit_completes_unseen(void)
@@ -431,23 +485,25 @@ static void test_pool_gate_exit_completes_unseen(void)
     END();
 }
 
-/* CON-2 plumbing: a recorded post failure breaks exactly one dispatch.
- * (sem_post's only real failure is EOVERFLOW, where the count is already
- * positive — the wake still happens, emulated here by posting first.) */
-static void test_pool_gate_post_failure_reported(void)
+static void test_pool_gate_signal_failure_reported(void)
 {
-    BEGIN("pool gate: recorded post failure breaks the dispatch (CON-2)");
+    BEGIN("pool gate: completion-signal failure breaks the dispatch");
     up_pool_gate_t gate;
     CHECK_EQ(up_pool_gate_init(&gate), 0);
 
-    atomic_store(&gate.post_failed, true);
-    sem_post(&gate.all_done);
+    static gate_worker_t w;
+    gate_worker_start(&w, &gate);
+    barrier_fault_inject_next_done_signal();
+    CHECK_EQ(up_pool_gate_lock(&gate), 0);
+    up_pool_gate_arm_locked(&gate, 1);
+    CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
+
     CHECK_EQ(up_pool_gate_wait_all(&gate), -1);
+    CHECK_EQ(atomic_load(&w.runs), 1);
+    CHECK_EQ(barrier_fault_injection_consumed(), 1);
 
-    /* One-shot: a clean dispatch afterwards succeeds again. */
-    sem_post(&gate.all_done);
-    CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
-
+    CHECK_EQ(up_pool_gate_request_exit(&gate), 0);
+    pthread_join(w.thread, NULL);
     up_pool_gate_destroy(&gate);
     END();
 }
@@ -484,16 +540,64 @@ static void test_explicit_at_max_boundary(void)
 }
 
 /* up_pool_gate_init destroys the mutex it just created and returns -1 when
- * pthread_cond_init fails, leaving cv/sem uninitialized. The fault is
- * one-shot, so a retry succeeds and yields a fully usable gate. */
+ * pthread_cond_init fails. The fault is one-shot, so a retry succeeds and
+ * initializes the completion condition with CLOCK_MONOTONIC. */
 static void test_pool_gate_init_cond_failure(void)
 {
-    BEGIN("gate init cleans up the mutex when cond init fails");
-    up_pool_gate_t gate;
-    atomic_store(&g_fail_next_cond_init, 1);
-    CHECK_EQ(up_pool_gate_init(&gate), -1);
-    CHECK_EQ(up_pool_gate_init(&gate), 0);
-    up_pool_gate_destroy(&gate);
+    BEGIN("gate init cleans up when either condition init fails");
+    for (int nth = 1; nth <= 2; nth++) {
+        up_pool_gate_t gate;
+        atomic_store(&g_fail_cond_init_after, nth);
+        CHECK_EQ(up_pool_gate_init(&gate), -1);
+        CHECK_EQ(atomic_load(&g_fail_cond_init_after), 0);
+
+        atomic_store(&g_monotonic_cond_init, 0);
+        CHECK_EQ(up_pool_gate_init(&gate), 0);
+        CHECK_EQ(atomic_load(&g_monotonic_cond_init), 1);
+        up_pool_gate_destroy(&gate);
+    }
+    END();
+}
+
+static time_t test_time_t_max(void)
+{
+    time_t power = 1;
+    time_t doubled;
+    while (!__builtin_mul_overflow(power, (time_t)2, &doubled))
+        power = doubled;
+    return power + (power - 1);
+}
+
+static void fake_monotonic_time(time_t seconds, long nanoseconds)
+{
+    g_fake_monotonic_time.tv_sec = seconds;
+    g_fake_monotonic_time.tv_nsec = nanoseconds;
+    atomic_store_explicit(&g_fake_monotonic_clock, true,
+                          memory_order_release);
+}
+
+static void test_deadline_input_and_overflow_checks(void)
+{
+    BEGIN("monotonic deadline rejects invalid and overflowing inputs");
+    struct timespec deadline;
+
+    errno = 0;
+    CHECK_EQ(up__deadline_after_ms(NULL, 0), -1);
+    CHECK_EQ(errno, EINVAL);
+    errno = 0;
+    CHECK_EQ(up__deadline_after_ms(&deadline, -1), -1);
+    CHECK_EQ(errno, EINVAL);
+
+    const time_t time_max = test_time_t_max();
+    fake_monotonic_time(time_max, 0);
+    errno = 0;
+    CHECK_EQ(up__deadline_after_ms(&deadline, 1000), -1);
+    CHECK_EQ(errno, EOVERFLOW);
+
+    fake_monotonic_time(time_max, UP_NSEC_PER_SEC - 1);
+    errno = 0;
+    CHECK_EQ(up__deadline_after_ms(&deadline, 1), -1);
+    CHECK_EQ(errno, EOVERFLOW);
     END();
 }
 
@@ -511,10 +615,8 @@ static long elapsed_ms(const struct timespec *start)
  * no worker will ever complete — exactly what a lost wake or a dropped post
  * leaves behind — and the wait must report a broken barrier, not block.
  *
- * This used to be an untimed sem_wait, so this state was a permanent stall on
- * VLC's video-output thread with nothing logged: the post-failure flag the
- * code inspects for "recovery" can only be read AFTER the wait returns. Before
- * the fix this test does not terminate.
+ * The monotonic condition wait must return at the configured deadline even if
+ * no completion notification arrives.
  *
  * Built with UP_POOL_BARRIER_TIMEOUT_MS=200 (THREADING_TEST_CFLAGS) so the
  * deadline costs a fifth of a second rather than the shipped 10 s.
@@ -532,10 +634,12 @@ static void test_pool_gate_wait_times_out(void)
     up_pool_gate_arm_locked(&gate, 1);      /* one worker owed... */
     CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0); /* ...and none exists */
 
+    atomic_store(&g_done_timedwait_seen, 0);
     CHECK_EQ(up_pool_gate_wait_all(&gate), -1);
     const long waited = elapsed_ms(&t0);
     CHECK(waited >= UP_POOL_BARRIER_TIMEOUT_MS / 2);   /* it really waited */
     CHECK(waited < 10 * UP_POOL_BARRIER_TIMEOUT_MS);   /* and it really returned */
+    CHECK_EQ(barrier_fault_used_timed_completion_wait(), 1);
 
     up_pool_gate_destroy(&gate);
     END();
@@ -543,115 +647,19 @@ static void test_pool_gate_wait_times_out(void)
 
 static void test_pool_gate_wait_error_is_reported(void)
 {
-    BEGIN("pool gate: a semaphore wait error breaks the dispatch");
+    BEGIN("pool gate: a completion wait error breaks the dispatch");
     up_pool_gate_t gate;
     CHECK_EQ(up_pool_gate_init(&gate), 0);
 
-    barrier_fault_inject_next_sem_wait();
-    CHECK_EQ(up_pool_gate_wait_all(&gate), -1);
-    CHECK_EQ(barrier_fault_injection_consumed(), 1);
-#if UP_HAVE_SEM_CLOCKWAIT
-    CHECK_EQ(barrier_fault_used_monotonic_clock(), 1);
-#endif
-
-    up_pool_gate_destroy(&gate);
-    END();
-}
-
-static void test_pool_gate_wait_retries_interrupt(void)
-{
-    BEGIN("pool gate: an interrupted wait keeps the monotonic deadline");
-    up_pool_gate_t gate;
-    CHECK_EQ(up_pool_gate_init(&gate), 0);
-
-    CHECK_EQ(sem_post(&gate.all_done), 0);
-    barrier_fault_interrupt_next_sem_wait();
-    CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
-    CHECK_EQ(barrier_fault_injection_consumed(), 1);
-#if UP_HAVE_SEM_CLOCKWAIT
-    CHECK_EQ(barrier_fault_used_monotonic_clock(), 1);
-#endif
-
-    up_pool_gate_destroy(&gate);
-    END();
-}
-
-#if !UP_HAVE_SEM_CLOCKWAIT
-static void test_sem_poll_interrupts_still_expire(void)
-{
-    BEGIN("semaphore polling: sustained interrupts cannot extend timeout");
-    sem_t sem;
-    CHECK_EQ(sem_init(&sem, 0, 0), 0);
-
-    struct timespec t0;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
-    barrier_fault_interrupt_all_sem_waits(1);
-    const int rc = up_sem_wait_timeout(&sem, 10);
-    const int wait_errno = errno;
-    barrier_fault_interrupt_all_sem_waits(0);
-
-    CHECK_EQ(rc, -1);
-    CHECK_EQ(wait_errno, ETIMEDOUT);
-    CHECK(elapsed_ms(&t0) < 1000);
-    CHECK_EQ(barrier_fault_injection_consumed(), 1);
-    CHECK_EQ(sem_destroy(&sem), 0);
-    END();
-}
-#endif
-
-/*
- * CONC-1, other half: the last finisher RETRIES its post. A transient failure
- * (fewer than UP_POOL_POST_RETRIES in a row) must be recovered — the dispatch
- * succeeds and nothing is recorded as broken. Only a failure that survives
- * every retry (a real EOVERFLOW) breaks the dispatch, which
- * test_pool_gate_post_failure_reported covers.
- */
-static void test_pool_gate_post_retry_recovers(void)
-{
-    BEGIN("pool gate: the finisher retries a transient post failure (CONC-1)");
-    up_pool_gate_t gate;
-    CHECK_EQ(up_pool_gate_init(&gate), 0);
-
-    static gate_worker_t w;
-    gate_worker_start(&w, &gate);
-
-    barrier_fault_inject_sem_post_failures(UP_POOL_POST_RETRIES - 1);
     CHECK_EQ(up_pool_gate_lock(&gate), 0);
     up_pool_gate_arm_locked(&gate, 1);
     CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
-    CHECK_EQ(up_pool_gate_wait_all(&gate), 0);   /* retry got the post through */
-    CHECK_EQ(atomic_load(&w.runs), 1);
-
-    CHECK_EQ(up_pool_gate_request_exit(&gate), 0);
-    pthread_join(w.thread, NULL);
-    up_pool_gate_destroy(&gate);
-    END();
-}
-
-/*
- * The other end of the retry: a post failure that survives every retry (a real
- * EOVERFLOW — the count is pinned at SEM_VALUE_MAX) is recorded, and the
- * dispatch it belongs to is reported broken rather than silently succeeding.
- * Driven through a real worker, so the flag is set by the finisher itself.
- */
-static void test_pool_gate_post_failure_survives_retries(void)
-{
-    BEGIN("pool gate: a post failure no retry can clear breaks the dispatch");
-    up_pool_gate_t gate;
-    CHECK_EQ(up_pool_gate_init(&gate), 0);
-
-    static gate_worker_t w;
-    gate_worker_start(&w, &gate);
-
-    barrier_fault_inject_next_sem_post();   /* fails every retry */
-    CHECK_EQ(up_pool_gate_lock(&gate), 0);
-    up_pool_gate_arm_locked(&gate, 1);
-    CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
+    barrier_fault_inject_next_done_wait();
+    atomic_store(&g_done_timedwait_seen, 0);
     CHECK_EQ(up_pool_gate_wait_all(&gate), -1);
-    CHECK_EQ(atomic_load(&w.runs), 1);      /* the worker DID run... */
+    CHECK_EQ(barrier_fault_injection_consumed(), 1);
+    CHECK_EQ(barrier_fault_used_timed_completion_wait(), 1);
 
-    CHECK_EQ(up_pool_gate_request_exit(&gate), 0);
-    pthread_join(w.thread, NULL);
     up_pool_gate_destroy(&gate);
     END();
 }
@@ -681,6 +689,7 @@ int main(void)
     printf("Running threading tests...\n");
 
     test_pool_gate_init_cond_failure();
+    test_deadline_input_and_overflow_checks();
 
     test_auto_typical();
     test_auto_low_core_count();
@@ -700,17 +709,12 @@ int main(void)
 #endif
     test_pool_gate_dispatch_cycles();
     test_pool_gate_cancel_releases_wait_lock();
+    test_pool_gate_cancel_releases_done_lock();
     test_pool_gate_exit_completes_unseen();
-    test_pool_gate_post_failure_reported();
+    test_pool_gate_signal_failure_reported();
     test_pool_gate_request_exit_guards();
-    test_pool_gate_post_retry_recovers();
-    test_pool_gate_post_failure_survives_retries();
     test_pool_gate_wait_times_out();
     test_pool_gate_wait_error_is_reported();
-    test_pool_gate_wait_retries_interrupt();
-#if !UP_HAVE_SEM_CLOCKWAIT
-    test_sem_poll_interrupts_still_expire();
-#endif
     test_detect_then_decide();
     test_explicit_at_max_boundary();
 

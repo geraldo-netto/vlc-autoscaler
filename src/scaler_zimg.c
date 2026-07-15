@@ -48,9 +48,8 @@
  * and tmp buffer. Per-frame dispatch is O(1) syscalls on the
  * main thread (SCAL-2): the wake side bumps a shared "generation" under a
  * mutex and wakes all workers with ONE pthread_cond broadcast, and completion
- * is a counting barrier — workers decrement an atomic "pending", the last
- * posting a single "all_done" sem the main thread waits on once. (Was N
- * sem_post + N sem_wait per frame.)
+ * is a condition barrier — workers decrement an atomic "pending", and the last
+ * signals the main thread's dedicated completion condition once.
  * up_threads_decide() sets the affinity-capped budget; up_decide_tile_grid()
  * sets the effective grid size.
  *
@@ -83,7 +82,6 @@
 
 #include <zimg.h>
 #include <pthread.h>
-#include <semaphore.h>
 #include <stdalign.h>
 #include <stdatomic.h>
 #include <stdbool.h>

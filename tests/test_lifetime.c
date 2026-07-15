@@ -8,8 +8,8 @@
  *   - Use-after-free (UAF): touching memory after free()
  *   - Double-free: calling free() twice on the same pointer
  *   - Leaks: malloc'd memory that is never freed
- *   - Uninitialized-resource teardown: e.g. sem_destroy on a sem that
- *     sem_init never succeeded on
+ *   - Uninitialized-resource teardown: e.g. destroying a condition variable
+ *     whose initialization never succeeded
  *
  * These bugs typically don't change visible output until they crash —
  * sometimes never on a single test run. We rely on AddressSanitizer
@@ -51,12 +51,11 @@ static void fill_deterministic(uint8_t *buf, size_t n, uint32_t seed)
  *
  * Targets the "destroy a pool that never lazy-init'd" path. With lazy
  * init, this is the most common partial-state case: workers allocated,
- * threads NOT spawned, semaphores NOT initialized. The destroy must
+ * threads NOT spawned, synchronization primitives NOT initialized. Destroy must
  * walk the partial state without crashing or leaking.
  *
  * UAF risk this catches:
- *   - sem_destroy on uninitialized sem (rare but possible if guard
- *     flag is missing)
+ *   - pthread_cond_destroy on an uninitialized condition variable
  *   - free() of an uninitialized pointer
  *   - join on a thread that was never created
  */

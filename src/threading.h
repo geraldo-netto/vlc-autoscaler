@@ -43,7 +43,6 @@
 #include <limits.h>
 #include <pthread.h>
 #include <sched.h>
-#include <semaphore.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -226,13 +225,10 @@ static inline int up_threads_decide(int user_pref, int total_cores)
 /*
  * CONC-1: the done-barrier's wait is BOUNDED.
  *
- * The final wait runs on VLC's video-output thread. It used to be an untimed
- * sem_wait, which made every "the post never arrived" state a permanent
- * playback hang with no diagnostic: the last finisher posts exactly once, and
- * if that post fails the flag it sets can only be read *after* a wait that
- * never returns. The same is true of any lost wake. A hang is not a recovery —
- * time the wait out instead, so the caller can poison the pool, drop the frame
- * and fail over to a backend that works.
+ * The final wait runs on VLC's video-output thread. It is timed so a lost
+ * completion signal cannot leave that thread waiting forever. Failure poisons
+ * the pool; the caller never forwards a picture whose workers may still be
+ * writing it.
  *
  * The timeout is orders of magnitude above any real dispatch (a worker handles
  * one stripe of one frame: tens of microseconds to a few milliseconds, and
@@ -248,19 +244,6 @@ static inline int up_threads_decide(int user_pref, int total_cores)
 #endif
 
 #define UP_NSEC_PER_SEC 1000000000L
-#define UP_POOL_BARRIER_POLL_NS 100000L
-
-#ifndef UP_HAVE_SEM_CLOCKWAIT
-#ifdef __GLIBC_PREREQ
-#if __GLIBC_PREREQ(2, 30) && defined(__USE_GNU)
-#define UP_HAVE_SEM_CLOCKWAIT 1
-#else
-#define UP_HAVE_SEM_CLOCKWAIT 0
-#endif
-#else
-#define UP_HAVE_SEM_CLOCKWAIT 0
-#endif
-#endif
 
 static inline int up__deadline_after_ms(struct timespec *deadline,
                                         long timeout_ms)
@@ -291,99 +274,9 @@ static inline int up__deadline_after_ms(struct timespec *deadline,
     return 0;
 }
 
-static inline int up__timespec_compare(const struct timespec *left,
-                                       const struct timespec *right)
-{
-    if (left->tv_sec < right->tv_sec) return -1;
-    if (left->tv_sec > right->tv_sec) return 1;
-    if (left->tv_nsec < right->tv_nsec) return -1;
-    return left->tv_nsec > right->tv_nsec;
-}
-
-#if !UP_HAVE_SEM_CLOCKWAIT
-
-static inline void up__next_poll_deadline(const struct timespec *now,
-                                          const struct timespec *deadline,
-                                          struct timespec *next)
-{
-    *next = *now;
-    if (next->tv_nsec <= UP_NSEC_PER_SEC - 1 - UP_POOL_BARRIER_POLL_NS) {
-        next->tv_nsec += UP_POOL_BARRIER_POLL_NS;
-    } else if (next->tv_sec < deadline->tv_sec) {
-        next->tv_sec++;
-        next->tv_nsec -= UP_NSEC_PER_SEC - UP_POOL_BARRIER_POLL_NS;
-    } else {
-        *next = *deadline;
-        return;
-    }
-    if (up__timespec_compare(next, deadline) > 0) *next = *deadline;
-}
-
-static inline int up__clock_nanosleep_until(const struct timespec *deadline)
-{
-    int rc;
-    do {
-        rc = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, deadline, NULL);
-    } while (rc == EINTR);
-    if (rc == 0) return 0;
-    errno = rc;
-    return -1;
-}
-
-static inline int up__sem_poll_until(sem_t *s,
-                                     const struct timespec *deadline)
-{
-    for (;;) {
-        if (sem_trywait(s) == 0) return 0;
-        const int wait_errno = errno;
-        if (wait_errno != EAGAIN && wait_errno != EINTR) return -1;
-
-        struct timespec now;
-        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
-        if (up__timespec_compare(&now, deadline) >= 0) {
-            errno = ETIMEDOUT;
-            return -1;
-        }
-        if (wait_errno == EINTR) continue;
-
-        struct timespec next;
-        up__next_poll_deadline(&now, deadline, &next);
-        if (up__clock_nanosleep_until(&next) != 0) return -1;
-    }
-}
-
-#endif
-
-/*
- * Monotonic semaphore wait with the standard EINTR retry (CON-3). Both worker
- * pools use a counting done-barrier whose final wait runs on VLC's video
- * thread; libvlc embedders routinely install non-SA_RESTART signal handlers,
- * and an interrupted wait returning early would let Filter() hand a picture
- * downstream while workers are still writing it. Older libcs poll sem_trywait
- * against the same monotonic deadline in short absolute sleep slices.
- *
- * Returns 0 on success. Any other failure — ETIMEDOUT (no post arrived) or
- * EINVAL (destroyed/corrupt sem) — returns -1, and the caller must FAIL the
- * dispatch rather than proceed with the barrier broken.
- */
-static inline int up_sem_wait_timeout(sem_t *s, long timeout_ms)
-{
-    struct timespec deadline;
-    if (up__deadline_after_ms(&deadline, timeout_ms) != 0) return -1;
-#if UP_HAVE_SEM_CLOCKWAIT
-    int rc;
-    do {
-        rc = sem_clockwait(s, CLOCK_MONOTONIC, &deadline);
-    } while (rc == -1 && errno == EINTR);
-    return rc;
-#else
-    return up__sem_poll_until(s, &deadline);
-#endif
-}
-
 /*
  * Shared worker-pool dispatch gate (DUP-1). One home for the broadcast
- * wake gate + counting done-barrier both pools (usm_pool.c,
+ * wake gate + completion barrier both pools (usm_pool.c,
  * scaler_zimg.c) previously maintained as parallel copies.
  *
  * Wake side (SCAL-2): the main thread arms `pending` and bumps
@@ -396,12 +289,11 @@ static inline int up_sem_wait_timeout(sem_t *s, long timeout_ms)
  *
  * Done side: each worker finishes with an acq_rel fetch_sub on
  * `pending`; those RMWs form a release sequence, so the worker that
- * drives it to zero observes every other worker's writes, and its
- * sem_post wakes the main thread. The main thread then acquire-loads
- * `pending == 0`, publishing all worker payloads before the caller reads
- * them. It waits exactly once per dispatch (EINTR-retried); a wait failure
- * or an early/stale wake means the barrier is broken and the caller must
- * poison and stop the pool rather than proceed.
+ * drives it to zero observes every other worker's writes, then signals a
+ * dedicated completion condition variable. The main thread acquire-loads
+ * `pending == 0`, publishing all worker payloads before the caller reads them.
+ * Spurious signals recheck the predicate; a wait failure means the barrier is
+ * broken and the caller must poison and stop the pool rather than proceed.
  *
  * The lock/arm/unlock split publishes the pending count and generation before
  * any worker can wake for that dispatch.
@@ -409,53 +301,77 @@ static inline int up_sem_wait_timeout(sem_t *s, long timeout_ms)
 typedef struct {
     pthread_mutex_t lock;
     pthread_cond_t  cv;
+    pthread_mutex_t done_lock;
+    pthread_cond_t  done_cv;
     uint64_t        generation;   /* bumped per dispatch, guarded by lock */
     bool            exit_requested; /* teardown signal, guarded by lock */
     atomic_int      pending;      /* live workers this dispatch */
-    sem_t           all_done;     /* posted once when pending hits 0 */
-    atomic_bool     post_failed;  /* CON-2: last finisher's post failed */
     atomic_bool     sync_failed;  /* ERR-1: pthread gate operation failed */
     bool            cv_inited;    /* destroy guards for partial init */
-    bool            sem_inited;
+    bool            done_inited;
 } up_pool_gate_t;
+
+static inline int up__pool_gate_init_done(up_pool_gate_t *g)
+{
+    if (pthread_mutex_init(&g->done_lock, NULL) != 0) return -1;
+
+    pthread_condattr_t attr;
+    int rc = pthread_condattr_init(&attr);
+    const bool attr_inited = rc == 0;
+    if (rc == 0) rc = pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    if (rc == 0) rc = pthread_cond_init(&g->done_cv, &attr);
+    if (attr_inited) (void)pthread_condattr_destroy(&attr);
+    if (rc == 0) {
+        g->done_inited = true;
+        return 0;
+    }
+    pthread_mutex_destroy(&g->done_lock);
+    return -1;
+}
 
 static inline int up_pool_gate_init(up_pool_gate_t *g)
 {
     g->generation = 0;
     g->exit_requested = false;
     atomic_init(&g->pending, 0);
-    atomic_init(&g->post_failed, false);
     atomic_init(&g->sync_failed, false);
-    g->cv_inited  = false;
-    g->sem_inited = false;
+    g->cv_inited   = false;
+    g->done_inited = false;
     if (pthread_mutex_init(&g->lock, NULL) != 0) return -1;
     if (pthread_cond_init(&g->cv, NULL) != 0) {
         pthread_mutex_destroy(&g->lock);
         return -1;
     }
     g->cv_inited = true;
-    if (sem_init(&g->all_done, 0, 0) != 0) return -1;
-    g->sem_inited = true;
+    if (up__pool_gate_init_done(g) != 0) {
+        pthread_cond_destroy(&g->cv);
+        pthread_mutex_destroy(&g->lock);
+        g->cv_inited = false;
+        return -1;
+    }
     return 0;
 }
 
 /* Safe on a zeroed (never-initialized) or partially-initialized gate. */
 static inline void up_pool_gate_destroy(up_pool_gate_t *g)
 {
-    if (g->sem_inited) sem_destroy(&g->all_done);
+    if (g->done_inited) {
+        pthread_cond_destroy(&g->done_cv);
+        pthread_mutex_destroy(&g->done_lock);
+    }
     if (g->cv_inited) {
         pthread_cond_destroy(&g->cv);
         pthread_mutex_destroy(&g->lock);
     }
-    g->sem_inited = false;
-    g->cv_inited  = false;
+    g->done_inited = false;
+    g->cv_inited   = false;
 }
 
 /* True once init succeeded far enough that workers may be blocked on the
  * cv (pools spawn threads only after full gate init). */
 static inline bool up_pool_gate_ready(const up_pool_gate_t *g)
 {
-    return g->cv_inited;
+    return g->cv_inited && g->done_inited;
 }
 
 static inline int up_pool_gate_lock(up_pool_gate_t *g)
@@ -488,10 +404,20 @@ static inline void up__pool_gate_cancel_unlock(void *arg)
     (void)pthread_mutex_unlock((pthread_mutex_t *)arg);
 }
 
+static inline int up__pool_gate_notify_done(up_pool_gate_t *g)
+{
+    if (pthread_mutex_lock(&g->done_lock) != 0) return -1;
+    const int signal_rc = pthread_cond_signal(&g->done_cv);
+    if (signal_rc != 0)
+        atomic_store_explicit(&g->sync_failed, true, memory_order_release);
+    const int unlock_rc = pthread_mutex_unlock(&g->done_lock);
+    return signal_rc == 0 && unlock_rc == 0 ? 0 : -1;
+}
+
 static inline void up__pool_gate_report_worker_failure(up_pool_gate_t *g)
 {
     atomic_store_explicit(&g->sync_failed, true, memory_order_release);
-    (void)sem_post(&g->all_done);
+    (void)up__pool_gate_notify_done(g);
 }
 
 static inline int up__pool_gate_wait_locked(up_pool_gate_t *g,
@@ -570,50 +496,50 @@ static inline int up_pool_gate_request_exit(up_pool_gate_t *g)
     return -1;
 }
 
-/* How many times the last finisher retries a failed post before giving up.
- * A post that keeps failing means the semaphore itself is unusable; the
- * bounded wait (up_sem_wait_timeout) is what keeps that from hanging. */
-#define UP_POOL_POST_RETRIES 3
-
-/*
- * Worker side: signal completion. The last finisher posts the barrier.
- *
- * CON-2: sem_post on a valid unnamed semaphore can only fail with EOVERFLOW —
- * the count is already at SEM_VALUE_MAX, so the main thread's wait cannot
- * block — but it does mean the barrier accounting is no longer trustworthy.
- * Record it so wait_all reports the dispatch as broken instead of silently
- * succeeding.
- *
- * CONC-1: retry the post rather than dropping it. The main thread is waiting
- * on exactly one post from exactly one finisher, so a single unretried failure
- * used to mean no post reached the semaphore at all. Retrying costs nothing on
- * the path that never fails, and the failure flag is still recorded either way.
- */
+/* Worker side: the last finisher signals the completion condition. */
 static inline void up_pool_gate_worker_done(up_pool_gate_t *g)
 {
     if (atomic_fetch_sub_explicit(&g->pending, 1, memory_order_acq_rel) != 1)
         return;
+    if (up__pool_gate_notify_done(g) != 0)
+        atomic_store_explicit(&g->sync_failed, true, memory_order_release);
+}
 
-    for (int try = 0; try < UP_POOL_POST_RETRIES; try++)
-        if (sem_post(&g->all_done) == 0) return;
-
-    atomic_store_explicit(&g->post_failed, true, memory_order_release);
+static inline int up__pool_gate_wait_done_locked(
+    up_pool_gate_t *g, const struct timespec *deadline)
+{
+    for (;;) {
+        if (atomic_load_explicit(&g->sync_failed, memory_order_acquire))
+            return EINVAL;
+        if (atomic_load_explicit(&g->pending, memory_order_acquire) == 0)
+            return 0;
+        const int rc = pthread_cond_timedwait(&g->done_cv, &g->done_lock,
+                                              deadline);
+        if (rc != 0 && rc != EINTR) return rc;
+    }
 }
 
 /* Main-thread side: wait for every worker of this dispatch. Returns 0 on
- * success; non-zero means the barrier is broken (poison + stop) — either a
- * recorded post failure, or no post at all within the timeout (CONC-1). */
+ * success; non-zero means the barrier is broken (poison + stop). */
 static inline int up_pool_gate_wait_all(up_pool_gate_t *g)
 {
     if (atomic_load_explicit(&g->sync_failed, memory_order_acquire)) return -1;
-    if (up_sem_wait_timeout(&g->all_done, UP_POOL_BARRIER_TIMEOUT_MS) != 0)
+    struct timespec deadline;
+    if (up__deadline_after_ms(&deadline, UP_POOL_BARRIER_TIMEOUT_MS) != 0)
         return -1;
+    if (pthread_mutex_lock(&g->done_lock) != 0) return -1;
+    int wait_rc = 0;
+    pthread_cleanup_push(up__pool_gate_cancel_unlock, &g->done_lock);
+    wait_rc = up__pool_gate_wait_done_locked(g, &deadline);
+    pthread_cleanup_pop(0);
+    const int unlock_rc = pthread_mutex_unlock(&g->done_lock);
+    if (wait_rc != 0 || unlock_rc != 0) {
+        errno = wait_rc != 0 ? wait_rc : unlock_rc;
+        return -1;
+    }
     /* Acquire the workers' RMW release sequence before reading payloads. */
     if (atomic_load_explicit(&g->pending, memory_order_acquire) != 0) return -1;
     if (atomic_load_explicit(&g->sync_failed, memory_order_acquire)) return -1;
-    if (atomic_exchange_explicit(&g->post_failed, false,
-                                 memory_order_acquire))
-        return -1;
     return 0;
 }
 

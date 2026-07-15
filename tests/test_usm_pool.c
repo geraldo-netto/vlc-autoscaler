@@ -262,11 +262,11 @@ static void test_inplace_matches_oracle(void)
     END();
 }
 
-/* CON-2 end-to-end: a persistent sem_post failure on the done barrier must
- * fail that dispatch and poison the pool, never hang or silently succeed. */
-static void test_barrier_post_failure_poisons_pool(void)
+/* A completion-notification failure must fail that dispatch and poison the
+ * pool, never hang or silently succeed. */
+static void test_completion_signal_failure_poisons_pool(void)
 {
-    BEGIN("done-barrier sem_post failure poisons the pool (CON-2)");
+    BEGIN("completion-signal failure poisons the pool");
     enum { W = 64, H = 64 };
     static uint8_t buf[W * H];
     memset(buf, 0x40, sizeof buf);
@@ -275,7 +275,7 @@ static void test_barrier_post_failure_poisons_pool(void)
     CHECK(p != NULL);
     if (p) {
         CHECK(up_usm_pool_apply(p, buf, W, buf, W, amount) == 0);
-        barrier_fault_inject_next_sem_post();
+        barrier_fault_inject_next_done_signal();
         CHECK_EQ(up_usm_pool_apply(p, buf, W, buf, W, amount),
                  UP_USM_APPLY_OUTPUT_UNCERTAIN);
         /* Sticky: the pool stays broken. */
@@ -802,8 +802,9 @@ static void test_worker_gate_failure_marks_output_uncertain(void)
  * nothing leaked from the failed slot. We
  * force the failure by dropping RLIMIT_NPROC so new threads can't start.
  * Whether the pool comes up with a partial set or none at all, the result
- * must be clean under ASan (no leaked semaphores, no crash). The frame is
- * small and fully backed so a partially-spawned pool can still run safely.
+ * must be clean under ASan (no leaked synchronization resources, no crash).
+ * The frame is small and fully backed so a partially-spawned pool can still
+ * run safely.
  */
 static void test_spawn_pthread_create_fail_clean(void)
 {
@@ -847,7 +848,7 @@ int main(void)
     test_identity_pool_strided_slow_path();
     test_typical_30pct();
     test_inplace_matches_oracle();
-    test_barrier_post_failure_poisons_pool();
+    test_completion_signal_failure_poisons_pool();
     test_create_clamps_huge_thread_count();
     test_default_policy_caps_useful_threads();
     test_single_thread_runs_inline();

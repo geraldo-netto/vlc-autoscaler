@@ -281,8 +281,9 @@ source for an in-place call.
 **Dispatch.** The main thread publishes per-frame state, snapshots halos,
 arms an atomic `pending` count, increments a generation under a mutex, and
 wakes the pool with one `pthread_cond_broadcast`. The last worker to decrement
-`pending` posts `all_done`; the main thread waits once. A non-EINTR wait failure
-drains and joins the dispatched pool before returning a sticky failure.
+`pending` signals a dedicated completion condition; the main thread waits once
+against a monotonic deadline. A wait failure drains and joins the dispatched
+pool before returning a sticky failure.
 
 **Lazy init.** Like the zimg backend, the USM pool's worker spawn and
 private scratch allocation happen on the first `apply()` call rather than
@@ -767,9 +768,10 @@ transient. For a safe view the backend:
 2. Points each worker at the current frame's planes, bumps a shared
    "generation" counter under a mutex, and wakes all workers with ONE
    `pthread_cond_broadcast` (SCAL-2 — was one `sem_post` per worker).
-3. Waits on a single "all done" semaphore: each worker decrements an atomic
-   `pending` counter after its cell and the one that drives it to zero posts
-   the semaphore — a counting barrier (was N `sem_wait`s).
+3. Waits on one dedicated completion condition: each worker decrements an atomic
+   `pending` counter after its cell and the one that drives it to zero signals
+   the condition. Spurious wakes recheck `pending` against the same monotonic
+   deadline.
 4. **Copy-out** (when selected explicitly with
    `--autoupscale-zerocopy-dst=0`, forced by first-frame alignment, or required
    for column tiles): each worker `memcpy`s its result into VLC's output

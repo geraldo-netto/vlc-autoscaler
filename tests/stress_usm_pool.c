@@ -18,7 +18,7 @@
  *     subsequent frames diverge."
  *
  *   - Runs under TSan as part of `make stress`. TSan catches
- *     races on the workspace, semaphores, and per-frame pointers even
+ *     races on the workspace, condition variables, and per-frame pointers even
  *     when the output happens to be correct on this run (which would
  *     otherwise mask intermittent races).
  *

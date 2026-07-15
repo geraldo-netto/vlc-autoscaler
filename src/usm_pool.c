@@ -44,7 +44,6 @@
 #include "worker_pool.h"
 
 #include <pthread.h>
-#include <semaphore.h>
 #include <stdalign.h>
 #include <stdatomic.h>
 #include <stdbool.h>

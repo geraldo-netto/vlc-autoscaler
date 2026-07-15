@@ -11,7 +11,8 @@
  * both spawn policies, and a broken completion barrier.
  *
  * Fault injection: --wrap on aligned_alloc (slot arrays), pthread_create
- * (spawn), and the barrier primitives (tests/barrier_fault_inject.h).
+ * (spawn), pthread_setcancelstate, and the barrier primitives
+ * (tests/barrier_fault_inject.h).
  *****************************************************************************/
 
 #include "../src/worker_pool.h"
@@ -31,6 +32,7 @@
 static atomic_int g_fail_aligned_alloc_nth;   /* 1-based; 0 = never */
 static atomic_int g_aligned_alloc_calls;
 static atomic_int g_spawn_budget;             /* -1 = unlimited */
+static atomic_int g_fail_cancel_state = -1;
 
 void *__real_aligned_alloc(size_t alignment, size_t size);
 void *__wrap_aligned_alloc(size_t alignment, size_t size)
@@ -57,11 +59,23 @@ int __wrap_pthread_create(pthread_t *th, const pthread_attr_t *attr,
     return __real_pthread_create(th, attr, fn, arg);
 }
 
+int __real_pthread_setcancelstate(int state, int *old_state);
+int __wrap_pthread_setcancelstate(int state, int *old_state)
+{
+    int expected = state;
+    if (atomic_compare_exchange_strong_explicit(
+            &g_fail_cancel_state, &expected, -1,
+            memory_order_relaxed, memory_order_relaxed))
+        return EINVAL;
+    return __real_pthread_setcancelstate(state, old_state);
+}
+
 static void fault_reset(void)
 {
     atomic_store(&g_fail_aligned_alloc_nth, 0);
     atomic_store(&g_aligned_alloc_calls, 0);
     atomic_store(&g_spawn_budget, -1);
+    atomic_store(&g_fail_cancel_state, -1);
 }
 
 /* ---------- fake owner ---------- */
@@ -480,6 +494,31 @@ static void test_exit_failures_cancel_and_stop(void)
     END();
 }
 
+static void check_worker_cancel_state_failure(int state)
+{
+    up_worker_pool_t pool = {0};
+    up_pool_thread_t worker = { .pool = &pool };
+    CHECK_EQ(up_pool_gate_init(&pool.gate), 0);
+
+    atomic_store(&g_fail_cancel_state, state);
+    CHECK_EQ(pthread_create(&worker.thread, NULL,
+                            up__pool_worker_main, &worker), 0);
+    CHECK_EQ(pthread_join(worker.thread, NULL), 0);
+    CHECK_EQ(atomic_load(&g_fail_cancel_state), -1);
+    CHECK_EQ(atomic_load(&pool.gate.sync_failed), 1);
+
+    up_pool_gate_destroy(&pool.gate);
+}
+
+static void test_worker_cancel_state_failures(void)
+{
+    BEGIN("worker cancellation-state failures break the pool gate");
+    fault_reset();
+    check_worker_cancel_state_failure(PTHREAD_CANCEL_DISABLE);
+    check_worker_cancel_state_failure(PTHREAD_CANCEL_ENABLE);
+    END();
+}
+
 /* A configured-but-never-started pool is what a VLC filter-chain probe leaves
  * behind: destroy must not touch the gate, the slots or the hooks. */
 static void test_destroy_without_start(void)
@@ -510,6 +549,7 @@ int main(void)
     test_bare_ops();
     test_gate_failures_poison_and_stop();
     test_exit_failures_cancel_and_stop();
+    test_worker_cancel_state_failures();
     test_destroy_without_start();
 
     return test_harness_report();

@@ -116,17 +116,17 @@ endif
 
 TEST_CFLAGS  := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefined $(EXTRA_CFLAGS)
 TEST_LDFLAGS := -fsanitize=address,undefined
-# The done barrier uses sem_clockwait when libc provides it and sem_trywait in
-# its monotonic polling fallback. Wrapping both keeps either build testable.
-BARRIER_WRAP_LDFLAGS := -Wl,--wrap=sem_clockwait -Wl,--wrap=sem_trywait \
-	-Wl,--wrap=sem_post \
-	-Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_cond_broadcast
-# test_threading fault-injects pthread_cond_init to exercise gate-init cleanup.
-THREADING_WRAP_LDFLAGS := -Wl,--wrap=pthread_cond_init $(BARRIER_WRAP_LDFLAGS)
+# The completion barrier uses a dedicated monotonic condition variable.
+BARRIER_WRAP_LDFLAGS := -Wl,--wrap=pthread_cond_timedwait \
+	-Wl,--wrap=pthread_cond_signal -Wl,--wrap=pthread_mutex_lock \
+	-Wl,--wrap=pthread_cond_broadcast
+# test_threading fault-injects condition initialization and deadline clocks.
+THREADING_WRAP_LDFLAGS := -Wl,--wrap=pthread_cond_init \
+	-Wl,--wrap=clock_gettime $(BARRIER_WRAP_LDFLAGS)
 USM_POOL_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc
-# worker_pool fault injection: slot/thread-record allocation + thread spawn.
+# worker_pool fault injection: allocation, spawn, and worker cancellation state.
 WORKER_POOL_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc \
-    -Wl,--wrap=pthread_create
+    -Wl,--wrap=pthread_create -Wl,--wrap=pthread_setcancelstate
 WORKER_POOL_FUZZ_WRAP_LDFLAGS := -Wl,--wrap=pthread_create
 # CONC-1: the lost-wake regression waits out the barrier deadline, so shrink it
 # from the shipped 10 s to something a test suite can afford.
@@ -329,7 +329,7 @@ check-visibility: $(BUILD)/$(PLUGIN).so
 # works on machines without lizard installed.
 check: complexity test
 
-test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_threading_noaffinity $(BUILD)/test_threading_fallback $(BUILD)/test_worker_pool $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants $(if $(IS_X86),$(BUILD)/test_usm_pool_dispatch)
+test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_threading_noaffinity $(BUILD)/test_worker_pool $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants $(if $(IS_X86),$(BUILD)/test_usm_pool_dispatch)
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/test_upscale_logic
@@ -351,9 +351,6 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/tes
 	@echo
 	@echo "=== threading (no-affinity fallback) ==="
 	@$(BUILD)/test_threading_noaffinity
-	@echo
-	@echo "=== threading (monotonic polling fallback) ==="
-	@$(BUILD)/test_threading_fallback
 	@echo
 	@echo "=== zimg_helpers ==="
 	@$(BUILD)/test_zimg_helpers
@@ -1003,9 +1000,6 @@ $(BUILD)/test_threading: tests/test_threading.c src/threading.h tests/barrier_fa
 # proving the sysconf-only fallback (non-glibc libcs) builds and passes.
 $(BUILD)/test_threading_noaffinity: tests/test_threading.c src/threading.h tests/barrier_fault_inject.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) $(THREADING_TEST_CFLAGS) -DUP_NO_CPU_AFFINITY -o $@ $< $(TEST_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
-
-$(BUILD)/test_threading_fallback: tests/test_threading.c src/threading.h tests/barrier_fault_inject.h | $(BUILD)
-	$(CC) $(TEST_CFLAGS) $(THREADING_TEST_CFLAGS) -DUP_HAVE_SEM_CLOCKWAIT=0 -o $@ $< $(TEST_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
 
 $(BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
