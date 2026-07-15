@@ -109,4 +109,5 @@ microbenchmark, not an end-to-end frame latency result.
 `bench-pipeline` runs zimg followed by in-place USM, matching their sequential
 production order while keeping both persistent pools alive. It reports the
 combined first-frame initialization, process RSS, and steady frame time by
-worker count.
+worker count. Optional arguments after frames select pinning, zimg minimum
+stripe lines, and USM minimum stripe rows for same-host default tuning.

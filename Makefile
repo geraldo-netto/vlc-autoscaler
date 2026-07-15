@@ -976,7 +976,7 @@ bench-worker-pool: $(BUILD)/bench_worker_pool
 	@for n in 1 2 4 8 12 16 24 32; do $(BUILD)/bench_worker_pool $$n 10000; done
 
 bench-pipeline: $(BUILD)/bench_pipeline
-	@echo "threads,frames,lazy_us,max_rss_kb,us_per_frame"
+	@echo "threads,frames,pin,zimg_lines,usm_lines,lazy_us,max_rss_kb,us_per_frame"
 	@for n in 1 4 8 12 16; do $(BUILD)/bench_pipeline $$n 200; done
 
 bench-flatskip: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip
