@@ -249,11 +249,11 @@ typedef struct
     int               worker_budget;  /* up_threads_decide result at open;
                                        * first-frame plan re-resolve input */
 
-    /* REL-6: consecutive frames rejected for alignment drift; a full
-     * streak escalates to FATAL. `warned` latches the one-shot log. */
+    /* REL-3: recurring frames rejected for alignment drift eventually
+     * escalate to FATAL. `warned` latches the one-shot log. */
     struct {
-        int  streak;
-        bool warned;
+        unsigned misses;
+        bool     warned;
     } drift;
 
     /* SCAL-4/5: pin workers only to exact IDs in the allowed CPU set. */
@@ -1197,14 +1197,12 @@ static void zimg_warn_bad_geometry(zimg_priv_t *p)
                  "(planes, extent, or crop); dropping frame(s)");
 }
 
-/* REL-6: zero-copy graphs are built for the first frame's storage
- * alignment; a drifted later frame is dropped (TRANSIENT). A persistent
- * streak means the allocator changed for good — without escalation every
- * remaining frame would drop silently, since TRANSIENT never engages the
- * swscale fallback. Warn once, and after a full streak return FATAL so
- * the fallback (which accepts any valid alignment) can take over. */
-#define ZIMG_DRIFT_FATAL_STREAK 30
-
+/* REL-3: zero-copy graphs are built for the first frame's storage alignment;
+ * a drifted later frame is dropped (TRANSIENT). Count misses across safe
+ * frames too: a pool that alternates compatible and incompatible buffers
+ * would otherwise reset forever and silently drop every incompatible frame.
+ * After enough total misses, return FATAL so the alignment-agnostic fallback
+ * can take over. */
 static scaler_process_status_t zimg_note_alignment_drift(zimg_priv_t *p)
 {
     if (!p->drift.warned) {
@@ -1213,13 +1211,13 @@ static scaler_process_status_t zimg_note_alignment_drift(zimg_priv_t *p)
             msg_Info((vlc_object_t *)p->lazy.log_obj,   /* OBS-2 */
                      "AutoUpscale: zimg: picture storage drifted from the "
                      "alignment the zero-copy graphs were built for; "
-                     "dropping frame(s), failing over after %d consecutive "
-                     "misses", ZIMG_DRIFT_FATAL_STREAK);
+                     "dropping frame(s), failing over after %u total "
+                     "alignment misses", UP_ZIMG_DRIFT_FATAL_MISSES);
     }
-    if (++p->drift.streak >= ZIMG_DRIFT_FATAL_STREAK) {
-        /* Permanent: the allocator changed for good. Poison, and stop the
-         * workers rather than leave them parked on the gate holding their
-         * graphs and scratch for the rest of playback (RES-2). */
+    if (++p->drift.misses >= UP_ZIMG_DRIFT_FATAL_MISSES) {
+        /* Recurring incompatibility: poison and stop the workers rather than
+         * leave them parked on the gate holding graphs and scratch for the
+         * rest of playback (RES-2). */
         up_worker_pool_poison(&p->pool);
         return SCALER_PROCESS_FATAL;
     }
@@ -1243,7 +1241,6 @@ static scaler_process_status_t zimg_process(scaler_ctx_t *ctx,
     zimg_prepare_first_frame_io(p, ctx, &src_view, &dst_view);
     if (!zimg_frame_io_safe(p, &src_view, &dst_view))
         return zimg_note_alignment_drift(p);
-    p->drift.streak = 0;
     if (zimg_ensure_lazy_init(p) != 0) return SCALER_PROCESS_FATAL;
 
     /* Per-frame plane pointers. On each side the graph touches the VLC

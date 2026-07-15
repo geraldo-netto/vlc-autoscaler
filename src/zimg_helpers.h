@@ -32,6 +32,7 @@
 /* Minimum destination rows per slice-threaded stripe. This bounds graph count
  * and per-stripe boundary overhead. */
 #define UP_STRIPE_MIN_DST_LINES 16
+#define UP_ZIMG_DRIFT_FATAL_MISSES 30u
 
 /*
  * Resolve the user-tunable zimg stripe-min-lines value. Pass 0 (or any

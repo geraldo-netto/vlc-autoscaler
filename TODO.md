@@ -116,7 +116,10 @@ this technical domain; another business/domain pattern would not clarify it.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| REL-3 | open | M | Zimg alignment failover counts only consecutive unsafe frames and resets after every safe frame (`src/scaler_zimg.c:1166-1193,1209-1213`); only fatal status invokes fallback (`src/autoupscale.c:1179-1183`). | A picture pool alternating aligned and unaligned buffers can drop every incompatible frame forever without reaching the 30-frame threshold. Use a cumulative/sliding-window threshold, or rebuild/retire direct-I/O mode after recurring drift. |
+
+No open finding. Zimg now escalates recurring alignment misses even when safe
+buffers occur between them, so fatal fallback cannot be postponed forever by
+an alternating picture pool.
 
 ## portability/standards conformance
 
