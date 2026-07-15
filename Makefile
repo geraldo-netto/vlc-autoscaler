@@ -815,20 +815,99 @@ stress-zimg: $(BUILD)/test_scaler_zimg $(BUILD)/test_scaler_zimg_tsan
 # given zimg_open's stripe clamp, and a couple of zimg-internal failure returns
 # need fault injection. The harness reports its coverage as informational.
 coverage-zimg: | $(BUILD_MARKER)
-	@rm -rf $(BUILD)/covz && mkdir -p $(BUILD)/covz
-	$(CC) -O0 -g $(COVERAGE_PROFILE_FLAGS) $(ZIMG_H_CFLAGS) \
-	    -o $(BUILD)/covz/tz tests/test_scaler_zimg.c src/scaler_zimg.c \
-	    $(ZIMG_TEST_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
-	@$(BUILD)/covz/tz >/dev/null 2>&1 || true
-	@# Run gcov inside covz (with src/tests symlinks so embedded relative
-	@# paths resolve) — .gcov output stays out of the repo root even when
-	@# a run is interrupted.
-	@ln -sfn $(abspath src) $(BUILD)/covz/src
-	@ln -sfn $(abspath tests) $(BUILD)/covz/tests
-	@(cd $(BUILD)/covz && gcov -m -o . tz-scaler_zimg.gcda >/dev/null 2>&1) || true
-	@awk -F: 'NF>=2{c=$$1;gsub(/[ \t]/,"",c); if(c!="-"&&c!=""){t++; if(c=="#####"||c=="=====")u++}} \
-	    END{printf "scaler_zimg.c: %d/%d lines = %.1f%% (harness; informational)\n", t-u, t, (t-u)*100.0/t}' \
-	    $(BUILD)/covz/scaler_zimg.c.gcov
+	@set -eu; \
+	covz="$(abspath $(BUILD))/covz"; \
+	harness="$$covz/tz"; \
+	harness_log="$$covz/harness.log"; \
+	gcov_log="$$covz/gcov.log"; \
+	gcno="$$covz/tz-scaler_zimg.gcno"; \
+	gcda="$$covz/tz-scaler_zimg.gcda"; \
+	gcov_file="$$covz/scaler_zimg.c.gcov"; \
+	rm -rf -- "$$covz"; \
+	mkdir -p -- "$$covz"; \
+	$(COV_CC) -O0 $(COVERAGE_PROFILE_FLAGS) $(ZIMG_H_CFLAGS) \
+	    -o "$$harness" tests/test_scaler_zimg.c src/scaler_zimg.c \
+	    $(COV_LDFLAGS) $(ZIMG_TEST_WRAP_LDFLAGS) $(ZIMG_H_LIBS); \
+	ln -s -- "$(abspath src)" "$$covz/src"; \
+	ln -s -- "$(abspath tests)" "$$covz/tests"; \
+	harness_status=0; \
+	"$$harness" >"$$harness_log" 2>&1 || harness_status=$$?; \
+	if [ "$$harness_status" -ne 0 ]; then \
+	    printf 'FAIL: zimg coverage harness exited with status %d\n' \
+	        "$$harness_status" >&2; \
+	    cat -- "$$harness_log" >&2 || :; \
+	fi; \
+	report_status=0; \
+	if [ ! -s "$$gcno" ]; then \
+	    printf 'ERROR: missing or empty zimg coverage notes: %s\n' "$$gcno" >&2; \
+	    report_status=2; \
+	fi; \
+	if [ ! -s "$$gcda" ]; then \
+	    printf 'ERROR: missing or empty zimg coverage data: %s\n' "$$gcda" >&2; \
+	    report_status=2; \
+	fi; \
+	gcov_status=0; \
+	if [ -s "$$gcno" ] && [ -s "$$gcda" ]; then \
+	    (cd "$$covz" && $(GCOV) -m -o . "$${gcda##*/}") \
+	        >"$$gcov_log" 2>&1 || gcov_status=$$?; \
+	    if [ "$$gcov_status" -ne 0 ]; then \
+	        printf 'FAIL: gcov exited with status %d\n' "$$gcov_status" >&2; \
+	        cat -- "$$gcov_log" >&2 || :; \
+	    fi; \
+	fi; \
+	if [ ! -s "$$gcov_file" ]; then \
+	    printf 'ERROR: missing or empty zimg gcov report: %s\n' \
+	        "$$gcov_file" >&2; \
+	    report_status=2; \
+	else \
+	    source=$$(awk 'index($$0, ":Source:") { \
+	        sub(/^.*:Source:/, "", $$0); print $$0; exit \
+	    }' "$$gcov_file"); \
+	    if [ "$$source" != 'src/scaler_zimg.c' ]; then \
+	        printf 'ERROR: unexpected zimg gcov source: %s\n' "$$source" >&2; \
+	        report_status=2; \
+	    else \
+	        totals_status=0; \
+	        totals=$$(awk -f scripts/gcov_line_totals.awk "$$gcov_file") \
+	            || totals_status=$$?; \
+	        if [ "$$totals_status" -ne 0 ]; then \
+	            printf 'ERROR: failed to parse zimg gcov report (status %d)\n' \
+	                "$$totals_status" >&2; \
+	            report_status=2; \
+	        else \
+	            set -f; set -- $$totals; set +f; \
+	            if [ "$$#" -ne 2 ]; then \
+	                printf 'ERROR: malformed zimg coverage totals: %s\n' \
+	                    "$$totals" >&2; \
+	                report_status=2; \
+	            else \
+	                total=$$1; covered=$$2; totals_valid=1; \
+	                case "$$total" in ''|*[!0-9]*) totals_valid=0;; esac; \
+	                case "$$covered" in ''|*[!0-9]*) totals_valid=0;; esac; \
+	                if [ "$$totals_valid" -ne 1 ]; then \
+	                    printf 'ERROR: malformed zimg coverage totals: %s\n' \
+	                        "$$totals" >&2; \
+	                    report_status=2; \
+	                elif [ "$$total" -eq 0 ]; then \
+	                    printf 'ERROR: zimg gcov report has no executable lines\n' >&2; \
+	                    report_status=2; \
+	                elif [ "$$covered" -gt "$$total" ]; then \
+	                    printf 'ERROR: zimg covered lines exceed total: %s\n' \
+	                        "$$totals" >&2; \
+	                    report_status=2; \
+	                else \
+	                    percent=$$(awk -v covered="$$covered" -v total="$$total" \
+	                        'BEGIN { printf "%.1f", covered * 100.0 / total }'); \
+	                    printf 'scaler_zimg.c: %s/%s lines = %s%% (harness; informational)\n' \
+	                        "$$covered" "$$total" "$$percent"; \
+	                fi; \
+	            fi; \
+	        fi; \
+	    fi; \
+	fi; \
+	if [ "$$harness_status" -ne 0 ]; then exit "$$harness_status"; fi; \
+	if [ "$$gcov_status" -ne 0 ]; then exit "$$gcov_status"; fi; \
+	exit "$$report_status"
 
 bench-zimg: $(BUILD)/bench_scaler_zimg
 	@echo "threads,chroma,src,dst,frames,zc,us_per_frame"

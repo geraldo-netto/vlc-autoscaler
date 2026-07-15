@@ -641,8 +641,8 @@ SDKs listed below; swscale and picture-view contract tests use local stubs.
 - **For coverage:** a matched `COV_CC` / `GCOV` pair, Bash, Python 3, an `awk`
   implementation, and GNU coreutils (including `realpath`).
 - **For zimg verification:** VLC and zimg development files. The optional
-  `test-zimg`, `stress-zimg`, `bench-zimg`, and `coverage-zimg` targets use the
-  compiler selected by `CC`.
+  `test-zimg`, `stress-zimg`, and `bench-zimg` targets use `CC`; the
+  `coverage-zimg` target uses the matched `COV_CC` / `GCOV` coverage pair.
 - **For static analysis:** `cppcheck` and `lizard`. `make scan-build` also
   needs Clang's `scan-build` (`clang-tools` on Debian/Ubuntu), plus the VLC and
   FFmpeg development files used by the production plugin; zimg remains

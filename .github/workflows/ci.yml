@@ -189,6 +189,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MARCH: x86-64-v3
+      COV_CC: gcc
+      GCOV: gcov
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -234,9 +236,11 @@ jobs:
         run: |
           make coverage
           gcovr --root . --filter 'src/' \
+            --gcov-executable "$GCOV" \
             --sonarqube coverage-sonar.xml build/cov
           make coverage-zimg
           gcovr --root . --filter 'src/scaler_zimg\.c' \
+            --gcov-executable "$GCOV" \
             --sonarqube coverage-zimg-sonar.xml build/covz
 
       - name: Run sonar-scanner and wait for quality gate
