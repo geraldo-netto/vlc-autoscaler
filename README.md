@@ -539,7 +539,7 @@ scripts/
 docs/HOW_IT_WORKS.md      design notes
 docs/USAGE.md             command-line recipes + diagnostic ladder
 docs/BENCHMARKS.md        reproducible benchmark procedure and interpretation
-docs/PERFORMANCE.md       reproducible performance-measurement guidance
+docs/PERFORMANCE.md       compatibility pointer to the benchmark guide
 docs/CINNAMON-DESKTOP-ACTIONS.md
                           Cinnamon/Nemo launcher and right-click integration
 patches/                  optional VLC patches (workaround for chain depth limit)

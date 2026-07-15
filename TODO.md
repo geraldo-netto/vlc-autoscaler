@@ -208,7 +208,6 @@ was found.
 
 | id | status | effort | description | why not now |
 |---|---|---|---|---|
-| DUP-5 | parked | S | `docs/BENCHMARKS.md:1-44` and `docs/PERFORMANCE.md:1-41` duplicate the benchmark commands, recording requirements, noise cautions, thread/memory interpretation, and flat-skip warning. | Deferred by project prioritization; the documents are currently consistent and the duplication has no runtime impact. |
 | PERF-P1 | parked | M | In-place USM snapshots up to two halo rows per worker serially before each dispatch (`src/usm_pool.c:448-491`). | Folding snapshots into workers needs another readiness phase; profile the current copy cost before adding synchronization. |
 | PERF-P2 | parked | M | Multiversion dispatch always chooses the widest supported ISA (`src/usm_pool_dispatch.c:87-121`), although AVX-512 frequency effects and memory-bound throughput are host-specific. | No deployment-host regression has been measured, and a single-baseline build is an available workaround. Benchmark first; if confirmed, add a force/max-variant override or a measured selection policy. |
 | SCAL-1 | parked | M | CPU capacity uses `sched_getaffinity` and host `sysconf` only (`src/threading.h:131-175,201-224`); neither observes cgroup v2 `cpu.max` or v1 CFS quota. | Deferred by project prioritization; robust handling needs cgroup v1/v2 discovery and validation across nested or delegated controller layouts. |
