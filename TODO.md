@@ -1,6 +1,6 @@
 # TODO — full-project audit findings
 
-Full production rescan of the working tree based on HEAD `491bef9` on 2026-07-15.
+Full production rescan of the working tree based on HEAD `a57fd69` on 2026-07-15.
 Scope: all 44 tracked non-test/non-cache files, including production source and
 public headers, build/release configuration, CI, scripts, documentation, and
 patches. Excluded: `tests/**`, test corpora and fixtures, generated build output,
@@ -8,14 +8,13 @@ caches, ignored artifacts, and local untracked settings. Test paths named by
 in-scope build files were considered only as wiring; no test source or fixture
 was read or used as evidence. The working tree was clean at scan start.
 
-Validation was production-only: GCC and Clang single- and multiversion shared-
-object builds with `-Werror`; linked-symbol visibility and multiversion ISA
-gates; a GCC `-fanalyzer` build; Clang Static Analyzer 18 over both production
-configurations; source-only Lizard 1.23.0 with CCN <= 10 and at most 7
-parameters; Bash syntax checks; ELF hardening inspection; local documentation-
-link and option-wiring checks; and source-only cppcheck 2.13.0 (limited by the
-real VLC macro headers). `clang-tidy`, ShellCheck, and actionlint were
-unavailable locally. No test was run. Row format:
+Validation was production-only: full source inspection across all categories,
+tracked-file enumeration with test/cache exclusions, targeted source searches,
+and Bash syntax checks for repository scripts. A local GCC plugin build could
+not start because `vlc-plugin` pkg-config metadata is not installed in this
+environment. `lizard`, `cppcheck`, `clang`, `clang-tidy`, ShellCheck, and
+actionlint were unavailable locally, so the scan did not replace CI's analyzer
+coverage. No test source was scanned and no test was run. Row format:
 `id | status | effort | description | notes`.
 
 ## security
@@ -174,7 +173,6 @@ exports only the expected VLC entry points.
 | BUILD-13 | open | S | `coverage-zimg` suppresses both the instrumented harness and `gcov` exit status (`Makefile:717-731`), and Sonar publishes the resulting data (`.github/workflows/ci.yml:228-244`). | Informational percentage reporting does not justify a green target after a crash or corrupt/missing coverage. Preserve the report if useful, then propagate the harness status and fail on a missing or malformed gcov artifact. |
 | BUILD-14 | open | S | Zimg is an optional production dependency (`Makefile:36-42`; `README.md:625-641`), but every CI job installs it and no plugin build forces `HAVE_ZIMG=` (`.github/workflows/ci.yml:25-31,112-120,198-226`). | The shipped swscale-only conditional source graph can rot unnoticed. Add a clean zimg-disabled plugin build and visibility check. |
 | BUILD-15 | open | S | The libFuzzer failure upload and local ignore list omit the `oom-*` artifact class (`.github/workflows/ci.yml:127-185`, `.gitignore:21-25`). | OOM reproducers disappear when CI fails and dirty local worktrees. Retain/upload and ignore `oom-*`; consider uploading the already-ignored `slow-unit-*` class too. |
-| BUILD-16 | fixed pending merge | S | The zimg TSan harness linked `--wrap` fault-injection shims (`Makefile:642-667`, `tests/barrier_fault_inject.h:22-69`, `tests/test_scaler_zimg.c:43-203`) on top of ThreadSanitizer's own libc/pthread interceptors, and the CI TSan run segfaulted before entering the harness. | Split the zimg harness flags so ASan/UBSan keeps fault injection while TSan compiles out wrapper-backed tests and links without any `--wrap` shims. |
 
 ## observability
 
