@@ -1,0 +1,16 @@
+src/upscale_logic.h
+tests/cli_parse.h
+src/usm.h
+src/perfmon.h
+src/threading.h
+src/worker_pool.h
+src/zimg_helpers.h
+src/chroma_classify.h
+src/scaler_zimg_chroma.h
+src/content_probe.h
+src/scaler_pick_logic.h
+src/scaler_status.h
+src/scaler.h
+src/scaler_swscale.c
+src/picture_view.h
+src/usm_pool.c

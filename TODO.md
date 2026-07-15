@@ -85,7 +85,8 @@ zero violations, and a maximum CCN of 10.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| DUP-3 | open | S | The same 16-file coverage scope is maintained separately in `scripts/coverage_per_function.sh:24-28` and `scripts/coverage_report.sh:14-35`. | The lists currently match, but drift can make the two gates enforce different scopes silently. Move the list to one shared, path-qualified manifest; doing this first makes BUILD-9 a single-source correction. |
+
+No open finding. Both coverage gates now consume one path-qualified manifest.
 
 ## architecture/modularity/SOLID
 
@@ -163,7 +164,7 @@ exports only the expected VLC entry points.
 | BUILD-6 | open | S | Empty `VLC_PLUGIN_BASE` becomes non-empty `/video_filter` (`Makefile:43-44`), while install/uninstall validate only the derived value and use unquoted paths (`Makefile:966-976`). | Validate a non-empty base in both targets before deriving the subdirectory, and quote every destination. |
 | BUILD-7 | open | S | The Sonar job runs for every pull request but requires `SONAR_TOKEN` (`.github/workflows/ci.yml:3-8,184-248`); fork pull requests do not receive repository secrets. | Gate Sonar to pushes/internal pull requests while retaining token-free build checks for forks. |
 | BUILD-8 | open | S | CI advertises an 80% coverage minimum (`.github/workflows/ci.yml:95-96`), while the invoked recipes enforce 90% (`Makefile:932-933`). | Make the displayed and enforced thresholds share one value. |
-| BUILD-9 | open | S | Both coverage scopes omit shipped `plane_utils.h`, `cpu_level.h`, and `usm_pool_dispatch.c`, while listing non-production `cli_parse.h` (`scripts/coverage_report.sh:14-35`, `scripts/coverage_per_function.sh:24-28`; omitted logic at `src/plane_utils.h:30-205`, `src/cpu_level.h:25-48`, `src/usm_pool_dispatch.c:98-136`). | Those production units receive no per-file/function verdict. After DUP-3 centralizes the manifest, make it path-qualified, add the omitted units, and document intentional exclusions. |
+| BUILD-9 | open | S | The shared coverage manifest omits shipped `plane_utils.h`, `cpu_level.h`, and `usm_pool_dispatch.c`, while listing non-production `cli_parse.h` (`scripts/coverage_scope.txt`; omitted logic at `src/plane_utils.h:30-205`, `src/cpu_level.h:25-48`, `src/usm_pool_dispatch.c:98-136`). | Those production units receive no per-file/function verdict. Add the omitted units to the manifest and document intentional exclusions. |
 | BUILD-10 | open | S | Threaded coverage is compiled without an explicit atomic profile-update mode (`Makefile:801-802,849-866`), CI suppresses negative-hit parse errors (`.github/workflows/ci.yml:225-241`), and the local parser treats every non-sentinel count, including a negative one, as covered (`scripts/coverage_report.sh:65-75`). | Concurrent counter updates can make coverage vary or over-report. Use `-fprofile-update=atomic`, remove the suppression, and reject non-numeric/negative counts. |
 | BUILD-11 | open | S | `PLUGIN_GOALS` omits the standalone `abi-layout-check` and `check-visibility` goals (`Makefile:46-58` versus `:282-285,303-324`). | Direct invocation without SDKs bypasses the friendly prerequisite check and fails deep in compilation. Add both goals to `PLUGIN_GOALS`. |
 

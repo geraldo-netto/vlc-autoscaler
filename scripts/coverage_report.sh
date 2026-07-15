@@ -8,31 +8,69 @@
 # Usage: COV_DIR=build_dev/cov THRESHOLD=80 scripts/coverage_report.sh
 
 set -euo pipefail
-COV_DIR="${COV_DIR:-build/cov}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+SCOPE_FILE="${COVERAGE_SCOPE_FILE:-$SCRIPT_DIR/coverage_scope.txt}"
+COV_DIR="${COV_DIR:-$REPO_ROOT/build/cov}"
 THRESHOLD="${THRESHOLD:-80}"
 
-# The set of files we hold to the coverage bar. autoupscale.c and
-# scaler_zimg.c are excluded because they require VLC headers (not
-# directly unit-testable); their pure logic was extracted into the
-# headers below precisely so it CAN be unit-tested.
-TRACKED=(
-    upscale_logic.h
-    cli_parse.h
-    usm.h
-    perfmon.h
-    threading.h
-    worker_pool.h
-    zimg_helpers.h
-    chroma_classify.h
-    scaler_zimg_chroma.h
-    content_probe.h
-    scaler_pick_logic.h
-    scaler_status.h
-    scaler.h
-    scaler_swscale.c
-    picture_view.h
-    usm_pool.c
-)
+if [[ "$SCOPE_FILE" != /* ]]; then SCOPE_FILE="$REPO_ROOT/$SCOPE_FILE"; fi
+if [[ "$COV_DIR" != /* ]]; then COV_DIR="$REPO_ROOT/$COV_DIR"; fi
+
+if [[ ! -f "$SCOPE_FILE" ]]; then
+    echo "ERROR: coverage scope manifest not found: $SCOPE_FILE" >&2
+    exit 2
+fi
+
+TRACKED=()
+declare -A SCOPE_SEEN SCOPE_BASENAME_SEEN
+while IFS= read -r entry || [[ -n "$entry" ]]; do
+    entry="${entry%%#*}"
+    entry="${entry#"${entry%%[![:space:]]*}"}"
+    entry="${entry%"${entry##*[![:space:]]}"}"
+    [[ -z "$entry" ]] && continue
+    if [[ "$entry" = /* ]]; then
+        echo "ERROR: coverage scope entry must be relative: $entry" >&2
+        exit 2
+    fi
+    normalized=$(realpath -m --relative-to="$REPO_ROOT" -- "$REPO_ROOT/$entry")
+    if [[ "$normalized" == ".." || "$normalized" == ../* ]]; then
+        echo "ERROR: coverage scope entry escapes the repository: $entry" >&2
+        exit 2
+    fi
+    if [[ -n "${SCOPE_SEEN[$normalized]+present}" ]]; then
+        echo "ERROR: duplicate coverage scope entry: $normalized" >&2
+        exit 2
+    fi
+    base=${normalized##*/}
+    if [[ -n "${SCOPE_BASENAME_SEEN[$base]+present}" ]]; then
+        echo "ERROR: coverage scope basename collision: " \
+             "${SCOPE_BASENAME_SEEN[$base]} and $normalized" >&2
+        exit 2
+    fi
+    if [[ ! -f "$REPO_ROOT/$normalized" ]]; then
+        echo "ERROR: coverage scope entry does not exist: $normalized" >&2
+        exit 2
+    fi
+    SCOPE_SEEN[$normalized]=1
+    SCOPE_BASENAME_SEEN[$base]=$normalized
+    TRACKED+=("$normalized")
+done < "$SCOPE_FILE"
+
+if [[ ${#TRACKED[@]} -eq 0 ]]; then
+    echo "ERROR: coverage scope manifest is empty: $SCOPE_FILE" >&2
+    exit 2
+fi
+
+gcov_source_path()
+{
+    local gcov_file=$1 header source absolute
+    header=$(awk 'index($0, ":Source:") { print; exit }' "$gcov_file")
+    [[ -n "$header" ]] || return 1
+    source=${header#*:Source:}
+    if [[ "$source" = /* ]]; then absolute=$source; else absolute=$REPO_ROOT/$source; fi
+    realpath -m --relative-to="$REPO_ROOT" -- "$absolute"
+}
 
 if [[ ! -d "$COV_DIR" ]]; then
     echo "ERROR: $COV_DIR does not exist. Run 'make coverage' first." >&2
@@ -52,10 +90,16 @@ missing=0
 shopt -s nullglob globstar
 for t in "${TRACKED[@]}"; do
     # Gather every .gcov for this source: legacy flat layout + per-binary
-    # subdirs written by the Makefile.
-    files=( "$COV_DIR/$t.gcov" "$COV_DIR"/gcov/*/"$t.gcov" )
+    # subdirs written by the Makefile. gcov names artifacts by basename, so
+    # verify the embedded source path before accepting a candidate.
+    base=${t##*/}
+    files=( "$COV_DIR/$base.gcov" "$COV_DIR"/gcov/*/"$base.gcov" )
     present=()
-    for f in "${files[@]}"; do [[ -f "$f" ]] && present+=("$f"); done
+    for f in "${files[@]}"; do
+        [[ -f "$f" ]] || continue
+        source=$(gcov_source_path "$f") || continue
+        [[ "$source" == "$t" ]] && present+=("$f")
+    done
     if [[ ${#present[@]} -eq 0 ]]; then
         echo "ERROR: no coverage artifact for $t" >&2
         missing=1
