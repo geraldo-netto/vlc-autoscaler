@@ -472,6 +472,9 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/tes
 	@echo "=== safe cleanup roots ==="
 	@sh tests/test_safe_rm_tree.sh
 	@echo
+	@echo "=== benchmark matrix parser ==="
+	@sh tests/test_bench_matrix.sh
+	@echo
 	@echo "=== coverage parsers ==="
 	@sh tests/test_coverage_parsers.sh
 
@@ -862,7 +865,7 @@ $(BUILD)/bench_usm_pool_flatskip: tests/bench_usm_pool.c tests/prng.h $(BUILD)/u
 	$(CC) $(BENCH_CFLAGS) -o $@ $< $(BUILD)/usm_pool_bench_flatskip.o -lpthread
 
 bench: $(BUILD)/bench_usm_pool
-	@echo "threads,width,height,frames,amount,fill,us_per_frame"
+	@echo "requested_threads,effective_threads,width,height,frames,amount,fill,us_per_frame"
 	@$(BUILD)/bench_usm_pool 1 1920 1080 300 20 rand
 	@$(BUILD)/bench_usm_pool 2 1920 1080 300 20 rand
 	@$(BUILD)/bench_usm_pool 4 1920 1080 300 20 rand
@@ -871,7 +874,7 @@ bench: $(BUILD)/bench_usm_pool
 	@$(BUILD)/bench_usm_pool 8 3840 2160 100 20 rand
 
 bench-flatskip: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip
-	@echo "kernel,threads,width,height,frames,amount,fill,us_per_frame"
+	@echo "kernel,requested_threads,effective_threads,width,height,frames,amount,fill,us_per_frame"
 	@printf "default,"  ; $(BUILD)/bench_usm_pool          8 1920 1080 300 20 flat
 	@printf "flatskip," ; $(BUILD)/bench_usm_pool_flatskip 8 1920 1080 300 20 flat
 	@printf "default,"  ; $(BUILD)/bench_usm_pool          8 1920 1080 300 20 mixed

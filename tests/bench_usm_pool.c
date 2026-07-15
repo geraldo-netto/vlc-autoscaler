@@ -7,7 +7,7 @@
  *   fill: rand (default) / flat / mixed (top half flat, bottom random)
  *
  * Output: one CSV line:
- *   threads,width,height,frames,amount,fill,us_per_frame
+ *   requested_threads,effective_threads,width,height,frames,amount,fill,us_per_frame
  */
 #include "../src/usm_pool.h"
 #include "../src/usm.h"
@@ -175,6 +175,12 @@ int main(int argc, char **argv)
         rc_run = 1;
         goto out;
     }
+    int effective_threads = up_usm_pool_effective_threads(pool);
+    if (effective_threads <= 0) {
+        fprintf(stderr, "invalid effective worker count\n");
+        rc_run = 1;
+        goto out;
+    }
 
     double us_per_frame = 0.0;
     if (run_timed(pool, src, dst, &a, amount, &us_per_frame) != 0) {
@@ -182,8 +188,9 @@ int main(int argc, char **argv)
         goto out;
     }
 
-    printf("%d,%d,%d,%d,%d,%s,%.2f\n",
-           a.n_threads, a.width, a.height, a.frames, a.amount_pct, a.fill, us_per_frame);
+    printf("%d,%d,%d,%d,%d,%d,%s,%.2f\n",
+           a.n_threads, effective_threads, a.width, a.height, a.frames,
+           a.amount_pct, a.fill, us_per_frame);
 
 out:
     up_usm_pool_destroy(pool);

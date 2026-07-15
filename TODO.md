@@ -60,7 +60,6 @@ and close paths retain explicit ownership and paired releases.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| PERF-8 | open | S | The USM benchmark labels requested rather than effective worker counts: the default pool caps at 12 (`src/usm_pool.c:104-107,409-426`), but `tests/bench_usm_pool.c:175,194-195` prints the request and `scripts/bench_matrix.sh:18-66` publishes 16/20-worker rows. | The 16- and 20-thread rows are actually at most 12-worker runs, so scaling results are mislabeled. Emit requested and `up_usm_pool_effective_threads()` values after warmup, and make the matrix validate/use the effective count. |
 
 No additional unparked finding: steady-state processing allocates no per-frame
 backend state and does not rebuild graphs.

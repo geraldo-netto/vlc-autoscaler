@@ -1052,7 +1052,9 @@ distinguish "wrong test" from "correct code".
 
 `tests/bench_usm_pool.c` is a standalone perf bench separate from the
 correctness tests. It accepts `<threads> <width> <height> [frames]
-[amount] [fill]` and prints one CSV line of µs/frame, with
+[amount] [fill]` and prints one CSV line as
+`requested_threads,effective_threads,width,height,frames,amount,fill,us_per_frame`,
+with
 warmup-and-discard handling so worker-spawn and first-touch page
 faults don't pollute the timed loop. The supported fill modes drive different
 content patterns through the kernels, which is useful when measuring the
@@ -1060,8 +1062,12 @@ effect of compile-time toggles
 like `USM_POOL_FLAT_SKIP`.
 
 `scripts/bench_matrix.sh` defines the current `(threads × resolution)` grid
-and aggregation policy. It is used to compare the pool against itself across
-configurations during development.
+and aggregation policy. It validates every echoed workload field, requires a
+stable post-warmup effective worker count across three samples, and emits
+`variant` plus the benchmark's eight fields with the median timing. Requested
+and effective counts remain separate because the pool caps oversized requests.
+The script is used to compare the pool against itself across configurations
+during development.
 
 ### Coverage
 

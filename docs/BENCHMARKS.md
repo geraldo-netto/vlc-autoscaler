@@ -19,6 +19,15 @@ The matrix script also accepts optional frame-count, amount, and fill-mode
 arguments. The benchmark accepts `rand`, `flat`, and `mixed`; its usage output
 and source are authoritative for the current interface.
 
+`bench_usm_pool` emits
+`requested_threads,effective_threads,width,height,frames,amount,fill,us_per_frame`.
+The effective count is queried after warmup, so it includes the pool's worker
+cap and any lazy-start reduction. The matrix validates every echoed workload
+field, requires the effective count to remain stable across its three samples,
+and emits the median as
+`variant,requested_threads,effective_threads,width,height,frames,amount,fill,us_per_frame`.
+Use `effective_threads`, not the request, when interpreting scaling.
+
 The benchmark programs fill their source buffers before timing and report
 kernel or scaler work separately from decode, encode, display, and frame
 generation. The Makefile and benchmark sources are the source of truth for the
