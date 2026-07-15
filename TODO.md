@@ -212,7 +212,6 @@ picks so a later audit does not revive it without new evidence.
 
 | id | status | effort | description | why not now |
 |---|---|---|---|---|
-| PERF-P1c | parked | M | If PERF-P1a confirms a bottleneck, prototype worker-owned halo copies with a snapshot-ready phase before any worker writes in place. | Do not fold this into the existing go gate: readiness must prevent neighbour overwrite. Require unit fault-injection for every new wait failure, in-place byte-equivalence regression tests, ASan/UBSan/TSan stress, and `fuzz_usm_variants` coverage. |
 | PERF-P2a | parked | S | Benchmark SSE2, AVX2, and AVX-512 USM variants independently on representative widths, worker counts, and amounts (`src/usm_pool_dispatch.c:87-121`). | Still applicable at HEAD, but no host regression is known. Reuse variant entry points and record CPU model/governor; do not alter selection without evidence. |
 | PERF-P2b | parked | S | Define a deterministic max-ISA selection policy only if PERF-P2a finds a repeatable wider-ISA regression. | The cheapest safe policy is a load-time maximum variant override, leaving current widest-supported selection as default; avoid an adaptive runtime tuner. |
 | PERF-P2c | parked | S | Implement and document the confirmed max-ISA override in the dispatcher, rejecting unknown/unsupported values with a safe fallback. | Blocked on PERF-P2a/PERF-P2b. Extend dispatcher table tests for every override/capability combination, add a subprocess integration test for load-time selection, preserve cross-variant regression tests, and seed the selector parser fuzzer. |
@@ -253,6 +252,9 @@ non-findings:
 - Adding a CI threshold for in-place USM halo snapshots: the paired alias-mode
   benchmark found no consistent in-place regression on the measured host, and
   cache/write differences prevent the comparison from isolating copy cost.
+- Moving USM halo snapshots into workers: PERF-P1a found no repeatable
+  bottleneck, so an extra readiness phase would add synchronization risk
+  without measured benefit.
 - Unifying `worker_copy_in_stripe` / `worker_copy_out_stripe` /
   `worker_copy_out_tile`: their direction and offset invariants differ; a generic
   helper would require a wide parameter surface.
