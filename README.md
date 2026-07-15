@@ -138,7 +138,7 @@ See [usage and troubleshooting](docs/USAGE.md) for practical variants.
 | `--autoupscale-backend` | 0–2 | 0 | `0` prefer zimg with swscale fallback; `1` zimg only; `2` swscale only. |
 | `--autoupscale-target-fps` | 0–240 | 60 | Budget for the one-time performance hint. `0` hides the hint. |
 | `--autoupscale-threads` | 0–64 | 0 | Shared zimg/USM worker preference. `0` uses the automatic policy capped at 12 workers. |
-| `--autoupscale-pin-threads` | 0–1 | 0 | Best-effort zimg worker pinning. Enable only after measuring. |
+| `--autoupscale-pin-threads` | 0–1 | 1 | Best-effort zimg worker pinning. Disable if it regresses the deployment host. |
 | `--autoupscale-zerocopy-dst` | 0–1 | 1 | Direct zimg writes on compatible row grids. `0` forces copy-out. |
 | `--autoupscale-zerocopy-src` | 0–1 | 1 | Direct zimg reads. `0` forces copy-in and disables column tiling. |
 | `--autoupscale-content-probe` | 0–1 | 1 | Emit one advisory for soft and blocky sources. It never changes output. |

@@ -142,12 +142,10 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 
 #define PIN_TEXT        N_("Pin scaler worker threads to CPU cores")
 #define PIN_LONGTEXT    N_( \
-    "0 = off (default; let the OS scheduler place threads). 1 = pin each " \
+    "0 = off (let the OS scheduler place threads). 1 = on (default): pin each " \
     "zimg scaler worker thread to a distinct CPU core (round-robin). " \
-    "Linux only; best-effort (ignored if it fails). Off by default because " \
-    "pinning can HURT on a typical desktop by fighting VLC's other threads " \
-    "and the scheduler's load balancing — enable only on a dedicated, " \
-    "high-core-count or NUMA transcode box where you measured a gain. Does " \
+    "Linux only; best-effort (ignored if it fails). Disable if pinning hurts " \
+    "by fighting VLC's other threads or the scheduler's load balancing. Does " \
     "not affect the USM sharpening pool.")
 
 #define ZEROCOPY_DST_TEXT N_("Write directly to VLC's destination picture")
@@ -263,7 +261,7 @@ vlc_module_begin()
     add_integer_with_range( CFG_PREFIX "threads", UP_THREADS_AUTO,
                             0, UP_THREADS_MAX,
                             THREADS_TEXT, THREADS_LONGTEXT, false )
-    add_integer_with_range( CFG_PREFIX "pin-threads", 0, 0, 1,
+    add_integer_with_range( CFG_PREFIX "pin-threads", 1, 0, 1,
                             PIN_TEXT, PIN_LONGTEXT, false )
     add_integer_with_range( CFG_PREFIX "zerocopy-dst", 1, 0, 1,
                             ZEROCOPY_DST_TEXT, ZEROCOPY_DST_LONGTEXT, false )
