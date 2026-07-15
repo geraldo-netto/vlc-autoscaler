@@ -7,31 +7,102 @@ then optionally sharpens luma with an unsharp-mask pass.
 It is a classical resampler, not an AI upscaler. It improves presentation but
 cannot recover detail absent from the source.
 
-## Install
+## Prepare the build environment
+
+The plugin build requires a C compiler, GNU Make, pkg-config, VLC 3 development
+headers, and FFmpeg's `libswscale`/`libavutil` development files. zimg is an
+optional backend: install its development package for the preferred Spline36
+path, or omit it for a swscale-only build.
 
 Debian or Ubuntu:
 
 ```sh
-sudo apt install build-essential pkg-config libvlccore-dev libvlc-dev libswscale-dev libavutil-dev libzimg-dev
-make
-sudo make install
+sudo apt update
+sudo apt install build-essential pkg-config libvlccore-dev libvlc-dev libswscale-dev libavutil-dev
+# Optional preferred backend:
+sudo apt install libzimg-dev
 ```
 
 Fedora:
 
 ```sh
-sudo dnf install gcc make pkgconfig vlc-devel ffmpeg-devel zimg-devel
+sudo dnf install gcc make pkgconf-pkg-config vlc-devel ffmpeg-free-devel
+# Optional preferred backend:
+sudo dnf install zimg-devel
+```
+
+Confirm that the mandatory pkg-config modules are visible before building:
+
+```sh
+pkg-config --exists vlc-plugin libswscale libavutil
+```
+
+`make info` reports the detected compiler, plugin directory, CPU configuration,
+and whether zimg is enabled.
+
+## Build and install
+
+```sh
 make
 sudo make install
 ```
 
-`libzimg-dev`/`zimg-devel` is optional. Without it, the plugin uses swscale.
-Run `make info` to inspect detected paths and features. If VLC does not find the
-installed plugin, rebuild the plugin cache at the path shown by `make info`:
+If VLC does not find the installed plugin, rebuild the plugin cache at the path
+shown by `make info`:
 
 ```sh
 sudo vlc-cache-gen <vlc-plugins-directory>
 ```
+
+### Optional verification environment
+
+The normal `make` build does not need these tools. Install only the groups for
+the verification targets you intend to run:
+
+| Targets | Additional software |
+|---|---|
+| `make test`, `make fuzz-smoke`, `make stress` | GCC or Clang with ASan, UBSan, and TSan runtime support |
+| `make fuzz` | Clang with libFuzzer support |
+| `make check`, `make complexity` | Python 3 and Lizard |
+| `make analyze` | Lizard, cppcheck, ShellCheck, and actionlint |
+| `make scan-build` | Clang and `scan-build` (`clang-tools`) |
+| `make coverage` | GCC, gcov, Python 3, gzip, and standard POSIX shell tools |
+| `make test-zimg`, `make stress-zimg`, `make bench-zimg`, `make coverage-zimg` | Mandatory plugin dependencies plus zimg development files |
+| `make check-hardening`, `make check-visibility`, `make check-multiversion-isa` | GNU binutils (`readelf`, `nm`, and `objdump`) |
+
+On Debian or Ubuntu, prepare the complete local verification environment with:
+
+```sh
+sudo apt install ca-certificates curl tar clang clang-tools cppcheck shellcheck python3 python3-venv binutils gzip
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install lizard==1.17.31
+```
+
+Install the same checksum-verified actionlint binary used by CI:
+
+```sh
+mkdir -p "$HOME/.local/bin"
+curl -sSLo actionlint.tar.gz \
+  https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+echo '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  actionlint.tar.gz' \
+  | sha256sum -c -
+tar -xzf actionlint.tar.gz -C "$HOME/.local/bin" actionlint
+export PATH="$HOME/.local/bin:$PATH"
+rm actionlint.tar.gz
+```
+
+The archive above is for Linux x86-64, matching this project's compatibility
+contract. Keep the virtual environment active and verify the toolchain with:
+
+```sh
+command -v lizard cppcheck shellcheck actionlint scan-build gcov python3
+```
+
+Fedora users can install the packaged tools with `clang`, `clang-tools-extra`,
+`cppcheck`, `ShellCheck`, `python3`, `python3-pip`, `binutils`, and `gzip`;
+install Lizard in a virtual environment and actionlint from its verified
+upstream release.
 
 ## Use
 
@@ -101,9 +172,8 @@ The default `MARCH=native MULTIVERSION=0` build is for the build host. Use
 `MARCH=x86-64 MULTIVERSION=1` when distributing to other Linux x86-64 systems.
 The runtime dispatcher selects SSE2, AVX2, or AVX-512 USM code after loading.
 
-Plugin builds require VLC and FFmpeg development packages. zimg tests require
-zimg development files. `make fuzz` requires Clang/libFuzzer; analysis and
-complexity targets require their named tools.
+The environment-preparation section above maps every target to its required
+software. Missing optional tools do not affect a normal plugin build.
 
 ## Documentation
 

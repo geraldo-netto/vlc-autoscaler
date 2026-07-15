@@ -31,7 +31,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential clang clang-tools cppcheck pkg-config python3-pip \
+            build-essential ca-certificates clang clang-tools coreutils cppcheck \
+            curl pkg-config python3-pip tar xz-utils \
             libvlccore-dev libvlc-dev \
             libswscale-dev libavutil-dev libzimg-dev
           # lizard is used by `make analyze` (complexity gate, CCN<=10).
@@ -236,7 +237,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential clang pkg-config unzip gcovr \
+            build-essential ca-certificates clang curl pkg-config unzip gcovr \
             libvlccore-dev libvlc-dev \
             libswscale-dev libavutil-dev libzimg-dev
 
