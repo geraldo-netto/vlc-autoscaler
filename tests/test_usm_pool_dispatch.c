@@ -75,8 +75,7 @@ static void test_public_api_forwards(void)
     CHECK(strcmp(up_usm_pool_variant_name, "uninitialized") != 0);
 
     usm_pool_t *pool = up_usm_pool_create(4, 64, 64, 8);
-    CHECK(pool != NULL);
-    CHECK(pool->sentinel == 0xA5);
+    CHECK(pool != NULL && pool->sentinel == 0xA5);
     uint8_t dst[16] = { 0 };
     const uint8_t src[16] = { 0 };
     CHECK(up_usm_pool_apply(pool, dst, 16, src, 16, 128) == 0);

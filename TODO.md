@@ -118,7 +118,6 @@ this technical domain; another business/domain pattern would not clarify it.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| REL-17 | open | S | `tests/test_usm_pool_dispatch.c:78-79` checks `pool != NULL` with the non-terminating `CHECK` macro, then unconditionally dereferences `pool->sentinel`; cppcheck fails CI with `nullPointerRedundantCheck`. | Guard the dereference in the same short-circuit expression or return after recording a null result. Run `make analyze` to confirm cppcheck and the subsequent Clang analyzer both execute. |
 
 ## portability/standards conformance
 
