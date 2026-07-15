@@ -221,8 +221,8 @@ picks so a later audit does not revive it without new evidence.
 | SCAL-2c | parked | S | Compute AUTO memory as the minimum finite value of host RAM and cgroup memory limit before the existing 720p/1080p decision (`src/autoupscale.c:394-410`). | Blocked on SCAL-2a/SCAL-2b. Keep the existing decision function unchanged; unit-test min/unlimited precedence and add an Open/config integration regression with injected host and cgroup values. |
 | SCAL-2d | parked | S | Preserve host-RAM behavior when cgroup memory discovery fails or reports unlimited. | Use the same injectable bounded reader as SCAL-1d. Add unreadable/racing/malformed fixture regressions and sanitizer fuzz-smoke. |
 | SCAL-3b | parked | M | If SCAL-3a justifies it, discover Linux CPU sibling and NUMA-node topology only for CPUs already allowed by `sched_getaffinity`. | Prefer bounded sysfs reads and deterministic fallback to existing ID order; unit-test sparse/offline/missing topology fixtures and fuzz numeric/list parsers. |
-| SCAL-3c | parked | S | Build a pure stable CPU-ordering helper for the selected physical-core/SMT/NUMA policy. | Blocked on SCAL-3a. Fuzz ordering invariants: no duplicates, no disallowed IDs, stable output, complete allowed-prefix coverage, and bounds at `UP_THREADS_MAX`. |
-| SCAL-3d | parked | S | Wire the selected order into opt-in zimg pinning while retaining round-robin fallback and current success accounting. | Blocked on SCAL-3b/SCAL-3c. Extend wrapped-affinity integration tests for exact worker-to-CPU mapping and failures; run zimg seam regression/fuzz plus ASan/UBSan/TSan stress. |
+| SCAL-3c | parked | S | Build a pure stable CPU-ordering helper for the selected physical-core/SMT/NUMA policy. | Explicitly deferred with SCAL-3b: no ordering helper can consume topology that is deliberately not discovered. Fuzz ordering invariants when resumed. |
+| SCAL-3d | parked | S | Wire the selected order into zimg pinning while retaining round-robin fallback and current success accounting. | Explicitly deferred transitively with SCAL-3b/SCAL-3c. Current first-allowed ordering remains byte-equivalent and improved this host's default benchmark. |
 | SCAL-P1d | parked | L | Consider bounded dynamic work queues only if weighted static partitioning fails under measured production-like contention. | Requires a design review first. Tests must cover exactly-once cell ownership, cancellation/failure draining, deterministic output, fault injection, integration fuzz, and ASan/UBSan/TSan stress. |
 
 ## Audit picks deliberately rejected
@@ -267,6 +267,9 @@ non-findings:
   without adding another failure-sensitive synchronization topology.
 - Integrating an alternate wake strategy: no prototype beat broadcast, so
   there is no winning strategy to place behind the shared pool gate.
+- Changing the zimg automatic stripe minimum from 16 to the faster 24-line
+  candidate: integration regression found 20,515 differing visible bytes for
+  64x64-to-128x128 source-zero-copy versus copy paths, so quality wins.
 - Unifying `worker_copy_in_stripe` / `worker_copy_out_stripe` /
   `worker_copy_out_tile`: their direction and offset invariants differ; a generic
   helper would require a wide parameter surface.
