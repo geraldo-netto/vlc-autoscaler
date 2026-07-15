@@ -110,29 +110,43 @@ static void fuzz_mutate_picture(fuzz_picture_t *test, uint8_t mutation)
 
 static void fuzz_touch_plane(const fuzz_picture_t *test,
                              const up_picture_plane_view_t *plane,
-                             int plane_index)
+                             const up_picture_format_layout_t *layout,
+                             const up_picture_region_t *region, int plane_index)
 {
+    const up_picture_plane_geom_t geom = {
+        .x_offset = (int)region->x_offset,
+        .y_offset = (int)region->y_offset,
+        .width = region->width,
+        .height = region->height,
+        .x_group_pixels = layout->x_group_pixels[plane_index],
+        .x_group_bytes = layout->x_group_bytes[plane_index],
+        .y_group_pixels = layout->y_group_pixels[plane_index],
+        .pixel_pitch = layout->pixel_pitch[plane_index],
+    };
+    const up_picture_plane_extent_t extent = up_picture_plane_extent(&geom);
     const ptrdiff_t start = plane->pixels - test->storage[plane_index];
     fuzz_require(start >= 0);
-    fuzz_require(plane->height > 0 && plane->row_bytes > 0);
-    const size_t used = (size_t)(plane->height - 1) * (size_t)plane->pitch
-                      + (size_t)plane->row_bytes;
+    fuzz_require(extent.height > 0 && extent.row_bytes > 0);
+    const size_t used = (extent.height - 1) * (size_t)plane->pitch
+                      + extent.row_bytes;
     fuzz_require((size_t)start <= test->storage_size[plane_index]);
     fuzz_require(used <= test->storage_size[plane_index] - (size_t)start);
-    for (int row = 0; row < plane->height; ++row)
+    for (size_t row = 0; row < extent.height; ++row)
     {
-        uint8_t *pixels = plane->pixels + (size_t)row * (size_t)plane->pitch;
+        uint8_t *pixels = plane->pixels + row * (size_t)plane->pitch;
         pixels[0] ^= (uint8_t)row;
-        pixels[plane->row_bytes - 1] ^= (uint8_t)plane_index;
+        pixels[extent.row_bytes - 1] ^= (uint8_t)plane_index;
     }
 }
 
 static void fuzz_touch_view(const fuzz_picture_t *test,
-                            const up_picture_view_t *view)
+                            const up_picture_view_t *view,
+                            const up_picture_format_layout_t *layout,
+                            const up_picture_region_t *region)
 {
     fuzz_require(view->plane_count == test->pic.i_planes);
     for (int i = 0; i < view->plane_count; ++i)
-        fuzz_touch_plane(test, &view->plane[i], i);
+        fuzz_touch_plane(test, &view->plane[i], layout, region, i);
 }
 
 static void fuzz_run_one(const uint8_t *data, size_t size)
@@ -173,7 +187,7 @@ static void fuzz_run_one(const uint8_t *data, size_t size)
     const bool valid = up_picture_view_init(&view, &test.pic, expected,
                                             &region);
     if (valid)
-        fuzz_touch_view(&test, &view);
+        fuzz_touch_view(&test, &view, up_picture_format_layout(chroma), &region);
     fuzz_picture_free(&test);
 }
 

@@ -74,20 +74,16 @@ static void check_plane(const test_picture_t *test,
     const size_t x1 = ceil_div(region->x_offset + (unsigned)region->width, xf);
     const size_t y1 = ceil_div(region->y_offset + (unsigned)region->height, yf);
     const int group_bytes = layout->x_group_bytes[plane_index];
+    const size_t plane_height = y1 - y0;
+    const size_t row_bytes = (x1 - x0) * (size_t)group_bytes;
     const up_picture_plane_view_t *plane = &view->plane[plane_index];
 
     CHECK(plane->pixels == test->storage[plane_index]
                            + y0 * TEST_PITCH + x0 * (size_t)group_bytes);
     CHECK(plane->pitch == TEST_PITCH);
-    CHECK(plane->pixel_pitch == layout->pixel_pitch[plane_index]);
-    CHECK(plane->width == (int)((x1 - x0) * (size_t)group_bytes
-                                / layout->pixel_pitch[plane_index]));
-    CHECK(plane->height == (int)(y1 - y0));
-    CHECK(plane->row_bytes == (int)((x1 - x0) * (size_t)group_bytes));
-
     const uint8_t *last = plane->pixels
-                  + (size_t)(plane->height - 1) * (size_t)plane->pitch
-                  + (size_t)plane->row_bytes - 1;
+                  + (plane_height - 1) * (size_t)plane->pitch
+                  + row_bytes - 1;
     CHECK(last >= test->storage[plane_index]);
     CHECK(last < test->storage[plane_index] + sizeof test->storage[plane_index]);
 }
@@ -124,7 +120,6 @@ static void test_odd_crop_and_physical_order(void)
     test.pic.p[2].i_pitch = 48;
     CHECK(up_picture_view_init(&view, &test.pic, VLC_CODEC_I420, &region));
     CHECK(view.plane[1].pixels == test.storage[1]);
-    CHECK(view.plane[1].width == 3 && view.plane[1].height == 2);
     CHECK(view.plane[1].pitch == 32);
     CHECK(view.plane[2].pitch == 48);
 
@@ -136,13 +131,10 @@ static void test_odd_crop_and_physical_order(void)
     init_picture(&test, VLC_CODEC_NV12);
     CHECK(up_picture_view_init(&view, &test.pic, VLC_CODEC_NV12, &region));
     CHECK(view.plane[1].pixels == test.storage[1]);
-    CHECK(view.plane[1].pixel_pitch == 1);
-    CHECK(view.plane[1].width == 6 && view.plane[1].row_bytes == 6);
 
     init_picture(&test, VLC_CODEC_RGB24);
     CHECK(up_picture_view_init(&view, &test.pic, VLC_CODEC_RGB24, &region));
     CHECK(view.plane[0].pixels == test.storage[0] + TEST_PITCH + 3);
-    CHECK(view.plane[0].row_bytes == 15);
 }
 
 static void expect_invalid(const picture_t *pic, vlc_fourcc_t chroma,

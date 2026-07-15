@@ -191,7 +191,6 @@ typedef struct
      * [dst_x_start .. + dst_w). With n_cols==1 the column spans the full
      * width. */
     worker_cell_geom_t cell;
-    int                worker_id;
 
     /* SCAL-3: true when this cell is a column tile. Then the graph reads the
      * full-width source (active_region crops columns, with halo) and writes a
@@ -743,7 +742,7 @@ static int build_worker_graph_and_tmp(stripe_worker_t *w, const zimg_priv_t *p,
 }
 
 static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
-                              int worker_id, const cell_bounds_t *c,
+                              const cell_bounds_t *c,
                               unsigned sub_w, unsigned sub_h,
                               zimg_resample_filter_e filt)
 {
@@ -764,7 +763,6 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
     /* I/O mode: copy on the side that is NOT zero-copy. */
     w->copy_in      = !p->plan.src_zerocopy;
     w->copy_out     = !p->plan.dst_zerocopy;
-    w->worker_id    = worker_id;
     w->src = plane_buffer_view(&p->src);
 
     /* dst buffer: a column tile writes its own tile-sized scratch (owned);
@@ -841,7 +839,7 @@ static int zimg_pool_construct(void *owner, int i)
                                   &c.cols))
         return -1;
 
-    if (init_stripe_worker(w, p, i, &c, p->sub_w, p->sub_h,
+    if (init_stripe_worker(w, p, &c, p->sub_w, p->sub_h,
                            (zimg_resample_filter_e)p->lazy.algo) != 0) {
         zimg_pool_release(p, i);
         return -1;

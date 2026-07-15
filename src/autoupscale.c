@@ -325,19 +325,14 @@ struct filter_sys_t
      * achievable; a real bypass would need a structural change to
      * VLC's filter graph that we can't make from a video filter.
      *
-     *   enabled       : 1 if metric collection runs — either the
-     *                   content-probe option is on, or the USM sharpness
-     *                   gate needs the metrics (usm > 0 and
-     *                   usm-sharp-threshold > 0)
      *   advice        : 1 if the bypass advisory may be logged
      *                   (content-probe option only)
-     *   active        : 1 while we're still collecting samples
+     *   active        : 1 while metric collection is needed and still active
      *   advice_logged : 1 once we've logged the bypass recommendation
      *   accum         : accumulator state passed to up_probe_observe()
      */
     struct
     {
-        int              enabled;
         int              advice;
         int              active;
         int              advice_logged;
@@ -623,10 +618,9 @@ static void InitProbeAndPerfmon( filter_sys_t *p_sys, filter_t *p_filter,
      * must not silently die with the diagnostic-only probe option. */
     p_sys->probe.advice  = InheritIntSat( p_filter,
                                                CFG_PREFIX "content-probe" ) != 0;
-    p_sys->probe.enabled = ( p_sys->probe.advice
-                          || ( p_sys->usm_sharp_threshold > 0 && usm_pct > 0 ) )
-                       && ChromaHasYPlane( chroma );
-    p_sys->probe.active  = p_sys->probe.enabled;
+    p_sys->probe.active = ( p_sys->probe.advice
+                         || ( p_sys->usm_sharp_threshold > 0 && usm_pct > 0 ) )
+                      && ChromaHasYPlane( chroma );
     p_sys->probe.advice_logged = 0;
 }
 
@@ -871,7 +865,7 @@ static void EmitPerfAdvisory( filter_t *p_filter, const filter_sys_t *p_sys )
  * close the probe (logging an advisory) once the window is full.
  * Observe-only — does not modify p_in or any output. Called from
  * Filter() while p_sys->probe.active is true and p_in has a readable luma
- * plane (the probe.enabled gate in Open() already filtered out formats
+ * plane (the probe.active gate in Open() already filtered out formats
  * without one). The shared picture view
  * resolves VLC's visible-area crop and rejects malformed plane geometry.
  *

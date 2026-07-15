@@ -193,7 +193,7 @@ static void test_process_status_and_forwarding(void)
     init_picture(&dst, dst_data, 700, ctx.chroma, ctx.dst_w, ctx.dst_h);
     CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_FATAL);
 
-    sws_priv_t priv = { .ctx = &g_sws_ctx, .av_fmt = AV_PIX_FMT_YUV420P };
+    sws_priv_t priv = { .ctx = &g_sws_ctx };
     ctx.priv = &priv;
     g_scale_result = ctx.dst_h;
     CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_OK);
@@ -226,7 +226,7 @@ static void test_geometry_rejection_recovers(void)
      * (the first reject emits it, and the remaining rejects are latched). */
     vlc_object_t log_obj = { 0 };
     ctx.log_obj = &log_obj;
-    sws_priv_t priv = { .ctx = &g_sws_ctx, .av_fmt = AV_PIX_FMT_YUV420P };
+    sws_priv_t priv = { .ctx = &g_sws_ctx };
     picture_t src, dst;
     uint8_t src_data[4] = {0}, dst_data[4] = {0};
     init_picture(&src, src_data, 400, ctx.chroma, ctx.src_w, ctx.src_h);
@@ -327,8 +327,7 @@ static void test_cropped_plane_forwarding(void)
         scaler_ctx_t ctx = make_ctx(c->chroma, UP_ALGO_LANCZOS);
         ctx.src_w = 16; ctx.src_h = 8;
         ctx.dst_w = 32; ctx.dst_h = 16;
-        sws_priv_t priv = { .ctx = &g_sws_ctx,
-                            .av_fmt = ChromaToAVFmt(c->chroma) };
+        sws_priv_t priv = { .ctx = &g_sws_ctx };
         picture_t src, dst;
         init_crop_picture(&src, src_storage, c, ctx.src_w, ctx.src_h,
                           x_offset, y_offset);

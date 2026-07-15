@@ -19,10 +19,6 @@ typedef struct
 {
     uint8_t *pixels;
     int pitch;
-    int pixel_pitch;
-    int width;
-    int height;
-    int row_bytes;
 } up_picture_plane_view_t;
 
 typedef struct
@@ -133,10 +129,6 @@ static inline bool up_picture_plane_view_init(
 
     out->pixels = plane->p_pixels + row_offset + extent.x_bytes;
     out->pitch = plane->i_pitch;
-    out->pixel_pitch = g->pixel_pitch;
-    out->width = (int)extent.width;
-    out->height = (int)extent.height;
-    out->row_bytes = (int)extent.row_bytes;
     return true;
 }
 

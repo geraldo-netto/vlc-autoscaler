@@ -24,7 +24,6 @@
 typedef struct
 {
     struct SwsContext *ctx;
-    enum AVPixelFormat av_fmt;
     /* OBS-3: one-shot latches so a persistently bad stream logs a reason once
      * instead of spamming every frame — symmetric with zimg's bad-geometry
      * diagnostic. */
@@ -90,8 +89,6 @@ static int sws_open( scaler_ctx_t *ctx )
 
     sws_priv_t *p = calloc( 1, sizeof(*p) );
     if( !p ) return -1;
-    p->av_fmt = fmt;
-
     p->ctx = sws_getContext(
         ctx->src_w, ctx->src_h, fmt,
         ctx->dst_w, ctx->dst_h, fmt,
