@@ -471,7 +471,7 @@ static void usm_worker_snapshot_halo(usm_worker_t *w, const uint8_t *src,
  * blocked on the go gate - no synchronization needed (the gate's mutex
  * in up_worker_pool_dispatch publishes these writes; see usm_worker_s).
  */
-static void usm_pool_set_per_frame(usm_pool_t *p,
+static void usm_pool_set_per_frame(const usm_pool_t *p,
                                    uint8_t *dst, int dst_stride,
                                    const uint8_t *src, int src_stride,
                                    int amount_q8)

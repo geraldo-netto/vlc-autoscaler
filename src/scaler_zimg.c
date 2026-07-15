@@ -742,7 +742,7 @@ static int build_worker_graph_and_tmp(stripe_worker_t *w, const zimg_priv_t *p,
     return 0;
 }
 
-static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
+static int init_stripe_worker(stripe_worker_t *w, const zimg_priv_t *p,
                               const cell_bounds_t *c,
                               unsigned sub_w, unsigned sub_h,
                               zimg_resample_filter_e filt)
@@ -1031,7 +1031,7 @@ static plane_view_t *worker_view_for(stripe_worker_t *w,
  * the gate while this runs, so the writes need no synchronization.
  * YV12 U/V are swapped via the plane-index map.
  */
-static void point_workers_planes(zimg_priv_t *p,
+static void point_workers_planes(const zimg_priv_t *p,
                                   const up_picture_view_t *pic,
                                   worker_view_side_e side, bool zerocopy)
 {
