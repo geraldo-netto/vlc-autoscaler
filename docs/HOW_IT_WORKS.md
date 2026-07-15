@@ -1063,11 +1063,15 @@ like `USM_POOL_FLAT_SKIP`.
 
 `scripts/bench_matrix.sh` defines the current `(threads × resolution)` grid
 and aggregation policy. It validates every echoed workload field, requires a
-stable post-warmup effective worker count across three samples, and emits
-`variant` plus the benchmark's eight fields with the median timing. Requested
-and effective counts remain separate because the pool caps oversized requests.
-The script is used to compare the pool against itself across configurations
-during development.
+stable post-warmup effective worker count across three samples, and emits CSV
+rows as `variant` plus the benchmark's first seven fields, `row_type`,
+`run_index`, and the timing. A complete group contains three `raw` rows in
+acquisition order (indexes 1 through 3) followed by a `median` row (index 0);
+the group is emitted only after every sample validates. Filter on
+`row_type=median` for aggregate comparisons while preserving the raw rows for
+reproducibility. Requested and effective counts remain separate because the
+pool caps oversized requests. The script is used to compare the pool against
+itself across configurations during development.
 
 ### Coverage
 

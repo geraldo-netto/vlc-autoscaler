@@ -24,8 +24,13 @@ and source are authoritative for the current interface.
 The effective count is queried after warmup, so it includes the pool's worker
 cap and any lazy-start reduction. The matrix validates every echoed workload
 field, requires the effective count to remain stable across its three samples,
-and emits the median as
-`variant,requested_threads,effective_threads,width,height,frames,amount,fill,us_per_frame`.
+and emits
+`variant,requested_threads,effective_threads,width,height,frames,amount,fill,row_type,run_index,us_per_frame`.
+Each validated group contains the three raw timings in acquisition order as
+`row_type=raw` with run indexes 1 through 3, followed by its derived median as
+`row_type=median` with run index 0. Filter on `row_type=median` for aggregate
+comparisons; retain the raw rows to reproduce and audit each result. A failed
+sample prevents the entire four-row group from being emitted.
 Use `effective_threads`, not the request, when interpreting scaling.
 
 The benchmark programs fill their source buffers before timing and report

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run bench_usm_pool across the (threads × resolution × fill) matrix.
 # Usage: bench_matrix.sh <bench_binary> [frames] [amount] [fill]
-# Output CSV: variant,requested_threads,effective_threads,width,height,frames,amount,fill,us_per_frame
+# Output CSV: variant,requested_threads,effective_threads,width,height,frames,amount,fill,row_type,run_index,us_per_frame
 set -euo pipefail
 export LC_ALL=C
 BIN="${1:?bench binary path required}"
@@ -128,6 +128,13 @@ for r in "${RES[@]}"; do
             die "expected 3 timing samples"
         fi
         med="${sorted[1]}"
-        echo "${VARIANT},${t},${effective},${W},${H},${FRAMES},${AMOUNT},${FILL},${med}"
+        for run_index in 1 2 3; do
+            printf '%s,%s,%s,%s,%s,%s,%s,%s,raw,%s,%s\n' \
+                "$VARIANT" "$t" "$effective" "$W" "$H" "$FRAMES" \
+                "$AMOUNT" "$FILL" "$run_index" "${runs[run_index - 1]}"
+        done
+        printf '%s,%s,%s,%s,%s,%s,%s,%s,median,0,%s\n' \
+            "$VARIANT" "$t" "$effective" "$W" "$H" "$FRAMES" \
+            "$AMOUNT" "$FILL" "$med"
     done
 done

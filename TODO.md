@@ -186,8 +186,6 @@ plugin link could not be repeated locally because the required SDKs are absent.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| OBS-10 | open | S | `scripts/bench_matrix.sh:23-66` discards all three raw timings after emitting only their median. | `docs/BENCHMARKS.md:32-39` requires every raw sample for publishable/reproducible results. Emit run-indexed raw rows plus a derived median, or preserve a raw sidecar. |
-
 No additional production finding. Actionable degradation reasons and pinning outcomes are
 visible without verbose logging, and advisory-disable wording preserves the
 distinction from active EWMA/stat telemetry.

@@ -62,6 +62,11 @@ case ${BENCH_FAKE_MODE:-valid} in
     excessive_effective) effective=$((requested + 1)) ;;
     huge_effective) effective=9999999999999999999999999999999999999999 ;;
     invalid_timing) timing=not-a-number ;;
+    invalid_third_timing)
+        if test "$count" -eq 3; then
+            timing=not-a-number
+        fi
+        ;;
     inconsistent_effective)
         if test "$requested" -eq 4 && test "$((count % 3))" -eq 2; then
             effective=3
@@ -110,16 +115,29 @@ run_matrix valid >"$tmp/valid.csv" 2>"$tmp/stderr" || {
     fail "valid capped benchmark was rejected"
 }
 test ! -s "$tmp/stderr" || fail "valid benchmark wrote stderr"
-test "$(wc -l <"$tmp/valid.csv")" -eq 18 || fail "expected 18 matrix rows"
+test "$(wc -l <"$tmp/valid.csv")" -eq 72 || fail "expected 72 matrix rows"
+expected_first_group='fake-benchmark,1,1,1280,720,7,19,rand,raw,1,30.00
+fake-benchmark,1,1,1280,720,7,19,rand,raw,2,10.00
+fake-benchmark,1,1,1280,720,7,19,rand,raw,3,20.00
+fake-benchmark,1,1,1280,720,7,19,rand,median,0,20.00'
+test "$(sed -n '1,4p' "$tmp/valid.csv")" = "$expected_first_group" ||
+    fail "first matrix group is not in raw acquisition order followed by median"
 awk -F, '
-    NF != 9 { exit 1 }
+    NF != 11 { exit 1 }
     $2 == 16 && $3 != 12 { exit 1 }
     $2 == 20 && $3 != 12 { exit 1 }
-    $6 != 7 || $7 != 19 || $8 != "rand" || $9 != "20.00" { exit 1 }
+    $6 != 7 || $7 != 19 || $8 != "rand" { exit 1 }
+    $9 == "raw" && ($10 < 1 || $10 > 3) { exit 1 }
+    $9 == "raw" { raw++ }
+    $9 == "median" && $10 != 0 { exit 1 }
+    $9 == "median" && $11 != "20.00" { exit 1 }
+    $9 == "median" { median++ }
+    $9 != "raw" && $9 != "median" { exit 1 }
+    END { if (raw != 54 || median != 18) exit 1 }
 ' "$tmp/valid.csv" || fail "valid matrix output has the wrong schema or values"
-grep -Fq 'fake-benchmark,16,12,1280,720,7,19,rand,20.00' "$tmp/valid.csv" ||
+grep -Fq 'fake-benchmark,16,12,1280,720,7,19,rand,raw,1,30.00' "$tmp/valid.csv" ||
     fail "capped 16-thread row was not labeled with 12 effective workers"
-grep -Fq 'fake-benchmark,20,12,2560,1440,7,19,rand,20.00' "$tmp/valid.csv" ||
+grep -Fq 'fake-benchmark,20,12,2560,1440,7,19,rand,median,0,20.00' "$tmp/valid.csv" ||
     fail "capped 20-thread row was not labeled with 12 effective workers"
 
 expect_failure fail 'benchmark exited with status 9'
@@ -135,6 +153,8 @@ expect_failure noncanonical_effective 'invalid effective_threads'
 expect_failure excessive_effective 'exceeds requested_threads'
 expect_failure huge_effective 'exceeds requested_threads'
 expect_failure invalid_timing 'invalid timing'
+expect_failure invalid_third_timing 'invalid timing'
+test ! -s "$tmp/stdout" || fail "failed group emitted partial output"
 expect_failure inconsistent_effective 'effective_threads changed'
 
 echo "benchmark matrix checks OK"
