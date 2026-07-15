@@ -1,27 +1,32 @@
 # TODO — full-project audit findings
 
-Full-project rescan of HEAD `7b81245` plus the documentation working tree on
-2026-07-15. Scope: every production source/public header, test, fuzzer and
-corpus seed, build/release file, workflow, script, document, and patch. Excluded
-only `.git`, ignored/generated build output, and caches.
+Full-project rescan of HEAD `1be0717` and its clean working tree on 2026-07-15.
+Scope: all 248 tracked project files: production source/public headers, tests,
+fuzzers, 148 corpus seeds, build/release files, workflows, scripts, documents,
+and patches. Excluded only `.git`, ignored/generated build output, and caches.
 
-Validation: refreshed manual inspection across every category; GCC C11
-unit/contract tests with `-Werror`, ASan, and UBSan; every deterministic
-fuzz-smoke target with `CLANG=gcc`; declared-interpreter shell syntax; relative
-Markdown links; unsafe-API and temporary-path searches; and review of all
-changes since the preceding full scan. The preceding scan's benchmark builds,
-coverage, stress, corpus-parser checks, and Lizard 1.17.31 result (924
-functions, zero CCN > 10) remain applicable to unchanged code. Local VLC/zimg
-SDK metadata is absent, and cppcheck, Lizard, clang-tidy/scan-build, ShellCheck,
-actionlint, and markdownlint were unavailable, so those checks were not rerun.
-Row format:
+Validation: parallel manual inspection across every category; GCC and Clang C11
+unit/contract suites with `-Werror`, ASan, and UBSan; every deterministic
+fuzz-smoke target; Clang/libFuzzer and benchmark builds; the 99.5% line / 157
+function coverage gates; all 27 ASan/UBSan USM stress configurations; GCC and
+Clang VLC ABI-layout checks; Clang Static Analyzer over the test-exposed
+production paths; declared-interpreter shell syntax; relative Markdown links
+and code fences; corpus sizes; unsafe-API, ownership, return-value, symbol, and
+configuration-consumer searches; and review of every change since the preceding
+scan. The analyzer's two real findings are recorded as UB-12. Local TSan aborts
+before the test on an unsupported memory mapping. libswscale/zimg metadata is
+absent, so the plugin and zimg integration/analyzer targets could not run.
+cppcheck, clang-tidy, ShellCheck, actionlint, markdownlint, and Lizard were
+unavailable; the preceding Lizard 1.17.31 result (924 functions, zero CCN > 10,
+maximum 10) remains applicable because subsequent control-flow changes only
+simplified an assertion. Row format:
 `id | status | effort | description | notes`.
 
 ## security
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| SEC-2 | open | M | CI installs an unpinned PyPI `lizard` package and downloads a mutable Sonar build-wrapper ZIP without integrity verification (`.github/workflows/ci.yml:32-36,206-226`). | Pin the Python package version and hash; pin the wrapper artifact and verify its published checksum/signature before extraction and execution. |
+| SEC-2 | open | M | CI installs an unpinned PyPI `lizard` package and downloads a mutable Sonar build-wrapper ZIP without integrity verification (`.github/workflows/ci.yml:37-41,243-252`). | Pin the Python package version and hash; pin the wrapper artifact and verify its published checksum/signature before extraction and execution. |
 | SEC-5 | open | S | `tests/test_install_action.sh:5-37` creates a predictable `${TMPDIR:-/tmp}/vlc-autoscaler-install-test.$$` tree, recursively removes it, writes executable `PATH` stubs there, and invokes the installer. | In a shared temporary directory an attacker can pre-create or race components to redirect writes or swap the executed stub. Use `mktemp -d` (mode 0700), arm cleanup only after creation, and make signal traps clean up and exit. |
 
 No additional security issue was found in the production media/configuration
@@ -33,8 +38,9 @@ are bounded.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| UB-12 | open | S | `tests/test_picture_view.c:97-103,307-320` records descriptor/subsampling prerequisite failures with nonfatal `CHECK`, then dereferences the possibly-null layout or shifts `1u` by the unchanged sentinel value 99. | A regression in either lookup path turns the test into null-dereference or invalid-shift UB instead of a clean failure; Clang Static Analyzer 18 reports both paths. Guard/continue after each failed prerequisite or use a fatal assertion. |
 
-No additional UB finding after tracing shifts, allocation arithmetic, crop and
+No other UB finding after tracing shifts, allocation arithmetic, crop and
 plane bounds, fixed-point rounding, worker lifetimes, atomics, and in-place USM
 halo ownership.
 
@@ -58,7 +64,7 @@ backend state and does not rebuild graphs.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| SCAL-7 | open | S | The three-job CI workflow has no superseded-run cancellation (`.github/workflows/ci.yml:3-10,104-185`). | Rapid pushes retain stale build, analyzer, and sequential timed-fuzzer runs, consuming runner quota and delaying current feedback. Add ref/PR-scoped `concurrency` with `cancel-in-progress` for non-release runs. |
+| SCAL-7 | open | S | The three-job CI workflow has no superseded-run cancellation (`.github/workflows/ci.yml:3-13`). | Rapid pushes retain stale build, analyzer, and sequential timed-fuzzer runs, consuming runner quota and delaying current feedback. Add ref/PR-scoped `concurrency` with `cancel-in-progress` for non-release runs. |
 
 No additional unparked scalability finding. Deferred items remain in
 **Open — parked**.
@@ -79,8 +85,8 @@ releasing their storage.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No open finding. Full `src/` + `tests/` Lizard analysis reports 924 functions,
-zero CCN violations, and a maximum CCN of 10.
+No open finding. The most recent full `src/` + `tests/` Lizard analysis reports
+924 functions, zero CCN violations, and a maximum CCN of 10.
 
 ## code duplication
 
@@ -119,12 +125,16 @@ this technical domain; another business/domain pattern would not clarify it.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
+No separate row. ERR-7 owns the teardown-correctness risk found by this scan;
+UB-12 owns the analyzer-detected test regression paths.
+
 ## portability/standards conformance
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| PORT-12 | open | S | The compatibility contract says Linux x86-64 with GCC or Clang, but all x86 test builds and `MULTIVERSION=1` require compiler support for `-march=x86-64-v3/v4` (`README.md:84-101,115-118`; `Makefile:216-229,1273-1280`). | Those options begin with GCC 11 and Clang 12; older compilers fail before the runtime CPUID fallback in `src/cpu_level.h` matters. Document and enforce minimum versions or feature-probe the flags and provide an explicit-feature fallback. |
 
-No additional open finding. GNU/Linux-specific CPU affinity, dynamic loading,
+No other open finding. GNU/Linux-specific CPU affinity, dynamic loading,
 and VLC plugin interfaces are isolated, while the supported compiler/CPU
 fallbacks have explicit build and contract coverage.
 
@@ -132,8 +142,9 @@ fallbacks have explicit build and contract coverage.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| ERR-7 | open | M | `up_worker_pool_stop` ignores `pthread_join()` failures and clears `started` unconditionally (`src/worker_pool.h:250-261`); destroy then releases slots and frees thread-accessible storage (`:397-411`). | A failed join loses the live-thread marker and can violate synchronous retirement or free callback state still in use. Return/propagate stop status, clear `started` only after a successful join, quarantine unreaped state, and add join-failure injection coverage. |
 
-No additional open finding. Relevant production allocation, backend, picture, clock,
+No other open finding. Relevant production allocation, backend, picture, clock,
 synchronization, and processing failures are propagated or deliberately
 treated as invariant-only cases. The documented recovery contract preserves
 worker storage until synchronous retirement completes.
@@ -143,9 +154,10 @@ worker storage until synchronous retirement completes.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No separate open finding. Permanent USM/backend failures retire their pools and
-resources. Safe retirement waits for active callbacks before releasing their
-storage; that deliberately has no hard end-to-end deadline.
+No separate open finding beyond ERR-7. Permanent USM/backend failures retire
+their pools and resources. Normal safe retirement waits for active callbacks
+before releasing their storage; that deliberately has no hard end-to-end
+deadline.
 
 ## API/ABI stability
 
@@ -160,10 +172,11 @@ plugin link could not be repeated locally because the required SDKs are absent.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| BUILD-1 | open | S | CI's Clang step builds only `MULTIVERSION=0` and omits Clang visibility verification (`.github/workflows/ci.yml:60-68`), while the compatibility contract supports Clang (`README.md:120-123`). | Build and link both Clang configurations, then run visibility and linked-ISA gates under Clang too. |
-| BUILD-6 | open | S | Empty `VLC_PLUGIN_BASE` becomes non-empty `/video_filter` (`Makefile:44-45`), while install/uninstall validate only the derived value and use unquoted paths (`Makefile:998-1009`). | Validate a non-empty base in both targets before deriving the subdirectory, and quote every destination. |
-| BUILD-7 | open | S | The Sonar job runs for every pull request but requires `SONAR_TOKEN` (`.github/workflows/ci.yml:3-8,187-255`); fork pull requests do not receive repository secrets. | Gate Sonar to pushes/internal pull requests while retaining token-free build checks for forks. |
-| BUILD-11 | open | S | `PLUGIN_GOALS` omits the standalone `abi-layout-check` and `check-visibility` goals (`Makefile:50-59` versus `:283-325`). | Direct invocation without SDKs bypasses the friendly prerequisite check and fails deep in compilation. Add both goals to `PLUGIN_GOALS`. |
+| BUILD-1 | open | S | CI's Clang step builds only `MULTIVERSION=0` and omits Clang visibility verification (`.github/workflows/ci.yml:72-81`), while the compatibility contract supports Clang (`README.md:115-118`). | Build and link both Clang configurations, then run visibility and linked-ISA gates under Clang too. |
+| BUILD-6 | open | S | Empty `VLC_PLUGIN_BASE` becomes non-empty `/video_filter` (`Makefile:55-56`), while install/uninstall validate only the derived value and use unquoted paths (`Makefile:1209-1220`). | Validate a non-empty base in both targets before deriving the subdirectory, and quote every destination. |
+| BUILD-7 | open | S | The Sonar job runs for every pull request but requires `SONAR_TOKEN` (`.github/workflows/ci.yml:3-8,221-290`); fork pull requests do not receive repository secrets. | Gate Sonar to pushes/internal pull requests while retaining token-free build checks for forks. |
+| BUILD-11 | open | S | `PLUGIN_GOALS` omits the standalone `abi-layout-check` and `check-visibility` goals (`Makefile:58-70` versus `:348-405`). | Direct invocation without SDKs bypasses the friendly prerequisite check and fails deep in compilation. Add both goals to `PLUGIN_GOALS`. |
+| BUILD-27 | open | S | The desktop-action installer inserts the `whereis` result into a shell double-quoted assignment after escaping only sed metacharacters (`scripts/install-vlc-autoupscale-action.sh:26-37,75-80`). | `$`, backticks, quotes, or newlines in a valid VLC path are expanded or can make the installed wrapper invalid; the current test varies only `HOME`. Emit a POSIX-safe shell literal (and reject line breaks), then execute the installed wrapper in a metacharacter-path regression test. |
 
 ## observability
 
