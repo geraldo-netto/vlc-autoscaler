@@ -33,9 +33,8 @@ are bounded.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| UB-2 | open | S | `monotonic_ns()` narrows `time_t` and converts the clock to signed nanoseconds without range checks; stats scheduling then forms future deadlines with unchecked signed addition (`src/autoupscale.c:795-800,995-1006`). | When the `CLOCK_MONOTONIC` reading approaches roughly 292 years, the cast can be implementation-defined and either conversion arithmetic or the later 5-second addition can overflow. Validate `tv_sec`/`tv_nsec`, use checked conversion plus checked/saturating deadline arithmetic (or elapsed-time scheduling), and reject an unrepresentable sample. |
 
-No other open UB finding after tracing shifts, allocation arithmetic, crop and
+No open UB finding after tracing shifts, allocation arithmetic, crop and
 plane bounds, fixed-point rounding, worker lifetimes, atomics, and in-place USM
 halo ownership.
 

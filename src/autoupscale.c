@@ -367,7 +367,7 @@ struct filter_sys_t
 
     /* OBS-3: periodic long-run visibility (frames processed/dropped + EWMA). */
     uint64_t           dropped_count;
-    int64_t            next_stats_ns;
+    int64_t            last_stats_ns;
 
     /* ERR-1: both OBS-5 stat variables were created; gates the periodic
      * var_SetInteger export and the paired var_Destroy at Close(). */
@@ -796,7 +796,15 @@ static inline int64_t monotonic_ns(void)
 {
     struct timespec ts;
     if( clock_gettime( CLOCK_MONOTONIC, &ts ) != 0 ) return 0;
-    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+    if( ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000L )
+        return 0;
+
+    const uintmax_t seconds = (uintmax_t)ts.tv_sec;
+    const uintmax_t nanoseconds = (uintmax_t)ts.tv_nsec;
+    const uintmax_t scale = UINTMAX_C( 1000000000 );
+    if( seconds > ( (uintmax_t)INT64_MAX - nanoseconds ) / scale )
+        return 0;
+    return (int64_t)( seconds * scale + nanoseconds );
 }
 
 /*****************************************************************************
@@ -996,14 +1004,18 @@ static int ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
 static void MaybeLogStats( filter_t *p_filter, filter_sys_t *p_sys,
                            int64_t now_ns )
 {
-    if( p_sys->next_stats_ns == 0 )
+    if( now_ns <= 0 )
+        return;
+    if( p_sys->last_stats_ns <= 0 || now_ns < p_sys->last_stats_ns )
     {
-        p_sys->next_stats_ns = now_ns + OBS_STATS_INTERVAL_NS;
+        p_sys->last_stats_ns = now_ns;
         return;
     }
-    if( now_ns < p_sys->next_stats_ns )
+    const uint64_t elapsed_ns = (uint64_t)now_ns
+                              - (uint64_t)p_sys->last_stats_ns;
+    if( elapsed_ns < (uint64_t)OBS_STATS_INTERVAL_NS )
         return;
-    p_sys->next_stats_ns = now_ns + OBS_STATS_INTERVAL_NS;
+    p_sys->last_stats_ns = now_ns;
     msg_Dbg( p_filter,
              "AutoUpscale: frames=%llu dropped=%llu ewma=%ldus%s",
              (unsigned long long)p_sys->frame_count,
