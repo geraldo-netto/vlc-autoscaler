@@ -504,21 +504,15 @@ $(BUILD)/test_cli_parse: tests/test_cli_parse.c tests/cli_parse.h $(BUILD_CONFIG
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
 # --------- libFuzzer (clang) ---------
-fuzz: $(BUILD)/fuzz_upscale_logic $(BUILD)/fuzz_usm $(BUILD)/fuzz_perfmon $(BUILD)/fuzz_threading $(BUILD)/fuzz_worker_pool $(BUILD)/fuzz_copy_plane $(BUILD)/fuzz_stripe_bounds $(BUILD)/fuzz_decide_tile_grid $(BUILD)/fuzz_frame_shape $(BUILD)/fuzz_scaler_chroma $(BUILD)/fuzz_scaler_open $(BUILD)/fuzz_content_probe $(BUILD)/fuzz_picture_view $(BUILD)/fuzz_usm_variants $(if $(HAVE_ZIMG),$(BUILD)/fuzz_scaler_seam)
+FUZZ_TARGET_NAMES := upscale_logic usm perfmon threading worker_pool copy_plane \
+                     stripe_bounds decide_tile_grid frame_shape scaler_chroma \
+                     scaler_open content_probe picture_view usm_variants \
+                     $(if $(HAVE_ZIMG),scaler_seam)
+FUZZ_TARGETS := $(addprefix $(BUILD)/fuzz_,$(FUZZ_TARGET_NAMES))
+
+fuzz: $(FUZZ_TARGETS)
 	@echo "Built libFuzzer targets:"
-	@echo "  $(BUILD)/fuzz_upscale_logic"
-	@echo "  $(BUILD)/fuzz_usm"
-	@echo "  $(BUILD)/fuzz_perfmon"
-	@echo "  $(BUILD)/fuzz_threading"
-	@echo "  $(BUILD)/fuzz_copy_plane"
-	@echo "  $(BUILD)/fuzz_stripe_bounds"
-	@echo "  $(BUILD)/fuzz_decide_tile_grid"
-	@echo "  $(BUILD)/fuzz_frame_shape"
-	@echo "  $(BUILD)/fuzz_scaler_chroma"
-	@echo "  $(BUILD)/fuzz_scaler_open"
-	@echo "  $(BUILD)/fuzz_content_probe"
-	@echo "  $(BUILD)/fuzz_picture_view"
-	@echo "  $(BUILD)/fuzz_usm_variants"
+	@for target in $(FUZZ_TARGETS); do echo "  $$target"; done
 	@echo ""
 	@echo "Run from random bytes:    $(BUILD)/fuzz_upscale_logic -max_total_time=60"
 	@echo "Run with seed corpus:     mkdir -p fuzz_corpus &&"

@@ -126,7 +126,7 @@ jobs:
       # previously 8 of 13 were built but never run.
       - name: Run libFuzzer (pure-logic targets, short pass)
         run: |
-          for t in perfmon threading copy_plane stripe_bounds \
+          for t in perfmon threading worker_pool copy_plane stripe_bounds \
                    decide_tile_grid scaler_open picture_view; do
             mkdir -p "corpus_$t"
             "build/fuzz_$t" "corpus_$t" -max_total_time=30 -print_final_stats=1
