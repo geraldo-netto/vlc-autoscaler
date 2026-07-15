@@ -248,6 +248,13 @@ static void test_copy_plane_realistic_480p_luma(void)
     int src_pitch = 896, dst_pitch = 854, w = 854, h = 480;
     uint8_t *src = malloc(src_pitch * h);
     uint8_t *dst = malloc(dst_pitch * h);
+    CHECK(src && dst);
+    if (!src || !dst) {
+        free(src);
+        free(dst);
+        END();
+        return;
+    }
     /* Fill src with a deterministic pattern. */
     for (int r = 0; r < h; r++)
         for (int c = 0; c < src_pitch; c++)

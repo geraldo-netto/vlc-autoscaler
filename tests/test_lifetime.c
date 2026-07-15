@@ -77,6 +77,12 @@ static void test_create_apply_destroy(void)
     uint8_t *src = malloc(n);
     uint8_t *dst = malloc(n);
     CHECK(src && dst);
+    if (!src || !dst) {
+        free(src);
+        free(dst);
+        END();
+        return;
+    }
 
     int amount = up_usm_amount_pct_to_q8(30);
     for (int trial = 0; trial < 30; trial++) {
@@ -131,6 +137,12 @@ static void test_alternating_cold_warm(void)
     uint8_t *src = malloc(n);
     uint8_t *dst = malloc(n);
     CHECK(src && dst);
+    if (!src || !dst) {
+        free(src);
+        free(dst);
+        END();
+        return;
+    }
     up_fill_random(src, n, 42);
 
     int amount = up_usm_amount_pct_to_q8(50);
@@ -205,6 +217,10 @@ static void test_input_buffer_can_be_freed(void)
     size_t n = (size_t)width * height;
     uint8_t *dst = malloc(n);
     CHECK(dst);
+    if (!dst) {
+        END();
+        return;
+    }
 
     usm_pool_t *p = up_usm_pool_create(4, width, height, 0);
     CHECK(p != NULL);
@@ -243,6 +259,10 @@ static void test_dst_buffer_swappable(void)
     size_t n = (size_t)width * height;
     uint8_t *src = malloc(n);
     CHECK(src);
+    if (!src) {
+        END();
+        return;
+    }
     up_fill_random(src, n, 7);
 
     usm_pool_t *p = up_usm_pool_create(2, width, height, 0);
@@ -315,6 +335,12 @@ static void test_many_pools_alive_simultaneously(void)
     uint8_t *src = malloc(n);
     uint8_t *dst = malloc(n);
     CHECK(src && dst);
+    if (!src || !dst) {
+        free(src);
+        free(dst);
+        END();
+        return;
+    }
     up_fill_random(src, n, 0xBEEF);
 
     for (int i = 0; i < NPOOLS; i++) {

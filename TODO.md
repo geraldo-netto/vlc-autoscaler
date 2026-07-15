@@ -42,7 +42,6 @@ are bounded.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| UB-10 | open | S | Test allocations are checked nonfatally or not checked before unconditional buffer dereferences (`tests/test_lifetime.c:87-97,141-152,216-232,254-267,325-338`; `tests/test_zimg_helpers.c:249-256`). | OOM makes the ASan/UBSan suite null-dereference instead of reporting a clean setup failure. Add fatal/guarded allocation helpers with cleanup; GCC `-fanalyzer` independently reached several lifetime null paths. |
 | UB-11 | open | S | `tests/test_scaler_zimg.c:687-702,853-876,948-962` short-circuits a second allocation into an uninitialized `zt_pic_t dst`, then unconditionally frees it through `tests/zimg_test_util.h:48-50`. | If the first allocation fails, `dst` was never initialized and cleanup reads/frees indeterminate pointers. Zero-initialize both ownership structs or allocate sequentially. |
 
 No additional UB finding after tracing shifts, allocation arithmetic, crop and
