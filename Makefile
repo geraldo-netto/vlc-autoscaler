@@ -987,7 +987,21 @@ $(COV_BUILD)/fuzz_picture_view: tests/fuzz_picture_view.c tests/cli_parse.h src/
 .PHONY: coverage coverage-summary
 coverage: $(COV_BINS)
 	@rm -f $(COV_BUILD)/*.gcda
-	@set -e; for t in $(COV_BINS); do $$t > /dev/null 2>&1; done
+	@set -e; \
+	log=$$(mktemp "$(COV_BUILD)/coverage-run.XXXXXX"); \
+	trap 'rm -f "$$log"' 0 1 2 3 15; \
+	for t in $(COV_BINS); do \
+	    printf 'coverage: %s\n' "$$t"; \
+	    if "$$t" > "$$log" 2>&1; then \
+	        :; \
+	    else \
+	        status=$$?; \
+	        printf 'FAIL: coverage binary %s exited with status %d\n' \
+	            "$$t" "$$status" >&2; \
+	        cat "$$log" >&2 || :; \
+	        exit "$$status"; \
+	    fi; \
+	done
 	@# Invoke gcov from the project root so embedded relative source
 	@# paths resolve correctly (e.g. "tests/../src/upscale_logic.h").
 	@# A header compiled into several test binaries (e.g. usm.h) yields a
