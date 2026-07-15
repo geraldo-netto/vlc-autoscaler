@@ -42,6 +42,11 @@ UP_USM_POOL_VARIANT_LIST(DEFINE_STUB_VARIANT)
 
 #include "test_harness.h"
 
+#if UP_CPU_LEVEL_FORCE_FALLBACK
+_Static_assert(UP_CPU_LEVEL_USE_BUILTIN == 0,
+               "forced fallback test must not use compiler level builtins");
+#endif
+
 static void test_select_ops_prefers_highest_isa(void)
 {
     BEGIN("select_ops picks avx512 > avx2 > sse2 by capability");
@@ -141,11 +146,42 @@ static void test_cpu_level_fallback_requires_os_state(void)
     END();
 }
 
+static const char *variant_for_levels(int have_v4, int have_v3)
+{
+    if (have_v4)
+        return "avx512";
+    if (have_v3)
+        return "avx2";
+    return "sse2";
+}
+
+static void test_host_probe_matches_dispatch(void)
+{
+    BEGIN("host CPU probe matches constructor-selected variant");
+#if UP_CPU_LEVEL_BUILTIN_AVAILABLE
+    __builtin_cpu_init();
+    const int builtin_v4 = __builtin_cpu_supports("x86-64-v4") != 0;
+    const int builtin_v3 = __builtin_cpu_supports("x86-64-v3") != 0;
+    CHECK((up_cpu_supports_v4() != 0) == builtin_v4);
+    CHECK((up_cpu_supports_v3() != 0) == builtin_v3);
+    CHECK(strcmp(up_usm_pool_variant_name,
+                 variant_for_levels(builtin_v4, builtin_v3)) == 0);
+#else
+    const int fallback_v4 = up_cpu_supports_v4() != 0;
+    const int fallback_v3 = up_cpu_supports_v3() != 0;
+    CHECK(!fallback_v4 || fallback_v3);
+    CHECK(strcmp(up_usm_pool_variant_name,
+                 variant_for_levels(fallback_v4, fallback_v3)) == 0);
+#endif
+    END();
+}
+
 int main(void)
 {
     test_select_ops_prefers_highest_isa();
     test_public_api_forwards();
     test_cpu_level_fallback_requires_complete_v3();
     test_cpu_level_fallback_requires_os_state();
+    test_host_probe_matches_dispatch();
     return test_harness_report();
 }

@@ -140,7 +140,6 @@ this technical domain; another business/domain pattern would not clarify it.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | PORT-9 | open | S | README, design notes, and Makefile comments still say the old-compiler ISA fallback is incomplete (`README.md:611-617`; `docs/HOW_IT_WORKS.md:620-624`; `Makefile:84-86,156-160`). | `src/cpu_level.h:5-9,80-167` now checks the complete inherited x86-64 v2/v3/v4 feature sets plus OS state. Remove the obsolete deployment warning and stale `PORT-6` references. |
-| PORT-10 | open | M | The old-compiler CPUID/XGETBV path is not exercised end-to-end: current compilers select builtins (`src/cpu_level.h:20-25,150-167`), while `tests/test_usm_pool_dispatch.c:76-135` tests only synthetic feature predicates. | A defect in `up_cpu_collect_x86_features`, inline `xgetbv`, or the fallback selection can ship unnoticed. Add a force-fallback test mode and compare its host result with the builtin, or keep an older-compiler CI lane. |
 
 ## error handling
 

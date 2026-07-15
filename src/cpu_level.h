@@ -19,9 +19,19 @@
 
 #if (defined(__clang__) && __clang_major__ >= 17) || \
     (!defined(__clang__) && defined(__GNUC__) && __GNUC__ >= 12)
-#define UP_CPU_LEVEL_PROBE 1
+#define UP_CPU_LEVEL_BUILTIN_AVAILABLE 1
 #else
-#define UP_CPU_LEVEL_PROBE 0
+#define UP_CPU_LEVEL_BUILTIN_AVAILABLE 0
+#endif
+
+#ifndef UP_CPU_LEVEL_FORCE_FALLBACK
+#define UP_CPU_LEVEL_FORCE_FALLBACK 0
+#endif
+
+#if UP_CPU_LEVEL_BUILTIN_AVAILABLE && !UP_CPU_LEVEL_FORCE_FALLBACK
+#define UP_CPU_LEVEL_USE_BUILTIN 1
+#else
+#define UP_CPU_LEVEL_USE_BUILTIN 0
 #endif
 
 typedef struct {
@@ -149,7 +159,7 @@ static inline up_cpu_x86_features_t up_cpu_collect_x86_features(void)
 
 static inline int up_cpu_supports_v3(void)
 {
-#if UP_CPU_LEVEL_PROBE
+#if UP_CPU_LEVEL_USE_BUILTIN
     return __builtin_cpu_supports("x86-64-v3");
 #else
     const up_cpu_x86_features_t f = up_cpu_collect_x86_features();
@@ -159,7 +169,7 @@ static inline int up_cpu_supports_v3(void)
 
 static inline int up_cpu_supports_v4(void)
 {
-#if UP_CPU_LEVEL_PROBE
+#if UP_CPU_LEVEL_USE_BUILTIN
     return __builtin_cpu_supports("x86-64-v4");
 #else
     const up_cpu_x86_features_t f = up_cpu_collect_x86_features();
