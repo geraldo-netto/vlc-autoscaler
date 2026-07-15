@@ -22,6 +22,7 @@ a.out
 crash-*
 timeout-*
 leak-*
+oom-*
 slow-unit-*
 fuzz_corpus/
 /corpus/

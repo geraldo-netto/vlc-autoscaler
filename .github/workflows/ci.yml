@@ -184,6 +184,8 @@ jobs:
             crash-*
             timeout-*
             leak-*
+            oom-*
+            slow-unit-*
 
   sonarcloud:
     name: SonarCloud (C/C++ scan, tests excluded)
