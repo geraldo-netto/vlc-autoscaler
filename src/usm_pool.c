@@ -540,7 +540,7 @@ void up_usm_pool_destroy(usm_pool_t *p)
 {
     if (!p) return;
 
-    up_worker_pool_destroy(&p->pool);
+    if (up_worker_pool_destroy(&p->pool) != 0) return;
     free(p->scratch);
     free(p);
 }

@@ -1255,13 +1255,18 @@ static void zimg_close(scaler_ctx_t *ctx)
 {
     zimg_priv_t *p = ctx->priv;
     if (!p) return;
+    ctx->priv = NULL;
 
-    up_worker_pool_destroy(&p->pool);
+    if (up_worker_pool_destroy(&p->pool) != 0) {
+        if (ctx->log_obj)
+            msg_Err((vlc_object_t *)ctx->log_obj,
+                    "AutoUpscale: worker join failed; quarantining zimg state");
+        return;
+    }
 
     free_plane_buffer(&p->src);
     free_plane_buffer(&p->dst);
     free(p);
-    ctx->priv = NULL;
 }
 
 const scaler_backend_t scaler_backend_zimg_impl = {

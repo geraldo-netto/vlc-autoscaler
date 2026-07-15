@@ -124,7 +124,7 @@ this technical domain; another business/domain pattern would not clarify it.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No separate row. ERR-7 owns the teardown-correctness risk found by this scan.
+No open finding.
 
 ## portability/standards conformance
 
@@ -140,9 +140,8 @@ fallbacks have explicit build and contract coverage.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| ERR-7 | open | M | `up_worker_pool_stop` ignores `pthread_join()` failures and clears `started` unconditionally (`src/worker_pool.h:250-261`); destroy then releases slots and frees thread-accessible storage (`:397-411`). | A failed join loses the live-thread marker and can violate synchronous retirement or free callback state still in use. Return/propagate stop status, clear `started` only after a successful join, quarantine unreaped state, and add join-failure injection coverage. |
 
-No other open finding. Relevant production allocation, backend, picture, clock,
+No open finding. Relevant production allocation, backend, picture, clock,
 synchronization, and processing failures are propagated or deliberately
 treated as invariant-only cases. The documented recovery contract preserves
 worker storage until synchronous retirement completes.
@@ -152,10 +151,10 @@ worker storage until synchronous retirement completes.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No separate open finding beyond ERR-7. Permanent USM/backend failures retire
-their pools and resources. Normal safe retirement waits for active callbacks
-before releasing their storage; that deliberately has no hard end-to-end
-deadline.
+No open finding. Permanent USM/backend failures retire their pools and
+resources. Normal safe retirement waits for active callbacks before releasing
+their storage; a failed thread join quarantines the complete allocation island
+instead of releasing worker-accessible state.
 
 ## API/ABI stability
 

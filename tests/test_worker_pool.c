@@ -33,6 +33,8 @@ static atomic_int g_spawn_budget;             /* -1 = unlimited */
 static atomic_int g_fail_cancel_state = -1;
 static atomic_int g_thread_create_calls;
 static atomic_int g_thread_join_calls;
+static atomic_int g_fail_join_nth;          /* 1-based; 0 = never */
+static atomic_int g_join_attempts;
 
 void *__real_aligned_alloc(size_t alignment, size_t size);
 void *__wrap_aligned_alloc(size_t alignment, size_t size)
@@ -66,6 +68,12 @@ int __wrap_pthread_create(pthread_t *th, const pthread_attr_t *attr,
 int __real_pthread_join(pthread_t thread, void **retval);
 int __wrap_pthread_join(pthread_t thread, void **retval)
 {
+    const int attempt = atomic_fetch_add_explicit(&g_join_attempts, 1,
+                                                   memory_order_relaxed) + 1;
+    if (atomic_load_explicit(&g_fail_join_nth, memory_order_relaxed)
+        == attempt)
+        return EINVAL;
+
     const int rc = __real_pthread_join(thread, retval);
     if (rc == 0)
         atomic_fetch_add_explicit(&g_thread_join_calls, 1,
@@ -92,6 +100,8 @@ static void fault_reset(void)
     atomic_store(&g_fail_cancel_state, -1);
     atomic_store(&g_thread_create_calls, 0);
     atomic_store(&g_thread_join_calls, 0);
+    atomic_store(&g_fail_join_nth, 0);
+    atomic_store(&g_join_attempts, 0);
 }
 
 /* ---------- fake owner ---------- */
@@ -372,6 +382,63 @@ static void test_all_or_nothing_rejects_partial_spawn(void)
     END();
 }
 
+static void test_destroy_quarantines_unreaped_worker(void)
+{
+    BEGIN("join failure: destroy retains every worker-accessible allocation");
+    fake_pool_t f;
+    fake_init(&f, &partial_ops, 2);
+
+    if (fake_start_required(&f, 2) != 0) {
+        (void)up_worker_pool_destroy(&f.pool);
+        END();
+        return;
+    }
+
+    atomic_store(&g_fail_join_nth, 1);
+    CHECK_EQ(up_worker_pool_destroy(&f.pool), -1);
+    CHECK_EQ(up_worker_pool_broken(&f.pool), 1);
+    CHECK_EQ(up_worker_pool_count(&f.pool), 2);
+    CHECK(f.pool.workers != NULL);
+    CHECK(f.pool.threads != NULL);
+    CHECK_EQ(f.pool.threads[0].started, 1);
+    CHECK_EQ(f.pool.threads[1].started, 0);
+    CHECK_EQ(f.release_calls, 0);
+    CHECK_EQ(atomic_load(&g_thread_join_calls), 1);
+
+    atomic_store(&g_fail_join_nth, 0);
+    CHECK_EQ(up_worker_pool_destroy(&f.pool), 0);
+    CHECK_EQ(f.release_calls, 2);
+    CHECK(f.pool.workers == NULL);
+    CHECK(f.pool.threads == NULL);
+    CHECK_EQ(atomic_load(&g_thread_join_calls), 2);
+    END();
+}
+
+static void test_failed_start_quarantines_unreaped_worker(void)
+{
+    BEGIN("partial start join failure: built slots survive until retry");
+    fake_pool_t f;
+    fake_init(&f, &strict_ops, 4);
+    atomic_store(&g_spawn_budget, 2);
+    atomic_store(&g_fail_join_nth, 1);
+
+    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), -1);
+    CHECK_EQ(up_worker_pool_failed(&f.pool), 1);
+    CHECK_EQ(up_worker_pool_count(&f.pool), 2);
+    CHECK_EQ(f.release_calls, 1);
+    CHECK(f.pool.workers != NULL);
+    CHECK(f.pool.threads != NULL);
+    CHECK_EQ(f.pool.threads[0].started, 1);
+    CHECK_EQ(f.pool.threads[1].started, 0);
+    CHECK_EQ(atomic_load(&g_thread_join_calls), 1);
+
+    atomic_store(&g_fail_join_nth, 0);
+    CHECK_EQ(up_worker_pool_destroy(&f.pool), 0);
+    CHECK_EQ(f.release_calls, 3);
+    CHECK_EQ(atomic_load(&g_thread_join_calls), 2);
+    END();
+}
+
 static void test_construct_failure(void)
 {
     BEGIN("construct failure: slot cleans up itself, earlier slots released");
@@ -645,6 +712,8 @@ int main(void)
     test_single_worker_runs_inline();
     test_partial_spawn_is_usable();
     test_all_or_nothing_rejects_partial_spawn();
+    test_destroy_quarantines_unreaped_worker();
+    test_failed_start_quarantines_unreaped_worker();
     test_construct_failure();
     test_no_worker_at_all();
     test_prepare_failure();

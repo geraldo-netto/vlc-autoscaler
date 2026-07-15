@@ -246,19 +246,26 @@ static inline void up__pool_cancel_started(up_worker_pool_t *p)
  * is the independent termination path; threading.h releases the mutex that
  * pthread_cond_wait reacquires before running cancellation cleanup. An active
  * owner callback is deliberately not cancellable and must finish before join.
- * Safe on a pool that never started or already stopped. */
-static inline void up_worker_pool_stop(up_worker_pool_t *p)
+ * Safe on a pool that never started or already stopped. Returns -1 if any
+ * worker could not be reaped; its started marker is retained for a later retry. */
+static inline int up_worker_pool_stop(up_worker_pool_t *p)
 {
-    if (p->threads == NULL) return;
+    if (p->threads == NULL) return 0;
     if (up_pool_gate_request_exit(&p->gate) != 0) {
         p->broken = true;
         up__pool_cancel_started(p);
     }
+    int result = 0;
     for (int i = 0; i < p->n_pref; i++) {
         if (!p->threads[i].started) continue;
-        pthread_join(p->threads[i].thread, NULL);
+        if (pthread_join(p->threads[i].thread, NULL) != 0) {
+            p->broken = true;
+            result = -1;
+            continue;
+        }
         p->threads[i].started = false;
     }
+    return result;
 }
 
 static inline void up__pool_release_slots(up_worker_pool_t *p, int n)
@@ -291,11 +298,19 @@ static inline bool up__pool_build_ok(const up_worker_pool_t *p, int built)
     return !p->ops->all_or_nothing || built >= need;
 }
 
+static inline void up__pool_retire_failed_start(up_worker_pool_t *p, int built)
+{
+    p->n_workers = built;
+    if (up_worker_pool_stop(p) != 0) return;
+    up__pool_release_slots(p, built);
+    p->n_workers = 0;
+}
+
 /*
  * Bring the pool up: pool-wide prepare, slot array, gate, then construct and
- * spawn. Returns 0 with n_workers set, or -1 with every worker that did come
- * up stopped and released (the allocations themselves are freed by
- * up_worker_pool_destroy, which the owner calls on its own teardown path).
+ * spawn. Returns 0 with n_workers set. On failure, built slots are released
+ * only after every worker is reaped; a failed join leaves the complete
+ * allocation island intact for up_worker_pool_destroy to retry or quarantine.
  */
 static inline int up_worker_pool_start(up_worker_pool_t *p)
 {
@@ -303,8 +318,7 @@ static inline int up_worker_pool_start(up_worker_pool_t *p)
 
     const int built = up__pool_construct_all(p);
     if (!up__pool_build_ok(p, built)) {
-        up_worker_pool_stop(p);
-        up__pool_release_slots(p, built);
+        up__pool_retire_failed_start(p, built);
         return -1;
     }
 
@@ -354,7 +368,7 @@ static inline bool up_worker_pool_failed(const up_worker_pool_t *p)
 static inline void up_worker_pool_poison(up_worker_pool_t *p)
 {
     p->broken = true;
-    up_worker_pool_stop(p);
+    (void)up_worker_pool_stop(p);
 }
 
 /*
@@ -396,11 +410,12 @@ static inline int up_worker_pool_dispatch(up_worker_pool_t *p)
 /*
  * Stop the threads, release every live slot, and free the pool's own storage.
  * Safe on a pool that was configured but never started, and on one whose start
- * failed part-way (its slots were already released; n_workers is 0).
+ * failed part-way. Returns -1 without releasing any storage if a worker could
+ * not be reaped; the owner must quarantine its complete allocation island.
  */
-static inline void up_worker_pool_destroy(up_worker_pool_t *p)
+static inline int up_worker_pool_destroy(up_worker_pool_t *p)
 {
-    up_worker_pool_stop(p);
+    if (up_worker_pool_stop(p) != 0) return -1;
     up__pool_release_slots(p, p->n_workers);
     p->n_workers = 0;
 
@@ -409,6 +424,7 @@ static inline void up_worker_pool_destroy(up_worker_pool_t *p)
     free(p->threads);
     p->threads = NULL;
     up_pool_gate_destroy(&p->gate);
+    return 0;
 }
 
 #endif /* AUTOUPSCALE_WORKER_POOL_H */

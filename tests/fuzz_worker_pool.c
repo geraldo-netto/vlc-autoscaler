@@ -167,7 +167,8 @@ static int run_dispatches(fz_pool_t *f, int dispatches)
 /* Teardown invariants, whichever path got us here. */
 static int destroy_and_check(fz_pool_t *f)
 {
-    up_worker_pool_destroy(&f->pool);
+    if (up_worker_pool_destroy(&f->pool) != 0)
+        abort();
     if (f->released != f->constructed) FZ_FAIL("destroy leaked a live slot\n");
     if (f->double_release)             FZ_FAIL("destroy released a slot twice\n");
     return 0;
