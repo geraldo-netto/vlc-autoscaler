@@ -29,7 +29,7 @@
  *   up_chroma_physical_plane_index(plane, swap_uv) - map semantic Y/U/V order
  *     to the physical plane order used by the VLC picture.
  *
- *   up_chroma_align_crop_even(c, w, h, x, y) - round a crop window down to
+ *   up_chroma_align_crop_even(c, w, h, x, y) - align a crop window inward to
  *     even on each subsampled axis. Any NULL argument is skipped.
  *
  * The fourcc literals are spelled out as 4-character UP_FOURCC() calls
@@ -42,6 +42,7 @@
 #define AUTOUPSCALE_CHROMA_CLASSIFY_H
 
 #include <stdbool.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -242,7 +243,7 @@ static inline bool up_chroma_subsample(uint32_t c,
 }
 
 /*
- * Round a source crop window down to even on every subsampled axis.
+ * Align a source crop window inward to even on every subsampled axis.
  *
  * A subsampled chroma plane anchors its crop at offset >> subsample, floored
  * (up_picture_plane_extent). An odd luma offset therefore floors the chroma
@@ -253,9 +254,34 @@ static inline bool up_chroma_subsample(uint32_t c,
  * that is not divisible by the subsample factor, which turns into a sticky
  * lazy-init failure and every frame dropped. VP9/AV1 permit both with 4:2:0.
  *
- * Rounding down only ever shrinks the window, so offset+width stays inside
- * the coded plane. Any of the four pointers may be NULL.
+ * A full axis call rounds the start up and the end down as one [start,end)
+ * interval. Partial calls keep the older single-value behavior because the
+ * production call sites still need to normalize dimensions or offsets alone.
+ * Any of the four pointers may be NULL.
  */
+static inline void up_chroma_align_axis_even(int *dim, unsigned *off)
+{
+    if (dim != NULL && off != NULL) {
+        if (*dim <= 0) {
+            *dim = 0;
+            return;
+        }
+        const uint64_t start = *off;
+        const uint64_t end = start + (uint64_t)*dim;
+        const uint64_t aligned_start = (start + UINT64_C(1)) & ~UINT64_C(1);
+        const uint64_t aligned_end = end & ~UINT64_C(1);
+        *off = aligned_start <= UINT_MAX
+             ? (unsigned)aligned_start : (UINT_MAX & ~1u);
+        *dim = aligned_end > aligned_start
+             ? (int)(aligned_end - aligned_start) : 0;
+        return;
+    }
+    if (dim != NULL)
+        *dim &= ~1;
+    if (off != NULL)
+        *off &= ~1u;
+}
+
 static inline void up_chroma_align_crop_even(uint32_t c, int *w, int *h,
                                              unsigned *x, unsigned *y)
 {
@@ -263,14 +289,10 @@ static inline void up_chroma_align_crop_even(uint32_t c, int *w, int *h,
     unsigned sub_h;
     if (!up_chroma_subsample(c, &sub_w, &sub_h))
         return;
-    if (sub_w) {
-        if (w) *w &= ~1;
-        if (x) *x &= ~1u;
-    }
-    if (sub_h) {
-        if (h) *h &= ~1;
-        if (y) *y &= ~1u;
-    }
+    if (sub_w)
+        up_chroma_align_axis_even(w, x);
+    if (sub_h)
+        up_chroma_align_axis_even(h, y);
 }
 
 #endif /* AUTOUPSCALE_CHROMA_CLASSIFY_H */

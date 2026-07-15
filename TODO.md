@@ -117,7 +117,6 @@ this technical domain; another business/domain pattern would not clarify it.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| REL-4 | open | M | `up_chroma_align_crop_even()` rounds a subsampled crop's origin and extent independently, at separate call sites (`src/chroma_classify.h:232-262`, `src/autoupscale.c:531-539,732-737`). | For example, `x=1,width=640` becomes `x=0,width=640`: the scaler includes one pixel outside the negotiated visible crop and drops the intended rightmost pixel. Align the `[start,end)` interval inward as one operation before target planning, propagate the resulting origin and extent together, and reject an empty interval. |
 
 Zimg now escalates recurring alignment misses even when safe buffers occur
 between them, so fatal fallback cannot be postponed forever by an alternating

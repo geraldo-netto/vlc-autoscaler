@@ -347,15 +347,25 @@ static void test_subsample_covers_every_y_plane_chroma(void)
  * hardware decoder hands back NV12, so this was the common path. */
 static void test_align_semi_planar_420(void)
 {
-    BEGIN("align: NV12/NV21 odd crop dims AND offsets are evened (REL-1)");
+    BEGIN("align: NV12/NV21 odd crop is aligned inward (REL-1/REL-4)");
     for (size_t i = 0; i < 2; i++) {
         const uint32_t c = i ? UP_FOURCC('N','V','2','1')
                              : UP_FOURCC('N','V','1','2');
         int w = 641, h = 361;
         unsigned x = 1, y = 3;
         up_chroma_align_crop_even(c, &w, &h, &x, &y);
-        CHECK(w == 640 && h == 360 && x == 0 && y == 2);
+        CHECK(w == 640 && h == 360 && x == 2 && y == 4);
     }
+    END();
+}
+
+static void test_align_interval_inward_regression(void)
+{
+    BEGIN("align: odd origin with even extent keeps crop inside (REL-4)");
+    int w = 640, h = 360;
+    unsigned x = 1, y = 3;
+    up_chroma_align_crop_even(UP_FOURCC('I','4','2','0'), &w, &h, &x, &y);
+    CHECK(w == 638 && h == 358 && x == 2 && y == 4);
     END();
 }
 
@@ -365,10 +375,10 @@ static void test_align_planar_420(void)
     int w = 101, h = 51;
     unsigned x = 5, y = 7;
     up_chroma_align_crop_even(UP_FOURCC('I','4','2','0'), &w, &h, &x, &y);
-    CHECK(w == 100 && h == 50 && x == 4 && y == 6);
+    CHECK(w == 100 && h == 50 && x == 6 && y == 8);
     w = 101; h = 51; x = 5; y = 7;
     up_chroma_align_crop_even(UP_FOURCC('Y','V','1','2'), &w, &h, &x, &y);
-    CHECK(w == 100 && h == 50 && x == 4 && y == 6);
+    CHECK(w == 100 && h == 50 && x == 6 && y == 8);
     END();
 }
 
@@ -378,7 +388,7 @@ static void test_align_422_horizontal_only(void)
     int w = 101, h = 51;
     unsigned x = 5, y = 7;
     up_chroma_align_crop_even(UP_FOURCC('I','4','2','2'), &w, &h, &x, &y);
-    CHECK(w == 100 && h == 51 && x == 4 && y == 7);
+    CHECK(w == 100 && h == 51 && x == 6 && y == 7);
     END();
 }
 
@@ -415,14 +425,17 @@ static void test_align_null_arguments(void)
 
 static void test_align_is_idempotent_and_shrinking(void)
 {
-    BEGIN("invariant: align never grows the window and is idempotent");
+    BEGIN("invariant: full align stays inside the input interval");
     for (size_t i = 0; i < N_SUBSAMPLED; i++) {
         int w = 1919, h = 1079;
         unsigned x = 33, y = 17;
         up_chroma_align_crop_even(k_subsampled[i].fourcc, &w, &h, &x, &y);
         const int w1 = w, h1 = h;
         const unsigned x1 = x, y1 = y;
-        CHECK(w1 <= 1919 && h1 <= 1079 && x1 <= 33 && y1 <= 17);
+        CHECK(x1 >= 33 && y1 >= 17);
+        CHECK(w1 >= 0 && h1 >= 0);
+        CHECK((uint64_t)x1 + (uint64_t)w1 <= 33u + 1919u);
+        CHECK((uint64_t)y1 + (uint64_t)h1 <= 17u + 1079u);
         up_chroma_align_crop_even(k_subsampled[i].fourcc, &w, &h, &x, &y);
         CHECK(w == w1 && h == h1 && x == x1 && y == y1);
     }
@@ -469,6 +482,7 @@ int main(void)
 
     /* up_chroma_align_crop_even */
     test_align_semi_planar_420();
+    test_align_interval_inward_regression();
     test_align_planar_420();
     test_align_422_horizontal_only();
     test_align_444_and_unsupported_untouched();

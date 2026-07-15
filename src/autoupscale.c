@@ -287,6 +287,13 @@ vlc_module_end()
 /*****************************************************************************
  * Internal state
  *****************************************************************************/
+typedef struct source_crop_s
+{
+    up_dims_t dims;
+    unsigned x_offset;
+    unsigned y_offset;
+} source_crop_t;
+
 struct filter_sys_t
 {
     scaler_ctx_t  scaler;
@@ -407,7 +414,7 @@ static void DetectHardware( int *cores, unsigned long *mem_mb )
  * Open: probe input format, decide whether to engage, set up scaler + USM
  *****************************************************************************
  * Open() is split into focused phase helpers:
- *   ResolveInputDims      — picks visible-or-physical src dims
+ *   ResolveSourceCrop     — picks and aligns visible-or-physical source crop
  *   PickBackendOrReject   — opaque-chroma + null-backend gate
  *   ConfigureScaler       — fills scaler_ctx_t from VLC vars
  *   InitUsmPool           — optional USM post-pass setup
@@ -416,11 +423,9 @@ static void DetectHardware( int *cores, unsigned long *mem_mb )
  * Open() itself is a linear orchestrator.
  *****************************************************************************/
 
-/* Pick the visible (cropped) dimension when present, otherwise the
- * physical one. Encapsulates the two ?: that previously inflated Open's
- * branch count. */
-static void ResolveInputDims( const filter_t *p_filter,
-                              int *src_w, int *src_h )
+/* Pick the visible (cropped) dimension when present, otherwise the physical
+ * one, then align origin and extent together for subsampled chromas. */
+static source_crop_t ResolveSourceCrop( const filter_t *p_filter )
 {
     const unsigned width = p_filter->fmt_in.video.i_visible_width
                 ? p_filter->fmt_in.video.i_visible_width
@@ -428,8 +433,18 @@ static void ResolveInputDims( const filter_t *p_filter,
     const unsigned height = p_filter->fmt_in.video.i_visible_height
                 ? p_filter->fmt_in.video.i_visible_height
                 : p_filter->fmt_in.video.i_height;
-    *src_w = width <= INT_MAX ? (int)width : -1;
-    *src_h = height <= INT_MAX ? (int)height : -1;
+    source_crop_t crop = {
+        .dims = {
+            width <= INT_MAX ? (int)width : -1,
+            height <= INT_MAX ? (int)height : -1,
+        },
+        .x_offset = p_filter->fmt_in.video.i_x_offset,
+        .y_offset = p_filter->fmt_in.video.i_y_offset,
+    };
+    up_chroma_align_crop_even( p_filter->fmt_in.video.i_chroma,
+                               &crop.dims.width, &crop.dims.height,
+                               &crop.x_offset, &crop.y_offset );
+    return crop;
 }
 
 /* Opaque-chroma rejection + backend selection. Logs the reason and returns
@@ -521,7 +536,7 @@ static void ConfigureScaler( scaler_ctx_t *sc,
                              const scaler_backend_t *be,
                              filter_t *p_filter,
                              vlc_fourcc_t chroma, int algo,
-                             up_dims_t src, up_dims_t target )
+                             source_crop_t src, up_dims_t target )
 {
     vlc_object_t *p_this = (vlc_object_t *)p_filter;
     int threads = InheritIntSat( p_filter, CFG_PREFIX "threads" );
@@ -529,14 +544,12 @@ static void ConfigureScaler( scaler_ctx_t *sc,
     if( threads > UP_THREADS_MAX ) threads = UP_THREADS_MAX;
 
     sc->backend      = be;
-    sc->src_w        = src.width;
-    sc->src_h        = src.height;
+    sc->src_w        = src.dims.width;
+    sc->src_h        = src.dims.height;
     sc->src_coded_w  = p_filter->fmt_in.video.i_width;
     sc->src_coded_h  = p_filter->fmt_in.video.i_height;
-    sc->src_x_offset = p_filter->fmt_in.video.i_x_offset;
-    sc->src_y_offset = p_filter->fmt_in.video.i_y_offset;
-    up_chroma_align_crop_even( chroma, NULL, NULL,
-                               &sc->src_x_offset, &sc->src_y_offset );
+    sc->src_x_offset = src.x_offset;
+    sc->src_y_offset = src.y_offset;
     sc->dst_w        = target.width;
     sc->dst_h        = target.height;
     sc->algo         = algo;
@@ -729,12 +742,7 @@ static int Open( vlc_object_t *p_this )
     if( CheckCpuLevel( p_this ) != VLC_SUCCESS )
         return VLC_EGENERIC;
 
-    int src_w;
-    int src_h;
-    ResolveInputDims( p_filter, &src_w, &src_h );
-
-    up_chroma_align_crop_even( p_filter->fmt_in.video.i_chroma,
-                               &src_w, &src_h, NULL, NULL );
+    source_crop_t src = ResolveSourceCrop( p_filter );
 
     int skip_above   = InheritIntSat( p_filter, CFG_PREFIX "skip-above" );
     int preset       = InheritIntSat( p_filter, CFG_PREFIX "target" );
@@ -749,12 +757,12 @@ static int Open( vlc_object_t *p_this )
     DetectHardware( &cores, &mem_mb );
 
     up_dims_t target = { 0, 0 };
-    if( !up_plan_upscale( src_w, src_h, skip_above, preset,
+    if( !up_plan_upscale( src.dims.width, src.dims.height, skip_above, preset,
                           cores, mem_mb, &target ) )
     {
         msg_Dbg( p_filter,
                  "AutoUpscale: bypassing %dx%d (skip>=%d, preset=%d)",
-                 src_w, src_h, skip_above, preset );
+                 src.dims.width, src.dims.height, skip_above, preset );
         return VLC_EGENERIC;
     }
 
@@ -769,7 +777,7 @@ static int Open( vlc_object_t *p_this )
 
     p_sys->backend_pref = backend_pref;   /* SYS-2: fallback respects it */
     ConfigureScaler( &p_sys->scaler, be, p_filter, chroma, algo,
-                     (up_dims_t){ src_w, src_h }, target );
+                     src, target );
 
     if( OpenScalerOrFallback( p_filter, p_sys ) != 0 )
     {

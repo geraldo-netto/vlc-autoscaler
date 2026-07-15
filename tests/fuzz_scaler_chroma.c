@@ -286,20 +286,32 @@ static bool crop_equal(crop_window_t a, crop_window_t b)
         && a.off[AXIS_X] == b.off[AXIS_X] && a.off[AXIS_Y] == b.off[AXIS_Y];
 }
 
-/* Alignment may only shrink an axis, and by at most one pel — that is what
- * keeps offset+dim inside the coded plane. */
-static void check_axis_shrinks(uint32_t fourcc, int a, crop_window_t before,
-                               crop_window_t after)
+static uint64_t crop_axis_end(crop_window_t win, int a)
 {
-    if (after.dim[a] > before.dim[a] || after.off[a] > before.off[a])
-        FAIL("0x%08x axis %d align grew the window (%d/%u -> %d/%u)",
-             fourcc, a, before.dim[a], before.off[a],
-             after.dim[a], after.off[a]);
+    return (uint64_t)win.off[a] + (uint64_t)win.dim[a];
+}
+
+/* Full alignment may move the start forward and the end backward, but the
+ * resulting interval must stay inside the original one. */
+static void check_axis_stays_inside(uint32_t fourcc, int a,
+                                    crop_window_t before,
+                                    crop_window_t after)
+{
     if (after.dim[a] < 0)
         FAIL("0x%08x axis %d align produced a negative dim (%d)",
              fourcc, a, after.dim[a]);
-    if (before.dim[a] - after.dim[a] > 1 || before.off[a] - after.off[a] > 1)
-        FAIL("0x%08x axis %d align shifted by more than one pel", fourcc, a);
+    if (after.off[a] < before.off[a])
+        FAIL("0x%08x axis %d align moved the start backward (%d/%u -> %d/%u)",
+             fourcc, a, before.dim[a], before.off[a],
+             after.dim[a], after.off[a]);
+    if (crop_axis_end(after, a) > crop_axis_end(before, a))
+        FAIL("0x%08x axis %d align moved the end forward (%d/%u -> %d/%u)",
+             fourcc, a, before.dim[a], before.off[a],
+             after.dim[a], after.off[a]);
+    if (after.off[a] - before.off[a] > 1)
+        FAIL("0x%08x axis %d start shifted by more than one pel", fourcc, a);
+    if (before.dim[a] - after.dim[a] > 2)
+        FAIL("0x%08x axis %d dim shrank by more than two pels", fourcc, a);
 }
 
 static void check_axis_parity(uint32_t fourcc, int a, unsigned sub,
@@ -328,14 +340,19 @@ static void check_align_noop_when_unsupported(uint32_t fourcc,
 static void check_align_partial_pointers(uint32_t fourcc, crop_window_t before,
                                          crop_window_t after)
 {
+    unsigned sub[AXIS_COUNT] = { 0, 0 };
     int w_only = before.dim[AXIS_X];
     unsigned y_only = before.off[AXIS_Y];
     up_chroma_align_crop_even(fourcc, &w_only, NULL, NULL, NULL);
     up_chroma_align_crop_even(fourcc, NULL, NULL, NULL, &y_only);
     up_chroma_align_crop_even(fourcc, NULL, NULL, NULL, NULL);
-    if (w_only != after.dim[AXIS_X] || y_only != after.off[AXIS_Y])
-        FAIL("0x%08x partial-pointer align disagrees with the full call",
-             fourcc);
+    if (!up_chroma_subsample(fourcc, &sub[AXIS_X], &sub[AXIS_Y]))
+        return;
+    if (sub[AXIS_X] && (w_only & 1))
+        FAIL("0x%08x partial width align left an odd value", fourcc);
+    if (sub[AXIS_Y] && (y_only & 1u))
+        FAIL("0x%08x partial y-offset align left an odd value", fourcc);
+    (void)after;
 }
 
 static void check_crop_align(uint32_t fourcc, const uint8_t *data, size_t size)
@@ -347,7 +364,7 @@ static void check_crop_align(uint32_t fourcc, const uint8_t *data, size_t size)
     const bool subsampled = up_chroma_subsample(fourcc, &sub[AXIS_X],
                                                 &sub[AXIS_Y]);
     for (int a = 0; a < AXIS_COUNT; a++) {
-        check_axis_shrinks(fourcc, a, before, after);
+        check_axis_stays_inside(fourcc, a, before, after);
         if (subsampled)
             check_axis_parity(fourcc, a, sub[a], after);
     }
