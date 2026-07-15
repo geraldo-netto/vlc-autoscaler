@@ -27,7 +27,9 @@
  *****************************************************************************/
 #define ZIMG_TEST_DEFINE_MODULE_NAME
 #include "zimg_test_util.h"
+#if !defined(ZIMG_TEST_SKIP_BARRIER_FAULTS) && !defined(ZIMG_TEST_NO_WRAP_FAULTS)
 #include "barrier_fault_inject.h"
+#endif
 
 #include <zimg.h>   /* ERR-2: __wrap_zimg_filter_graph_process signature */
 #include "../src/threading.h"
@@ -38,6 +40,7 @@
 #include <stdio.h>
 #include <sys/resource.h>
 
+#ifndef ZIMG_TEST_NO_WRAP_FAULTS
 /* Linked with -Wl,--wrap=aligned_alloc: OOM fault injection for the MEM-1 /
  * UB-3 error-path tests. Atomic because scaler_zimg workers also allocate. */
 static atomic_int g_alloc_fail_at;   /* N>0: the Nth aligned_alloc fails */
@@ -201,6 +204,7 @@ static void zt_pin_scenario_reset(void)
                           memory_order_relaxed);
 #endif
 }
+#endif /* !ZIMG_TEST_NO_WRAP_FAULTS */
 
 #include "test_harness.h"
 
@@ -873,9 +877,11 @@ static void test_construction_pthread_fail(void)
     END();
 }
 
-static void test_barrier_failure_drains_and_sticks(void)
+#if defined(ZIMG_TEST_SKIP_BARRIER_FAULTS) || defined(ZIMG_TEST_NO_WRAP_FAULTS)
+static void run_barrier_failure_case(void) {}
+#else
+static void run_barrier_failure_case(void)
 {
-    BEGIN("barrier failure drains frame, stops pool, and sticks");
     const struct zcfg *c = &CFGS[1];
     const uint32_t seed = 0xC04B4Au;
     zt_pic_t expected = {0}, src = {0}, dst = {0}, untouched = {0};
@@ -913,6 +919,13 @@ static void test_barrier_failure_drains_and_sticks(void)
     zt_pic_free(&src);
     zt_pic_free(&dst);
     zt_pic_free(&untouched);
+}
+#endif
+
+static void test_barrier_failure_drains_and_sticks(void)
+{
+    BEGIN("barrier failure drains frame, stops pool, and sticks");
+    run_barrier_failure_case();
     END();
 }
 
@@ -1071,6 +1084,7 @@ static int run_zimg_pinned(const struct zcfg *c, uint32_t seed, zt_pic_t *out)
     return rc;
 }
 
+#ifndef ZIMG_TEST_NO_WRAP_FAULTS
 static int run_zimg_pin_diagnostic(int threads)
 {
     const struct zcfg *c = &CFGS[1];
@@ -1140,6 +1154,13 @@ static void test_pin_diagnostics(void)
     }
     END();
 }
+#else
+static void test_pin_diagnostics(void)
+{
+    BEGIN("CPU pinning reports inline, unavailable, and partial outcomes");
+    END();
+}
+#endif
 
 /* SCAL-4: pinning is an optimization only — output must be byte-identical to
  * the unpinned path, and the pin/spawn/teardown must be crash- and race-free
@@ -1169,6 +1190,10 @@ static void test_pin_cpus_matches(void)
  * pointer. FAIL_AT 1 = src plane 0 (out untouched), 4 = out plane 0. */
 static void test_run_zimg_failure_leaves_out_free_safe(void)
 {
+#ifdef ZIMG_TEST_NO_WRAP_FAULTS
+    BEGIN("run_zimg alloc failure leaves out zeroed and free-safe");
+    END();
+#else
     BEGIN("run_zimg alloc failure leaves out zeroed and free-safe");
     static const int FAIL_AT[] = { 1, 4 };
     for (size_t i = 0; i < sizeof FAIL_AT / sizeof *FAIL_AT; i++) {
@@ -1182,12 +1207,17 @@ static void test_run_zimg_failure_leaves_out_free_safe(void)
     }
     zt_alloc_fail_at(0);
     END();
+#endif
 }
 
 /* MEM-1: an OOM on plane k must free planes [0,k) (LeakSanitizer enforces)
  * and leave every buf[] NULL so a later zt_pic_free stays safe. */
 static void test_pic_alloc_partial_failure(void)
 {
+#ifdef ZIMG_TEST_NO_WRAP_FAULTS
+    BEGIN("zt_pic_alloc OOM mid-loop frees earlier planes, stays free-safe");
+    END();
+#else
     BEGIN("zt_pic_alloc OOM mid-loop frees earlier planes, stays free-safe");
     for (int fail_at = 1; fail_at <= 3; fail_at++) {
         zt_pic_t pic;
@@ -1200,15 +1230,10 @@ static void test_pic_alloc_partial_failure(void)
     }
     zt_alloc_fail_at(0);
     END();
+#endif
 }
 
-/* ERR-2: a failed graph run must emit nothing. tile_dst / stripe scratch are
- * aligned_alloc'd and never zeroed, so a copy-out after a failed process()
- * would splatter indeterminate heap (or a half-resampled tile) into VLC's
- * destination picture. The frame is dropped either way, but the copy is a
- * frame-sized read of uninitialized memory. The dst canary must survive
- * byte-for-byte on every emit path: column tile, stripe copy-out, and the
- * zero-copy path (where the graph writes VLC's picture directly). */
+#ifndef ZIMG_TEST_NO_WRAP_FAULTS
 static int dst_is_all(const zt_pic_t *pic, uint8_t v)
 {
     for (int k = 0; k < pic->pic.i_planes; k++) {
@@ -1222,9 +1247,21 @@ static int dst_is_all(const zt_pic_t *pic, uint8_t v)
     }
     return 1;
 }
+#endif
 
+/* ERR-2: a failed graph run must emit nothing. tile_dst / stripe scratch are
+ * aligned_alloc'd and never zeroed, so a copy-out after a failed process()
+ * would splatter indeterminate heap (or a half-resampled tile) into VLC's
+ * destination picture. The frame is dropped either way, but the copy is a
+ * frame-sized read of uninitialized memory. The dst canary must survive
+ * byte-for-byte on every emit path: column tile, stripe copy-out, and the
+ * zero-copy path (where the graph writes VLC's picture directly). */
 static void test_process_failure_emits_nothing(void)
 {
+#ifdef ZIMG_TEST_NO_WRAP_FAULTS
+    BEGIN("failed graph run copies nothing into the dst picture (ERR-2)");
+    END();
+#else
     BEGIN("failed graph run copies nothing into the dst picture (ERR-2)");
     /* CFGS[0] is a plain row-striped config; the last entries are column
      * tiled (cols > 1), which is the path that owns the un-zeroed scratch. */
@@ -1251,6 +1288,7 @@ static void test_process_failure_emits_nothing(void)
         zt_pic_free(&out);
     }
     END();
+#endif
 }
 
 static void test_picture_alloc_bounds(void)

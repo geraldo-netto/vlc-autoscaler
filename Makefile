@@ -637,12 +637,16 @@ stress: $(BUILD)/stress_usm_pool $(BUILD)/stress_usm_pool_tsan
 ifdef HAVE_ZIMG
 ZIMG_H_CFLAGS  := -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS) $(EXTRA_CFLAGS)
 ZIMG_H_LIBS    := $(VLC_LIBS) $(ZIMG_LIBS) -lpthread
-# test_scaler_zimg defines __wrap_aligned_alloc (MEM-1 OOM fault injection)
-# on top of the barrier wraps; only links of that file may use this.
-ZIMG_TEST_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc \
+# test_scaler_zimg defines these wrappers; only links of that file may use
+# them. The TSan harness deliberately links without any --wrap shims: TSan
+# provides its own libc/pthread interceptors, while the dedicated ASan/UBSan
+# binary and worker-pool tests already cover the injected fault paths.
+ZIMG_TEST_COMMON_WRAP_LDFLAGS := -Wl,--wrap=aligned_alloc \
     -Wl,--wrap=zimg_filter_graph_process -Wl,--wrap=sched_getaffinity \
     -Wl,--wrap=sysconf -Wl,--wrap=pthread_setaffinity_np \
     -Wl,--wrap=__sched_cpualloc -Wl,--wrap=vlc_Log
+ZIMG_TEST_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) \
+    $(ZIMG_TEST_COMMON_WRAP_LDFLAGS)
 
 # scaler_zimg.c compiled once per sanitizer/optimization mode; header
 # dependencies come from -MMD (the coverage-zimg recipe rebuilds from
@@ -662,9 +666,10 @@ $(BUILD)/test_scaler_zimg: tests/test_scaler_zimg.c $(BUILD)/scaler_zimg_asan.o 
 	    $(ZIMG_TEST_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
 
 $(BUILD)/test_scaler_zimg_tsan: tests/test_scaler_zimg.c $(BUILD)/scaler_zimg_tsan.o | $(BUILD)
-	$(CLANG) -O1 $(ZIMG_H_CFLAGS) -fsanitize=thread -MMD -MP -o $@ \
+	$(CLANG) -O1 $(ZIMG_H_CFLAGS) -DZIMG_TEST_SKIP_BARRIER_FAULTS \
+	    -DZIMG_TEST_NO_WRAP_FAULTS -fsanitize=thread -MMD -MP -o $@ \
 	    $< $(BUILD)/scaler_zimg_tsan.o -fsanitize=thread \
-	    $(ZIMG_TEST_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
+	    $(ZIMG_H_LIBS)
 
 $(BUILD)/bench_scaler_zimg: tests/bench_scaler_zimg.c $(BUILD)/scaler_zimg_bench.o | $(BUILD)
 	$(CC) -O2 $(ZIMG_H_CFLAGS) -MMD -MP -o $@ $< $(BUILD)/scaler_zimg_bench.o $(ZIMG_H_LIBS)
