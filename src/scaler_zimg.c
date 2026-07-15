@@ -297,7 +297,7 @@ typedef struct
 /* The worker slots are pool-owned storage; the payload type is ours. They are
  * contiguous with sizeof(stripe_worker_t) stride, so indexing from slot 0 is
  * valid for the whole array. */
-static stripe_worker_t *zimg_workers(zimg_priv_t *p)
+static stripe_worker_t *zimg_workers(const zimg_priv_t *p)
 {
     return (stripe_worker_t *)up_worker_pool_slot(&p->pool, 0);
 }
@@ -612,7 +612,8 @@ static void zimg_close(scaler_ctx_t *ctx);
 static inline size_t plane_alloc_bytes(int lines, int pitch)
 {
     if (lines <= 0 || pitch <= 0) return 0;
-    size_t l = (size_t)lines, pp = (size_t)pitch;
+    size_t l = (size_t)lines;
+    size_t pp = (size_t)pitch;
     if (l > SIZE_MAX / pp) return 0;
     return l * pp;
 }
@@ -930,7 +931,8 @@ static int zimg_open(scaler_ctx_t *ctx)
      * than the headers we built against. zimg keeps source/ABI compat within
      * a major version (a higher minor only adds features), so only a major
      * mismatch is fatal. */
-    unsigned z_major = 0, z_minor = 0;
+    unsigned z_major = 0;
+    unsigned z_minor = 0;
     zimg_get_api_version(&z_major, &z_minor);
     if (z_major != ZIMG_API_VERSION_MAJOR) {
         if (ctx->log_obj)
@@ -1055,7 +1057,7 @@ static void point_workers_planes(zimg_priv_t *p,
  */
 static scaler_process_status_t zimg_check_worker_results(zimg_priv_t *p)
 {
-    stripe_worker_t *workers = zimg_workers(p);
+    const stripe_worker_t *workers = zimg_workers(p);
     for (int i = 0; i < up_worker_pool_count(&p->pool); i++) {
         if (workers[i].result != 0) {
             up_worker_pool_poison(&p->pool);

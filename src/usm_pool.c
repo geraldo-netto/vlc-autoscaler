@@ -230,7 +230,7 @@ struct usm_pool_s {
 /* The worker slots are pool-owned storage; the payload type is ours. They are
  * contiguous with sizeof(usm_worker_t) stride, so indexing from slot 0 is
  * valid for the whole array. */
-static usm_worker_t *usm_workers(usm_pool_t *p)
+static usm_worker_t *usm_workers(const usm_pool_t *p)
 {
     return (usm_worker_t *)up_worker_pool_slot(&p->pool, 0);
 }

@@ -214,16 +214,20 @@ static inline int up__pool_spawn(up_worker_pool_t *p, int i)
  * failure and returns how many came up whole; the caller applies the pool's
  * all-or-nothing policy. A slot whose thread failed to spawn is released here
  * — it is constructed but unusable. */
+static inline int up__pool_construct_one(up_worker_pool_t *p, int i)
+{
+    if (p->ops->construct(p->owner, i) != 0) return -1;
+    if (p->inline_run || up__pool_spawn(p, i) == 0) return 0;
+    if (p->ops->release) p->ops->release(p->owner, i);
+    return -1;
+}
+
 static inline int up__pool_construct_all(up_worker_pool_t *p)
 {
     const int limit = p->inline_run ? 1 : p->n_pref;
     int built = 0;
     for (int i = 0; i < limit; i++) {
-        if (p->ops->construct(p->owner, i) != 0) break;
-        if (!p->inline_run && up__pool_spawn(p, i) != 0) {
-            if (p->ops->release) p->ops->release(p->owner, i);
-            break;
-        }
+        if (up__pool_construct_one(p, i) != 0) break;
         built++;
     }
     return built;
