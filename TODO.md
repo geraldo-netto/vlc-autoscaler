@@ -212,7 +212,6 @@ picks so a later audit does not revive it without new evidence.
 
 | id | status | effort | description | why not now |
 |---|---|---|---|---|
-| PERF-P2c | parked | S | Implement and document the confirmed max-ISA override in the dispatcher, rejecting unknown/unsupported values with a safe fallback. | Blocked on PERF-P2a/PERF-P2b. Extend dispatcher table tests for every override/capability combination, add a subprocess integration test for load-time selection, preserve cross-variant regression tests, and seed the selector parser fuzzer. |
 | SCAL-1a | parked | S | Add bounded pure parsers for cgroup v2 `cpu.max` and v1 CFS quota/period, including unlimited and malformed inputs. | Still applicable at HEAD. Keep filesystem discovery out of the parser; table-driven unit/regression tests and a byte-input fuzzer must cover zero, negative, overflow, whitespace, truncation, and unlimited forms. |
 | SCAL-1b | parked | M | Discover the process's effective cgroup CPU controller paths from `/proc/self/cgroup` and mount roots from `/proc/self/mountinfo`. | Parsing only fixed `/sys/fs/cgroup` paths cuts too many correctness corners for nested/delegated containers. Use size-capped reads; add fixture-based v1/v2/hybrid integration tests and fuzz both line parsers. |
 | SCAL-1c | parked | S | Combine affinity capacity with a finite cgroup CPU quota, rounding fractional quotas conservatively and clamping through the existing CPU bounds. | Blocked on SCAL-1a/SCAL-1b. Keep explicit user thread counts subject to the same hard availability ceiling; unit-test precedence and add a fake-filesystem integration regression for affinity greater/less than quota. |
@@ -256,6 +255,8 @@ non-findings:
 - Defining a max-ISA dispatch policy: repeated Ryzen 9 7945HX matrices found
   AVX-512 faster than AVX2 in 17 of 18 medians and effectively tied in the
   other; widest-supported dispatch remains the evidence-backed policy.
+- Adding a load-time max-ISA override: no wider-ISA regression was confirmed,
+  while single-baseline builds already provide a diagnostic workaround.
 - Unifying `worker_copy_in_stripe` / `worker_copy_out_stripe` /
   `worker_copy_out_tile`: their direction and offset invariants differ; a generic
   helper would require a wide parameter surface.
