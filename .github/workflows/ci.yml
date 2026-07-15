@@ -7,6 +7,9 @@ on:
     branches: [main, develop]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     name: Build, test, fuzz-smoke, analyze
@@ -21,6 +24,8 @@ jobs:
       MARCH: x86-64-v3
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Install build dependencies
         run: |
@@ -131,6 +136,8 @@ jobs:
       MARCH: x86-64-v3
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Install dependencies
         # VLC + zimg headers let this job build fuzz_scaler_seam too
@@ -222,6 +229,7 @@ jobs:
         with:
           # Sonar needs full history for blame / new-code detection.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install build dependencies
         run: |
