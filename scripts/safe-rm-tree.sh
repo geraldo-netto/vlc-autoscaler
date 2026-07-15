@@ -54,7 +54,7 @@ case "$root_abs/" in
             echo "refusing tracked cleanup root: '$root_abs'" >&2
             exit 2
         fi
-        if ! git -C "$repository_abs" check-ignore -q -- "$relative"; then
+        if ! git -C "$repository_abs" check-ignore -q -- "$relative/"; then
             echo "refusing unignored cleanup root: '$root_abs'" >&2
             exit 2
         fi

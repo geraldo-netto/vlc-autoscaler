@@ -65,4 +65,14 @@ test -f "$ignored/marker"
 "$helper" remove "$ignored" marker "$repo_root"
 test ! -e "$ignored"
 
+fresh_repo="$tmp/fresh-repo"
+mkdir -p -- "$fresh_repo"
+git -C "$fresh_repo" init -q
+printf 'build/\n' > "$fresh_repo/.gitignore"
+git -C "$fresh_repo" add .gitignore
+"$helper" init "$fresh_repo/build" marker "$fresh_repo"
+test -f "$fresh_repo/build/marker"
+"$helper" remove "$fresh_repo/build" marker "$fresh_repo"
+test ! -e "$fresh_repo/build"
+
 echo "safe cleanup root checks OK"
