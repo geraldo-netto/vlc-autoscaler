@@ -7,6 +7,7 @@
 #   make fuzz-smoke  — build and run deterministic smoke fuzzers
 #   make fuzz        — build libFuzzer targets (clang only)
 #   make analyze     — run cppcheck across the source tree
+#   make scan-build  — Clang-analyze both production plugin configurations
 #   make install     — install the built plugin into VLC's plugins dir
 #   make uninstall
 #   make clean
@@ -955,10 +956,34 @@ analyze: complexity
 		-I src -I tests/stubs $(ZIMG_CFLAGS) \
 		src/upscale_logic.h src/usm.h src/perfmon.h src/threading.h src/zimg_helpers.h src/chroma_classify.h src/scaler_zimg_chroma.h src/content_probe.h src/scaler_pick_logic.h src/usm_pool.h src/usm_pool.c $(if $(HAVE_ZIMG),src/scaler_zimg.c) tests/
 
+SCAN_BUILD ?= scan-build
+SCAN_CC ?= clang
+SCAN_ROOT ?= $(BUILD)/scan-build
+SCAN_SINGLE_BUILD = $(SCAN_ROOT)/single-build
+SCAN_MULTI_BUILD = $(SCAN_ROOT)/multiversion-build
+SCAN_SINGLE_REPORTS = $(SCAN_ROOT)/single-reports
+SCAN_MULTI_REPORTS = $(SCAN_ROOT)/multiversion-reports
+SCAN_IS_X86 ?= $(findstring x86_64,$(shell $(SCAN_CC) -dumpmachine 2>/dev/null))
+
 scan-build:
-	@command -v scan-build >/dev/null 2>&1 || { echo "scan-build not found"; exit 1; }
-	$(MAKE) clean
-	scan-build --status-bugs $(MAKE) plugin
+	@command -v "$(SCAN_BUILD)" >/dev/null 2>&1 || { \
+		echo "$(SCAN_BUILD) not found. apt: clang-tools"; exit 1; }
+	@command -v "$(SCAN_CC)" >/dev/null 2>&1 || { \
+		echo "$(SCAN_CC) not found. Set SCAN_CC to a Clang compiler"; exit 1; }
+	rm -rf "$(SCAN_ROOT)"
+	mkdir -p "$(SCAN_SINGLE_REPORTS)" "$(SCAN_MULTI_REPORTS)"
+	$(SCAN_BUILD) --status-bugs --use-cc="$(SCAN_CC)" \
+		-o "$(abspath $(SCAN_SINGLE_REPORTS))" \
+		$(MAKE) plugin BUILD="$(abspath $(SCAN_SINGLE_BUILD))" \
+		MULTIVERSION=0
+ifneq ($(SCAN_IS_X86),)
+	$(SCAN_BUILD) --status-bugs --use-cc="$(SCAN_CC)" \
+		-o "$(abspath $(SCAN_MULTI_REPORTS))" \
+		$(MAKE) plugin BUILD="$(abspath $(SCAN_MULTI_BUILD))" \
+		MULTIVERSION=1
+else
+	@echo "scan-build: skipping MULTIVERSION=1 (SCAN_CC target is not x86-64)"
+endif
 
 # --------- install ---------
 install: $(BUILD)/$(PLUGIN).so

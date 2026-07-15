@@ -28,7 +28,7 @@ and still fast enough for real-time playback on modest hardware.
 | Deterministic smoke fuzzing | `make fuzz-smoke` |
 | Coverage-guided fuzzing | `make fuzz` and the CI workflow |
 | Concurrency stress | `make stress` and `make stress-zimg` |
-| Static analysis | `make analyze` |
+| Static analysis | `make analyze`; `make scan-build` checks both production plugin configurations |
 | Cyclomatic complexity | `make complexity` enforces CCN ≤ 10 |
 | Per-file and per-function coverage | `make coverage` enforces the configured gate |
 | Plugin build | `make plugin EXTRA_CFLAGS=-Werror` |
@@ -563,6 +563,7 @@ make fuzz        # libFuzzer build (clang); run e.g. build/fuzz_upscale_logic te
 make stress      # usm_pool concurrency stress, ASan + TSan
 make coverage    # gcov per-file and per-function gates
 make analyze     # cppcheck across the source
+make scan-build  # Clang Static Analyzer, single- and multiversion plugins
 make install     # install plugin into VLC's plugins dir
 make uninstall
 make clean
@@ -624,7 +625,8 @@ arithmetic in more lanes, not different arithmetic.
 Measure on the deployment host if compiler choice matters for throughput.
 
 `make test`, `make fuzz-smoke`, `make stress`, and `make analyze` do not need
-VLC headers. The plugin needs VLC and FFmpeg development packages (zimg is
+VLC headers. `make scan-build` analyzes real production plugin builds, so it
+needs the same VLC and FFmpeg development packages as `make plugin` (zimg is
 optional). `test-zimg`, `stress-zimg`, `bench-zimg`, and `coverage-zimg` need
 VLC and zimg development packages; swscale and picture-view contract tests use
 local stubs.
@@ -639,7 +641,8 @@ local stubs.
 - **For tests / smoke fuzz / stress:** a C compiler with ASan, UBSan, and TSan
   support plus pthreads. `make fuzz` additionally requires clang's
   `-fsanitize=fuzzer`.
-- **For static analysis:** `cppcheck` and `lizard`.
+- **For static analysis:** `cppcheck`, `lizard`, and Clang's `scan-build`
+  (`clang-tools` on Debian/Ubuntu).
 
 ## VLC 3.x vs 4.x
 
