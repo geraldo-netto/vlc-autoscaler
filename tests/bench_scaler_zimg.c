@@ -6,7 +6,8 @@
  *                          [zc] [pin]
  *   chroma: i420 | yv12 | i422 | i444   frames default 200   zc default 1
  *
- * Output CSV: threads,chroma,sw x sh,dw x dh,frames,zc,pin,us_per_frame
+ * Output CSV: threads,chroma,sw x sh,dw x dh,frames,zc,pin,lazy_us,
+ *             max_rss_kb,us_per_frame
  *
  * Source is filled once; only process() is timed (resampling is content-
  * independent in cost). This is the vehicle for measuring PERF-1 (parallel
@@ -18,6 +19,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <time.h>
 
 static uint32_t chroma_of(const char *s)
@@ -100,7 +102,21 @@ static int time_frames(scaler_ctx_t *ctx, zt_pic_t *src, zt_pic_t *dst,
     return 0;
 }
 
-static int run_timed(const struct bargs *a, double *us_per_frame)
+static int time_first_frame(scaler_ctx_t *ctx, zt_pic_t *src, zt_pic_t *dst,
+                            double *lazy_us)
+{
+    struct timespec t0, t1;
+    if (clock_gettime(CLOCK_MONOTONIC, &t0) != 0) return 1;
+    if (ctx->backend->process(ctx, &src->pic, &dst->pic)
+            != SCALER_PROCESS_OK) return 1;
+    if (clock_gettime(CLOCK_MONOTONIC, &t1) != 0) return 1;
+    double ns = (t1.tv_sec - t0.tv_sec) * 1.0e9 + (t1.tv_nsec - t0.tv_nsec);
+    *lazy_us = ns / 1000.0;
+    return 0;
+}
+
+static int run_timed(const struct bargs *a, double *lazy_us,
+                     long *max_rss_kb, double *us_per_frame)
 {
     zt_pic_t src, dst;
     if (zt_pic_alloc(&src, a->chroma, a->sw, a->sh) != 0) return 1;
@@ -115,13 +131,18 @@ static int run_timed(const struct bargs *a, double *us_per_frame)
     ctx.pin_cpus = a->pin;
     int rc = 1;
     if (ctx.backend->open(&ctx) == 0) {
-        rc = 0;
-        for (int i = 0; i < 5; i++)
+        rc = time_first_frame(&ctx, &src, &dst, lazy_us);
+        for (int i = 0; i < 4; i++)
             if (ctx.backend->process(&ctx, &src.pic, &dst.pic)
                     != SCALER_PROCESS_OK) rc = 1;
 
         if (rc == 0 && time_frames(&ctx, &src, &dst, a->frames,
                                    us_per_frame) != 0)
+            rc = 1;
+        struct rusage usage;
+        if (rc == 0 && getrusage(RUSAGE_SELF, &usage) == 0)
+            *max_rss_kb = usage.ru_maxrss;
+        else
             rc = 1;
         ctx.backend->close(&ctx);
     }
@@ -137,12 +158,14 @@ int main(int argc, char **argv)
     if (rc) return rc;
 
     double us = 0.0;
-    if (run_timed(&a, &us) != 0) {
+    double lazy_us = 0.0;
+    long max_rss_kb = 0;
+    if (run_timed(&a, &lazy_us, &max_rss_kb, &us) != 0) {
         fprintf(stderr, "bench run failed\n");
         return 1;
     }
-    printf("%d,%s,%dx%d,%dx%d,%d,%d,%d,%.2f\n",
+    printf("%d,%s,%dx%d,%dx%d,%d,%d,%d,%.2f,%ld,%.2f\n",
            a.threads, a.chroma_name, a.sw, a.sh, a.dw, a.dh,
-           a.frames, a.zc, a.pin, us);
+           a.frames, a.zc, a.pin, lazy_us, max_rss_kb, us);
     return 0;
 }

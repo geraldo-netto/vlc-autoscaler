@@ -91,3 +91,9 @@ The pinning matrix compares scheduler placement with current first-allowed-CPU
 pinning under all-logical-CPU and one-thread-per-core affinity masks. Its
 default masks fit the 32-thread/16-core reference host; edit them to match the
 measured machine. Repeat the matrix before changing the opt-in pinning default.
+
+The zimg benchmark also reports first-frame lazy initialization in
+microseconds and process maximum resident set in KiB before steady-state frame
+time. Compare separate process runs by geometry, chroma, zero-copy mode, and
+worker count; `ru_maxrss` includes the harness and libraries, so compare deltas
+rather than treating it as backend-only allocation.
