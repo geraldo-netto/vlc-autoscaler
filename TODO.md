@@ -212,7 +212,6 @@ picks so a later audit does not revive it without new evidence.
 
 | id | status | effort | description | why not now |
 |---|---|---|---|---|
-| PERF-P2a | parked | S | Benchmark SSE2, AVX2, and AVX-512 USM variants independently on representative widths, worker counts, and amounts (`src/usm_pool_dispatch.c:87-121`). | Still applicable at HEAD, but no host regression is known. Reuse variant entry points and record CPU model/governor; do not alter selection without evidence. |
 | PERF-P2b | parked | S | Define a deterministic max-ISA selection policy only if PERF-P2a finds a repeatable wider-ISA regression. | The cheapest safe policy is a load-time maximum variant override, leaving current widest-supported selection as default; avoid an adaptive runtime tuner. |
 | PERF-P2c | parked | S | Implement and document the confirmed max-ISA override in the dispatcher, rejecting unknown/unsupported values with a safe fallback. | Blocked on PERF-P2a/PERF-P2b. Extend dispatcher table tests for every override/capability combination, add a subprocess integration test for load-time selection, preserve cross-variant regression tests, and seed the selector parser fuzzer. |
 | SCAL-1a | parked | S | Add bounded pure parsers for cgroup v2 `cpu.max` and v1 CFS quota/period, including unlimited and malformed inputs. | Still applicable at HEAD. Keep filesystem discovery out of the parser; table-driven unit/regression tests and a byte-input fuzzer must cover zero, negative, overflow, whitespace, truncation, and unlimited forms. |

@@ -25,6 +25,21 @@ the same shapes. Their delta includes the serial halo-row snapshots required by
 in-place processing and the different cache/write traffic; use it as a trigger
 for profiling, not as an isolated snapshot-time measurement.
 
+To compare ISA variants without letting the runtime dispatcher hide their
+individual costs, build the same benchmark three times and run the paired
+matrix:
+
+```sh
+make BUILD=build_dev/isa-sse2 MARCH=x86-64 build-bench
+make BUILD=build_dev/isa-avx2 MARCH=x86-64-v3 build-bench
+make BUILD=build_dev/isa-avx512 MARCH=x86-64-v4 build-bench
+scripts/bench_usm_isa.sh build_dev/isa-sse2/bench_usm_pool \
+  build_dev/isa-avx2/bench_usm_pool build_dev/isa-avx512/bench_usm_pool
+```
+
+Set `BENCH_FRAMES` or `BENCH_AMOUNT` to override the matrix defaults. Run each
+matrix repeatedly under the same governor and load before changing dispatch.
+
 `bench_usm_pool` emits:
 
 ```text
