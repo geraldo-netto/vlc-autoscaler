@@ -227,7 +227,6 @@ picks so a later audit does not revive it without new evidence.
 | SCAL-P1b | parked | M | If SCAL-P1a confirms stable skew, prototype weighted static stripe/cell sizing before considering dynamic work stealing. | This is the main corner cut: preserve one dispatch and one completion barrier. Add pure partition unit tests and fuzz invariants for non-empty, contiguous, chroma-aligned, full-frame coverage. |
 | SCAL-P1c | parked | M | Integrate a winning weighted-static policy without changing worker ownership or graph lifetime. | Blocked on SCAL-P1b outperforming equal partitions. Require byte/seam regression tests against single-worker output, zimg integration fuzz, USM variant fuzz, and sanitizer/TSan stress. |
 | SCAL-P1d | parked | L | Consider bounded dynamic work queues only if weighted static partitioning fails under measured production-like contention. | Requires a design review first. Tests must cover exactly-once cell ownership, cancellation/failure draining, deterministic output, fault injection, integration fuzz, and ASan/UBSan/TSan stress. |
-| SCAL-P3c | parked | M | Define a backend-neutral job descriptor and prove both existing worker callbacks can run through it without moving resource ownership. | Blocked on SCAL-P3a showing that SCAL-P3b is insufficient. Add compile-time/API tests and worker-pool unit/fault-injection coverage; no production pool sharing yet. |
 | SCAL-P3d | parked | L | Move zimg and USM onto one persistent worker lifecycle while keeping graphs/scratch owned by their backends. | Blocked on SCAL-P3c. Require transition regressions for lazy init, partial spawn, poison, join quarantine, close, backend fallback, and alternating jobs; add integration fuzz and ASan/UBSan/TSan stress. |
 | SCAL-P4c | parked | M | If wake overhead remains material, prototype a bounded fan-out/tree wake while retaining the existing completion barrier. | Avoid Linux-only futexes unless portability scope changes. Unit-test every partial-init/wake/stop failure with wrappers; stress repeated generations and cancellation under TSan. |
 | SCAL-P4d | parked | M | Integrate a winning wake strategy behind the shared worker-pool gate without changing owner callbacks. | Blocked on SCAL-P4c outperforming broadcast. Require worker-pool regression/fault tests, generation-wrap and lost-wake stress, USM/zimg integration fuzz, ASan/UBSan/TSan, and clean fallback to broadcast. |
@@ -258,6 +257,8 @@ non-findings:
 - Splitting one worker budget between sequential zimg and USM pools: combined
   pipeline RSS stayed below 8 MiB, while dividing the measured 12-worker knee
   would reduce each stage's available parallelism without lowering frame work.
+- Adding a backend-neutral worker job descriptor: the independent-pool
+  measurements found no material resource pressure requiring lifecycle reuse.
 - Unifying `worker_copy_in_stripe` / `worker_copy_out_stripe` /
   `worker_copy_out_tile`: their direction and offset invariants differ; a generic
   helper would require a wide parameter surface.
