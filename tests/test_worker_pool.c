@@ -400,8 +400,10 @@ static void test_destroy_quarantines_unreaped_worker(void)
     CHECK_EQ(up_worker_pool_count(&f.pool), 2);
     CHECK(f.pool.workers != NULL);
     CHECK(f.pool.threads != NULL);
-    CHECK_EQ(f.pool.threads[0].started, 1);
-    CHECK_EQ(f.pool.threads[1].started, 0);
+    if (f.pool.threads != NULL) {
+        CHECK_EQ(f.pool.threads[0].started, 1);
+        CHECK_EQ(f.pool.threads[1].started, 0);
+    }
     CHECK_EQ(f.release_calls, 0);
     CHECK_EQ(atomic_load(&g_thread_join_calls), 1);
 
@@ -428,8 +430,10 @@ static void test_failed_start_quarantines_unreaped_worker(void)
     CHECK_EQ(f.release_calls, 1);
     CHECK(f.pool.workers != NULL);
     CHECK(f.pool.threads != NULL);
-    CHECK_EQ(f.pool.threads[0].started, 1);
-    CHECK_EQ(f.pool.threads[1].started, 0);
+    if (f.pool.threads != NULL) {
+        CHECK_EQ(f.pool.threads[0].started, 1);
+        CHECK_EQ(f.pool.threads[1].started, 0);
+    }
     CHECK_EQ(atomic_load(&g_thread_join_calls), 1);
 
     atomic_store(&g_fail_join_nth, 0);
