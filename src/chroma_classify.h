@@ -270,8 +270,11 @@ static inline void up_chroma_align_axis_even(int *dim, unsigned *off)
         const uint64_t end = start + (uint64_t)*dim;
         const uint64_t aligned_start = (start + UINT64_C(1)) & ~UINT64_C(1);
         const uint64_t aligned_end = end & ~UINT64_C(1);
-        *off = aligned_start <= UINT_MAX
-             ? (unsigned)aligned_start : (UINT_MAX & ~1u);
+        if (aligned_start > UINT_MAX) {
+            *dim = 0;
+            return;
+        }
+        *off = (unsigned)aligned_start;
         *dim = aligned_end > aligned_start
              ? (int)(aligned_end - aligned_start) : 0;
         return;

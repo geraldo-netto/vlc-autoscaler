@@ -442,6 +442,20 @@ static void test_align_is_idempotent_and_shrinking(void)
     END();
 }
 
+static void test_align_maximum_offsets_become_empty(void)
+{
+    BEGIN("align: unrepresentable aligned starts preserve empty offsets");
+    int w = 3, h = 3;
+    unsigned x = UINT_MAX, y = UINT_MAX;
+    up_chroma_align_crop_even(UP_FOURCC('I','4','2','0'), &w, &h, &x, &y);
+    CHECK(w == 0 && h == 0);
+    CHECK(x == UINT_MAX && y == UINT_MAX);
+    up_chroma_align_crop_even(UP_FOURCC('I','4','2','0'), &w, &h, &x, &y);
+    CHECK(w == 0 && h == 0);
+    CHECK(x == UINT_MAX && y == UINT_MAX);
+    END();
+}
+
 int main(void)
 {
     printf("Running chroma_classify tests...\n");
@@ -488,6 +502,7 @@ int main(void)
     test_align_444_and_unsupported_untouched();
     test_align_null_arguments();
     test_align_is_idempotent_and_shrinking();
+    test_align_maximum_offsets_become_empty();
 
     return test_harness_report();
 }

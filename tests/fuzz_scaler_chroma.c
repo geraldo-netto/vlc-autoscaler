@@ -261,14 +261,26 @@ typedef struct {
     unsigned off[AXIS_COUNT];  /* x_offset, y_offset */
 } crop_window_t;
 
+static uint16_t load_le16(const uint8_t *data)
+{
+    return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+}
+
+static uint32_t load_le32(const uint8_t *data)
+{
+    return (uint32_t)data[0] | ((uint32_t)data[1] << 8)
+        | ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
+}
+
+/* <4sBHHII>: bytes 5..16 are little-endian dims-minus-one and offsets. */
 static crop_window_t crop_window_from(const uint8_t *data, size_t size)
 {
     crop_window_t win = { { 1, 1 }, { 0, 0 } };
-    if (size >= 12) {
-        win.dim[AXIS_X] = (int)(data[5] | ((unsigned)data[6] << 8)) + 1;
-        win.dim[AXIS_Y] = (int)(data[7] | ((unsigned)data[8] << 8)) + 1;
-        win.off[AXIS_X] = data[9] | ((unsigned)data[10] << 8);
-        win.off[AXIS_Y] = data[11];
+    if (size >= 17) {
+        win.dim[AXIS_X] = (int)load_le16(&data[5]) + 1;
+        win.dim[AXIS_Y] = (int)load_le16(&data[7]) + 1;
+        win.off[AXIS_X] = load_le32(&data[9]);
+        win.off[AXIS_Y] = load_le32(&data[13]);
     }
     return win;
 }
@@ -310,14 +322,14 @@ static void check_axis_stays_inside(uint32_t fourcc, int a,
              after.dim[a], after.off[a]);
     if (after.off[a] - before.off[a] > 1)
         FAIL("0x%08x axis %d start shifted by more than one pel", fourcc, a);
-    if (before.dim[a] - after.dim[a] > 2)
+    if (after.dim[a] != 0 && before.dim[a] - after.dim[a] > 2)
         FAIL("0x%08x axis %d dim shrank by more than two pels", fourcc, a);
 }
 
 static void check_axis_parity(uint32_t fourcc, int a, unsigned sub,
                               crop_window_t after)
 {
-    if (!sub)
+    if (!sub || after.dim[a] == 0)
         return;
     if ((after.dim[a] & 1) || (after.off[a] & 1u))
         FAIL("0x%08x axis %d is subsampled but dim=%d off=%u still odd",
@@ -424,7 +436,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
 static int smoke_iter(long i)
 {
-    uint8_t buf[16];  /* >= 12: check_crop_align reads dims/offsets at [5..11] */
+    uint8_t buf[17];
     fuzz_smoke_fill(buf, sizeof buf);
 
     /* Bias every 4th iteration to a known fourcc, so coverage hits
