@@ -3,6 +3,7 @@
  * bench_usm_pool.c — minimal perf bench for the USM pool.
  *
  * Usage: bench_usm_pool <threads> <width> <height> [frames] [amount] [fill]
+ *                       [out|in]
  *   amount default = 20, frames default = 100
  *   fill: rand (default) / flat / mixed (top half flat, bottom random)
  *
@@ -28,6 +29,7 @@ struct bench_args {
     int amount_pct;
     const char *fill;
     int mode; /* 0=rand, 1=flat, 2=mixed */
+    int in_place;
 };
 
 static int parse_fill_mode(const char *fill)
@@ -41,12 +43,14 @@ static int parse_fill_mode(const char *fill)
 static int parse_args(int argc, char **argv, struct bench_args *a)
 {
     if (argc < 4) {
-        fprintf(stderr, "usage: %s <threads> <width> <height> [frames] [amount]\n", argv[0]);
+        fprintf(stderr, "usage: %s <threads> <width> <height> [frames] "
+                        "[amount] [fill] [out|in]\n", argv[0]);
         return 2;
     }
     a->frames = 100;
     a->amount_pct = 20;
     a->fill       = (argc >= 7) ? argv[6] : "rand";
+    const char *alias_mode = (argc >= 8) ? argv[7] : "out";
 
     const struct {
         int position;
@@ -75,6 +79,14 @@ static int parse_args(int argc, char **argv, struct bench_args *a)
     if (a->mode < 0) {
         fprintf(stderr, "unknown fill mode '%s'\n", a->fill); return 2;
     }
+    if (!strcmp(alias_mode, "out")) {
+        a->in_place = 0;
+    } else if (!strcmp(alias_mode, "in")) {
+        a->in_place = 1;
+    } else {
+        fprintf(stderr, "unknown alias mode '%s'\n", alias_mode);
+        return 2;
+    }
     return 0;
 }
 
@@ -95,11 +107,12 @@ static void fill_frame(uint8_t *src, int width, int height, int mode, int i)
 }
 
 static int run_warmup(usm_pool_t *pool, uint8_t *src, uint8_t *dst,
-                      int width, size_t plane, int amount)
+                      int width, size_t plane, int amount, int in_place)
 {
     for (int i = 0; i < 5; i++) {
         up_fill_random(src, plane, 0xC0FFEEu + (uint32_t)i);
-        if (up_usm_pool_apply(pool, dst, width, src, width, amount) != 0) {
+        uint8_t *output = in_place ? src : dst;
+        if (up_usm_pool_apply(pool, output, width, src, width, amount) != 0) {
             fprintf(stderr, "warm apply fail\n"); return 1;
         }
     }
@@ -135,7 +148,9 @@ static int run_timed(usm_pool_t *pool, uint8_t *src, uint8_t *dst,
     struct timespec t0, t1;
     if (checked_now(&t0)) return 1;
     for (int i = 0; i < a->frames; i++) {
-        if (up_usm_pool_apply(pool, dst, a->width, src, a->width, amount) != 0) {
+        uint8_t *output = a->in_place ? src : dst;
+        if (up_usm_pool_apply(pool, output, a->width, src, a->width,
+                              amount) != 0) {
             fprintf(stderr, "apply fail at frame %d\n", i); return 1;
         }
     }
@@ -171,7 +186,7 @@ int main(int argc, char **argv)
     }
 
     int rc_run = 0;
-    if (run_warmup(pool, src, dst, a.width, plane, amount) != 0) {
+    if (run_warmup(pool, src, dst, a.width, plane, amount, a.in_place) != 0) {
         rc_run = 1;
         goto out;
     }

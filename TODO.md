@@ -212,7 +212,6 @@ picks so a later audit does not revive it without new evidence.
 
 | id | status | effort | description | why not now |
 |---|---|---|---|---|
-| PERF-P1a | parked | S | Measure the serial in-place USM halo-snapshot share of frame time by worker count, width, and stride; keep out-of-place runs as the control (`src/usm_pool.c:448-491`). | Still applicable at HEAD. Extend the existing USM benchmark rather than production instrumentation; require repeatable evidence that snapshots are material before changing synchronization. |
 | PERF-P1b | parked | S | Add a regression benchmark threshold for the confirmed worst halo-snapshot case without asserting noisy absolute wall time. | Blocked on PERF-P1a. Compare in-place against same-shape out-of-place medians; run as a benchmark, not a correctness gate. |
 | PERF-P1c | parked | M | If PERF-P1a confirms a bottleneck, prototype worker-owned halo copies with a snapshot-ready phase before any worker writes in place. | Do not fold this into the existing go gate: readiness must prevent neighbour overwrite. Require unit fault-injection for every new wait failure, in-place byte-equivalence regression tests, ASan/UBSan/TSan stress, and `fuzz_usm_variants` coverage. |
 | PERF-P2a | parked | S | Benchmark SSE2, AVX2, and AVX-512 USM variants independently on representative widths, worker counts, and amounts (`src/usm_pool_dispatch.c:87-121`). | Still applicable at HEAD, but no host regression is known. Reuse variant entry points and record CPU model/governor; do not alter selection without evidence. |

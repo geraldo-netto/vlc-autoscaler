@@ -964,6 +964,9 @@ bench: $(BUILD)/bench_usm_pool
 	@$(BUILD)/bench_usm_pool 4 1280 720 300 20 rand
 	@$(BUILD)/bench_usm_pool 8 3840 2160 100 20 rand
 
+bench-usm-halo: $(BUILD)/bench_usm_pool
+	@./scripts/bench_usm_halo.sh $(BUILD)/bench_usm_pool
+
 bench-flatskip: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip
 	@echo "kernel,requested_threads,effective_threads,width,height,frames,amount,fill,us_per_frame"
 	@printf "default,"  ; $(BUILD)/bench_usm_pool          8 1920 1080 300 20 flat

@@ -10,6 +10,7 @@ fixed throughput claims.
 ```sh
 make build-bench
 make bench
+make bench-usm-halo
 make bench-flatskip
 make bench-zimg
 scripts/bench_matrix.sh build/bench_usm_pool
@@ -18,6 +19,11 @@ scripts/bench_matrix.sh build/bench_usm_pool
 Run the benchmark binary without arguments for its current interface. The USM
 benchmark supports `rand`, `flat`, and `mixed` input fills. The matrix script
 accepts optional frame-count, amount, and fill arguments.
+
+`bench-usm-halo` compares out-of-place (`out`) against in-place (`in`) runs at
+the same shapes. Their delta includes the serial halo-row snapshots required by
+in-place processing and the different cache/write traffic; use it as a trigger
+for profiling, not as an isolated snapshot-time measurement.
 
 `bench_usm_pool` emits:
 
