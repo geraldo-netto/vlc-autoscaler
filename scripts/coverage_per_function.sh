@@ -58,6 +58,15 @@ def repo_relative(path, base):
     return os.path.relpath(absolute, repo_root)
 
 
+def require_count(line, source_path, function_name, line_number):
+    count = line.get("count")
+    if type(count) is not int or count < 0:
+        fail("invalid coverage count for "
+             f"{source_path}:{function_name}:{line_number}; "
+             "expected a nonnegative integer")
+    return count
+
+
 if not os.path.isfile(scope_file):
     fail(f"coverage scope manifest not found: {scope_file}")
 
@@ -119,8 +128,9 @@ for path in json_paths:
             if not name or number is None:
                 continue
             key = (source_path, name, int(number))
+            count = require_count(line, source_path, name, number)
             line_counts[key] = max(line_counts.get(key, 0),
-                                   int(line.get("count", 0)))
+                                   count)
 
 missing = sorted(tracked - seen_files)
 if missing:

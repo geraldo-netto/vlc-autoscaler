@@ -109,23 +109,10 @@ for t in "${TRACKED[@]}"; do
         continue
     fi
 
-    # gcov line format: "<count>:<lineno>:<source>"
-    #   '-'             non-executable (decl/comment/blank)
-    #   '#####'/'=====' executable but uncovered
-    #   '<digit>+'      covered with that hit count
-    if ! counts=$(awk -F: '
-        NF>=3 {
-            ln=$2; gsub(/^ +/,"",ln);
-            c=$1;  gsub(/^ +/,"",c);
-            if (c=="-" || c=="") next;
-            run[ln]=1;
-            if (c!="#####" && c!="=====") cov[ln]=1;
-        }
-        END {
-            t=0; cv=0;
-            for (l in run) { t++; if (l in cov) cv++; }
-            print t, cv;
-        }' "${present[@]}"); then
+    # Aggregate only gcov's documented count forms. The helper rejects a
+    # malformed or negative count instead of treating it as a covered line.
+    if ! counts=$(awk -f "$SCRIPT_DIR/gcov_line_totals.awk" \
+                    "${present[@]}"); then
         echo "ERROR: failed to aggregate coverage for $t" >&2
         missing=1
         continue

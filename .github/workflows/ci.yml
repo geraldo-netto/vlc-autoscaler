@@ -231,16 +231,12 @@ jobs:
         # in build/cov. gcovr aggregates them across all test binaries into a
         # single SonarQube generic-coverage XML with root-relative src/ paths,
         # which sonar.coverageReportPaths points at.
-        # --gcov-ignore-parse-errors: threaded TUs (usm_pool.c, scaler_zimg.c)
-        # occasionally make gcov emit a negative branch count (GCC bug 68080);
-        # warn and continue instead of aborting the whole report.
         run: |
-          GCOVR_OPTS="--gcov-ignore-parse-errors=negative_hits.warn_once_per_file"
           make coverage
-          gcovr $GCOVR_OPTS --root . --filter 'src/' \
+          gcovr --root . --filter 'src/' \
             --sonarqube coverage-sonar.xml build/cov
           make coverage-zimg
-          gcovr $GCOVR_OPTS --root . --filter 'src/scaler_zimg\.c' \
+          gcovr --root . --filter 'src/scaler_zimg\.c' \
             --sonarqube coverage-zimg-sonar.xml build/covz
 
       - name: Run sonar-scanner and wait for quality gate

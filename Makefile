@@ -79,6 +79,12 @@ endif
 CSTD := -std=c11
 WARN := $(CSTD) -D_GNU_SOURCE -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes
 
+# Threaded coverage binaries update their counters concurrently. Atomic
+# profile updates prevent lost/corrupt increments; both coverage modes share
+# this exact instrumentation set.
+COVERAGE_PROFILE_FLAGS := --coverage -fprofile-arcs -ftest-coverage \
+                          -fprofile-update=atomic
+
 # CPU baseline. Defaults to `native` because this plugin is a source
 # distribution: every user builds it on the same machine they run it on.
 # Build-host tuning can use extra scheduling and ISA features on the per-frame
@@ -465,6 +471,9 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/tes
 	@echo
 	@echo "=== safe cleanup roots ==="
 	@sh tests/test_safe_rm_tree.sh
+	@echo
+	@echo "=== coverage parsers ==="
+	@sh tests/test_coverage_parsers.sh
 
 $(BUILD)/test_usm_pool_dispatch: tests/test_usm_pool_dispatch.c src/usm_pool_dispatch.c src/usm_pool_variants.h src/usm_pool.h src/cpu_level.h tests/test_harness.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
@@ -803,8 +812,8 @@ stress-zimg: $(BUILD)/test_scaler_zimg $(BUILD)/test_scaler_zimg_tsan
 # need fault injection. The harness reports its coverage as informational.
 coverage-zimg: | $(BUILD_MARKER)
 	@rm -rf $(BUILD)/covz && mkdir -p $(BUILD)/covz
-	$(CC) -O0 -g --coverage $(ZIMG_H_CFLAGS) -o $(BUILD)/covz/tz \
-	    tests/test_scaler_zimg.c src/scaler_zimg.c --coverage \
+	$(CC) -O0 -g $(COVERAGE_PROFILE_FLAGS) $(ZIMG_H_CFLAGS) \
+	    -o $(BUILD)/covz/tz tests/test_scaler_zimg.c src/scaler_zimg.c \
 	    $(ZIMG_TEST_WRAP_LDFLAGS) $(ZIMG_H_LIBS)
 	@$(BUILD)/covz/tz >/dev/null 2>&1 || true
 	@# Run gcov inside covz (with src/tests symlinks so embedded relative
@@ -886,7 +895,8 @@ COVERAGE_THRESHOLD ?= 80
 # Coverage profiles are compiler-specific; override these as a matched GCC pair.
 COV_CC      ?= gcc
 GCOV        ?= gcov
-COV_CFLAGS  := -O0 -g $(MARCH_FLAG) $(WARN) -MMD -MP --coverage -fprofile-arcs -ftest-coverage $(EXTRA_CFLAGS)
+COV_CFLAGS  := -O0 -g $(MARCH_FLAG) $(WARN) -MMD -MP \
+               $(COVERAGE_PROFILE_FLAGS) $(EXTRA_CFLAGS)
 COV_LDFLAGS := --coverage
 
 COV_TESTS := \

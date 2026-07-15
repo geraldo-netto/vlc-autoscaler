@@ -1066,12 +1066,15 @@ configurations during development.
 ### Coverage
 
 `make coverage` builds a separate `build/cov/` test binary set with
-`--coverage -fprofile-arcs -ftest-coverage`, runs them, then prints
+`--coverage -fprofile-arcs -ftest-coverage -fprofile-update=atomic`, runs
+them, then prints
 per-file summaries via `scripts/coverage_report.sh` and per-function summaries
 via `scripts/coverage_per_function.sh`. The scripts fail the build when a
 tracked file or function falls below 80% coverage, or when gcov data is
 missing or malformed. Their generated output is the source of truth for
-tracked totals and percentages.
+tracked totals and percentages. Atomic profile updates keep counters from
+threaded tests deterministic; negative or otherwise invalid counts are fatal
+instead of being suppressed.
 
 The `make coverage` step is wired into the GitHub Actions CI job
 (`.github/workflows/ci.yml`) so a coverage-gate failure rejects the CI job.
