@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 tmp=${TMPDIR:-/tmp}/vlc-autoscaler-install-test.$$
 home="${tmp}/home % dollar\$ back\\slash tick\` quote\" space"
 bin_dir="${tmp}/bin"

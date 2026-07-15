@@ -34,6 +34,18 @@ jobs:
           # (PEP 668); the runner is single-purpose so the warning is
           # irrelevant.
           pip3 install --user --break-system-packages lizard
+          mkdir -p "$HOME/.local/bin"
+          curl -sSLo shellcheck.tar.xz \
+            https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
+          echo "6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87  shellcheck.tar.xz" \
+            | sha256sum -c -
+          tar -xJf shellcheck.tar.xz -C "$HOME/.local/bin" \
+            --strip-components=1 shellcheck-v0.10.0/shellcheck
+          curl -sSLo actionlint.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  actionlint.tar.gz" \
+            | sha256sum -c -
+          tar -xzf actionlint.tar.gz -C "$HOME/.local/bin" actionlint
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Show toolchain info

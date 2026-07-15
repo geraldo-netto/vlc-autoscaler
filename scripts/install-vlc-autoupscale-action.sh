@@ -21,7 +21,7 @@ WRAPPER="${BIN_DIR}/vlc-autoupscale"
 DESKTOP="${APP_DIR}/vlc-autoupscale.desktop"
 ACTION="${ACTION_DIR}/vlc-autoupscale.nemo_action"
 
-SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SRC_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 find_vlc_binary() {
     command -v whereis >/dev/null 2>&1 || return 1
@@ -45,6 +45,7 @@ desktop_exec_quote() {
             exit 1
             ;;
     esac
+    # shellcheck disable=SC2016
     escaped=$(printf '%s' "$1" | sed \
         -e 's/\\/\\\\\\\\/g' \
         -e 's/"/\\\\"/g' \
@@ -65,7 +66,9 @@ VIDEO_EXTS="mp4;mkv;avi;mov;webm;m4v;ts;mpg;mpeg;wmv;flv;"
 
 uninstall() {
     rm -f "$WRAPPER" "$DESKTOP" "$ACTION"
-    [ -d "$APP_DIR" ] && update-desktop-database "$APP_DIR" 2>/dev/null || true
+    if [ -d "$APP_DIR" ]; then
+        update-desktop-database "$APP_DIR" 2>/dev/null || true
+    fi
     echo "Removed VLC AutoUpscale launcher, desktop entry and Nemo action."
 }
 

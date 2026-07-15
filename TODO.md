@@ -177,7 +177,6 @@ plugin link could not be repeated locally because the required SDKs are absent.
 | BUILD-6 | open | S | Empty `VLC_PLUGIN_BASE` becomes non-empty `/video_filter` (`Makefile:44-45`), while install/uninstall validate only the derived value and use unquoted paths (`Makefile:998-1009`). | Validate a non-empty base in both targets before deriving the subdirectory, and quote every destination. |
 | BUILD-7 | open | S | The Sonar job runs for every pull request but requires `SONAR_TOKEN` (`.github/workflows/ci.yml:3-8,187-255`); fork pull requests do not receive repository secrets. | Gate Sonar to pushes/internal pull requests while retaining token-free build checks for forks. |
 | BUILD-11 | open | S | `PLUGIN_GOALS` omits the standalone `abi-layout-check` and `check-visibility` goals (`Makefile:50-59` versus `:283-325`). | Direct invocation without SDKs bypasses the friendly prerequisite check and fails deep in compilation. Add both goals to `PLUGIN_GOALS`. |
-| BUILD-25 | open | M | CI and `make analyze` have no semantic checks for repository shell or workflow code (`.github/workflows/ci.yml:25-36,98-102`; `Makefile:955-967`). | Syntax checks passed, but quoting, portability, and GitHub Actions expression errors lack a gate. Add pinned ShellCheck for `scripts/*.sh`/`tests/*.sh` and actionlint for workflow YAML. |
 
 ## observability
 

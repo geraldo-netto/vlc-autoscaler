@@ -344,7 +344,7 @@ check-multiversion-isa:
 	@exit 2
 endif
 
-.PHONY: all plugin abi-layout-check check-multiversion-isa test check check-visibility fuzz fuzz-smoke fuzz-seam analyze scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
+.PHONY: all plugin abi-layout-check check-multiversion-isa test check check-visibility fuzz fuzz-smoke fuzz-seam analyze semantic-analysis scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
 
 all: plugin
 
@@ -1145,7 +1145,15 @@ complexity:
 		echo "lizard not installed. pip: lizard"; exit 1; }
 	lizard -C 10 src/ tests/
 
-analyze: complexity
+semantic-analysis:
+	@command -v shellcheck >/dev/null 2>&1 || { \
+		echo "shellcheck not installed"; exit 1; }
+	@command -v actionlint >/dev/null 2>&1 || { \
+		echo "actionlint not installed"; exit 1; }
+	shellcheck scripts/*.sh tests/*.sh
+	actionlint .github/workflows/*.yml
+
+analyze: complexity semantic-analysis
 	@command -v cppcheck >/dev/null 2>&1 || { \
 		echo "cppcheck not installed. apt: cppcheck"; exit 1; }
 	# autoupscale.c is excluded — it depends on VLC's macro-heavy headers
