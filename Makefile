@@ -106,7 +106,7 @@ PLUGIN_CFLAGS := $(COMMON_CFLAGS) -fvisibility=hidden \
 # carries no warning flags cannot fail on them — CI's `EXTRA_CFLAGS=-Werror`
 # only ever reached the compile step. Pass $(WARN) and $(EXTRA_CFLAGS) to the
 # link too, so a prototype/type mismatch between TUs is a build failure.
-PLUGIN_LDFLAGS := -shared -flto $(WARN) $(EXTRA_CFLAGS) $(EXTRA_LDFLAGS)
+PLUGIN_LDFLAGS := -shared -Wl,-z,defs -flto $(WARN) $(EXTRA_CFLAGS) $(EXTRA_LDFLAGS)
 PLUGIN_LIBS    := $(VLC_LIBS) $(SWS_LIBS) -lpthread
 
 ifdef HAVE_ZIMG
