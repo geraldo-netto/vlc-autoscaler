@@ -151,7 +151,7 @@ static int clamp_cores(int32_t v)
 
 static void parse_inputs(const uint8_t *data, size_t size, fuzz_inputs_t *fi)
 {
-    uint8_t buf[32] = { 0 };
+    uint8_t buf[24] = { 0 };
     size_t n = size < sizeof buf ? size : sizeof buf;
     if (n > 0) memcpy(buf, data, n);
 
@@ -229,7 +229,7 @@ static void check_auto_enum_normalization(const fuzz_inputs_t *fi)
 }
 
 /*
- * Single fuzz iteration. Reads up to 32 bytes from `data` and uses them to
+ * Single fuzz iteration. Reads up to 24 bytes from `data` and uses them to
  * synthesise inputs. Short inputs are zero-padded.
  */
 static void run_one(const uint8_t *data, size_t size)
@@ -264,7 +264,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
 static int smoke_iter(long i)
 {
-    uint8_t buf[32];
+    uint8_t buf[24];
     fuzz_smoke_fill(buf, sizeof buf);
     uint32_t s = (uint32_t)fuzz_smoke_next();
 

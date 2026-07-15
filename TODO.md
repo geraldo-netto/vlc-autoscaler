@@ -196,7 +196,6 @@ distinction from active EWMA/stat telemetry.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | WIRE-7 | open | S | `fuzz_worker_pool` is built and smoke-run (`Makefile:413,449-450,496-512`) but omitted from every coverage-guided CI run despite the “every built fuzzer” claim (`.github/workflows/ci.yml:125-175`); Makefile's printed target inventory also omits it and conditional `fuzz_scaler_seam` (`Makefile:414-427`). | Add worker-pool to the short libFuzzer pass and derive or update the printed inventory. |
-| WIRE-10 | open | S | All 16 `tests/corpus/*` upscale seeds are 32 bytes and `tests/fuzz_upscale_logic.c:152-169,231-239` copies up to 32, but only bytes 0-23 affect an input. | The zero suffix is inert and mutations in it cannot change coverage. Make the parser/comment and curated corpus a 24-byte format, or deliberately consume/document the remaining bytes. |
 
 No additional production wiring finding. All 14 module options have consumers; both scaler
 backends, runtime fallback, stats lifecycle, USM pool, and multiversion

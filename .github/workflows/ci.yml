@@ -150,7 +150,8 @@ jobs:
         run: |
           mkdir -p corpus_logic
           if [ -d tests/corpus ]; then cp tests/corpus/* corpus_logic/ 2>/dev/null || true; fi
-          build/fuzz_upscale_logic corpus_logic -max_total_time=60 -print_final_stats=1
+          build/fuzz_upscale_logic corpus_logic \
+            -max_total_time=60 -max_len=24 -print_final_stats=1
 
       - name: Run libFuzzer (usm)
         run: |
