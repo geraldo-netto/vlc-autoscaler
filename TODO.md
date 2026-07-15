@@ -1,8 +1,8 @@
 # TODO — full-project audit findings
 
-Full-project rescan of the working tree based on HEAD `236ab77` on 2026-07-15.
-Scope: all 248 tracked project files, including production source/public headers,
-tests and fuzzers, all 154 binary corpus seeds, build/release configuration, CI,
+Full-project rescan of the working tree based on HEAD `33b67fe` on 2026-07-15.
+Scope: all 261 tracked project files, including production source/public headers,
+tests and fuzzers, all 162 tracked corpus seeds, build/release configuration, CI,
 scripts, documentation, and patches. Corpus payload sizes and formats were
 checked against their harness parsers. Excluded only `.git`, ignored/generated
 build output, and cache files/directories; no tracked project file was excluded.
@@ -12,8 +12,12 @@ Validation: full manual inspection across every category; GCC C11 unit/contract
 tests with `-Werror`, ASan, and UBSan; all deterministic fuzz-smoke targets with
 `CLANG=gcc`; benchmark builds; declared-shell syntax checks; relative Markdown
 link validation; and Lizard 1.17.31 over `src/` plus `tests/` (924 functions,
-zero CCN > 10). Repeated sanitizer runs reproduced process-wide thread-count
-flakes, and GCC `-fanalyzer` corroborated test OOM paths. The mandatory coverage
+zero CCN > 10) in the preceding full scan. The 2026-07-15 refresh reran the
+complete GCC unit/contract suite with `-Werror` and declared-interpreter shell
+syntax checks; both passed. Lizard was unavailable during the refresh, so its
+recorded result could not be independently repeated. Repeated sanitizer runs
+reproduced process-wide thread-count flakes, and GCC `-fanalyzer` corroborated
+test OOM paths. The mandatory coverage
 target currently fails one per-function gate. The default fuzz-smoke invocation
 also cannot start without Clang, while the same targets pass with GCC. Local
 plugin and zimg verification could not start because their SDK metadata is
@@ -127,17 +131,21 @@ this technical domain; another business/domain pattern would not clarify it.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| REL-16 | open | S | Documentation cross-references are stale: `docs/CINNAMON-DESKTOP-ACTIONS.md:117-127` sends users to `docs/USAGE.md` for a “full option table” although the complete 14-option table is at `README.md:109-127`; the README tree and corpus inventory (`README.md:520-529`; `docs/HOW_IT_WORKS.md:935-947`) omit the tracked/CI-run `corpus_scaler_seam`. | Point tuning readers at the actual option table and include the seam corpus/harness in the project and corpus inventories. |
 
 ## portability/standards conformance
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
+No additional open finding. GNU/Linux-specific CPU affinity, dynamic loading,
+and VLC plugin interfaces are isolated, while the supported compiler/CPU
+fallbacks have explicit build and contract coverage.
+
 ## error handling
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+
 No additional open finding. Relevant production allocation, backend, picture, clock,
 synchronization, and processing failures are propagated or deliberately
 treated as invariant-only cases. The documented recovery contract preserves
@@ -173,12 +181,12 @@ plugin link could not be repeated locally because the required SDKs are absent.
 | BUILD-15 | open | S | The libFuzzer failure upload and local ignore list omit the `oom-*` artifact class (`.github/workflows/ci.yml:127-185`, `.gitignore:21-25`). | OOM reproducers disappear when CI fails and dirty local worktrees. Retain/upload and ignore `oom-*`; consider uploading the already-ignored `slow-unit-*` class too. |
 | BUILD-24 | open | S | CI builds libFuzzer targets with bare `make fuzz` (`.github/workflows/ci.yml:122-123`), while `FUZZ_CFLAGS` becomes warning-fatal only through `EXTRA_CFLAGS` (`Makefile:137-138`). | Code compiled only without `FUZZ_MAIN` can warn while smoke and plugin checks stay green. Pass `EXTRA_CFLAGS=-Werror` (plus any narrowly documented external-header suppression). |
 | BUILD-25 | open | M | CI and `make analyze` have no semantic checks for repository shell or workflow code (`.github/workflows/ci.yml:25-36,98-102`; `Makefile:955-967`). | Syntax checks passed, but quoting, portability, and GitHub Actions expression errors lack a gate. Add pinned ShellCheck for `scripts/*.sh`/`tests/*.sh` and actionlint for workflow YAML. |
-| BUILD-26 | open | S | The install-action test uses Python `assert` for its only generated `Exec=` equality checks (`tests/test_install_action.sh:111-114`). | `PYTHONOPTIMIZE=1` removes both checks and the test reports success without validating the result. Replace them with explicit conditionals that raise/exit on mismatch. |
 
 ## observability
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+
 No additional production finding. Actionable degradation reasons and pinning outcomes are
 visible without verbose logging, and advisory-disable wording preserves the
 distinction from active EWMA/stat telemetry.
