@@ -555,7 +555,7 @@ $(BUILD)/fuzz_scaler_chroma: tests/fuzz_scaler_chroma.c src/scaler_zimg_chroma.h
 $(BUILD)/fuzz_scaler_open: tests/fuzz_scaler_open.c src/scaler_pick_logic.h $(BUILD_CONFIG) | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
-$(BUILD)/fuzz_content_probe: tests/fuzz_content_probe.c src/content_probe.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_content_probe: tests/fuzz_content_probe.c tests/prng.h src/content_probe.h $(BUILD_CONFIG) | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
 $(BUILD)/fuzz_picture_view: tests/fuzz_picture_view.c tests/cli_parse.h src/picture_view.h src/chroma_classify.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h $(BUILD_CONFIG) | $(BUILD)
@@ -574,7 +574,7 @@ $(BUILD)/fuzz_lf_usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h src/
 $(BUILD)/fuzz_usm_variants: tests/fuzz_usm_variants.c \
     $(BUILD)/fuzz_lf_usm_pool_sse2.o $(BUILD)/fuzz_lf_usm_pool_avx2.o \
     $(BUILD)/fuzz_lf_usm_pool_avx512.o \
-    src/usm_pool.h $(BUILD_CONFIG) | $(BUILD)
+    tests/prng.h src/usm_pool.h $(BUILD_CONFIG) | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $< \
 	    $(BUILD)/fuzz_lf_usm_pool_sse2.o $(BUILD)/fuzz_lf_usm_pool_avx2.o \
 	    $(BUILD)/fuzz_lf_usm_pool_avx512.o \
@@ -659,7 +659,7 @@ $(BUILD)/fuzz_scaler_chroma_smoke: tests/fuzz_scaler_chroma.c src/scaler_zimg_ch
 $(BUILD)/fuzz_scaler_open_smoke: tests/fuzz_scaler_open.c src/scaler_pick_logic.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
-$(BUILD)/fuzz_content_probe_smoke: tests/fuzz_content_probe.c src/content_probe.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_content_probe_smoke: tests/fuzz_content_probe.c tests/prng.h src/content_probe.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
 $(BUILD)/fuzz_picture_view_smoke: tests/fuzz_picture_view.c tests/cli_parse.h src/picture_view.h src/chroma_classify.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h $(BUILD_CONFIG) | $(BUILD)
@@ -678,7 +678,7 @@ $(BUILD)/fuzz_usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm
 $(BUILD)/fuzz_usm_variants_smoke: tests/fuzz_usm_variants.c \
     $(BUILD)/fuzz_usm_pool_sse2.o $(BUILD)/fuzz_usm_pool_avx2.o \
     $(BUILD)/fuzz_usm_pool_avx512.o \
-    src/usm_pool.h $(BUILD_CONFIG) | $(BUILD)
+    tests/prng.h src/usm_pool.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(SMOKE_CFLAGS) -o $@ $< \
 	    $(BUILD)/fuzz_usm_pool_sse2.o $(BUILD)/fuzz_usm_pool_avx2.o \
 	    $(BUILD)/fuzz_usm_pool_avx512.o \
@@ -856,9 +856,9 @@ $(BUILD)/usm_pool_bench.o: src/usm_pool.c $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) -c -o $@ $<
 $(BUILD)/usm_pool_bench_flatskip.o: src/usm_pool.c $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) -DUSM_POOL_FLAT_SKIP=1 -c -o $@ $<
-$(BUILD)/bench_usm_pool: tests/bench_usm_pool.c $(BUILD)/usm_pool_bench.o $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/bench_usm_pool: tests/bench_usm_pool.c tests/prng.h $(BUILD)/usm_pool_bench.o $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) -o $@ $< $(BUILD)/usm_pool_bench.o -lpthread
-$(BUILD)/bench_usm_pool_flatskip: tests/bench_usm_pool.c $(BUILD)/usm_pool_bench_flatskip.o $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/bench_usm_pool_flatskip: tests/bench_usm_pool.c tests/prng.h $(BUILD)/usm_pool_bench_flatskip.o $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) -o $@ $< $(BUILD)/usm_pool_bench_flatskip.o -lpthread
 
 bench: $(BUILD)/bench_usm_pool
@@ -968,7 +968,7 @@ $(COV_BUILD)/test_usm_pool_dispatch: tests/test_usm_pool_dispatch.c src/usm_pool
 $(COV_BUILD)/test_usm_pool_dispatch_fallback: tests/test_usm_pool_dispatch.c src/usm_pool_dispatch.c src/usm_pool_variants.h src/usm_pool.h src/cpu_level.h tests/test_harness.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -march=x86-64 \
 	    -DUP_CPU_LEVEL_FORCE_FALLBACK=1 -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/test_content_probe: tests/test_content_probe.c src/content_probe.h $(BUILD_CONFIG) | $(COV_BUILD)
+$(COV_BUILD)/test_content_probe: tests/test_content_probe.c tests/prng.h src/content_probe.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h src/scaler_status.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
@@ -976,7 +976,7 @@ $(COV_BUILD)/test_scaler_swscale: tests/test_scaler_swscale.c src/scaler_swscale
 	$(COV_CC) $(COV_CFLAGS) -Itests/stubs -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_picture_view: tests/test_picture_view.c src/picture_view.h src/chroma_classify.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -Itests/stubs -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/test_lifetime: tests/test_lifetime.c $(COV_BUILD)/usm_pool_cov.o $(BUILD_CONFIG) | $(COV_BUILD)
+$(COV_BUILD)/test_lifetime: tests/test_lifetime.c tests/prng.h $(COV_BUILD)/usm_pool_cov.o $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_BUILD)/usm_pool_cov.o $(COV_LDFLAGS) -lpthread
 
 $(COV_BUILD)/fuzz_upscale_logic: tests/fuzz_upscale_logic.c src/upscale_logic.h $(BUILD_CONFIG) | $(COV_BUILD)
@@ -999,7 +999,7 @@ $(COV_BUILD)/fuzz_scaler_chroma: tests/fuzz_scaler_chroma.c src/scaler_zimg_chro
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/fuzz_scaler_open: tests/fuzz_scaler_open.c src/scaler_pick_logic.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/fuzz_content_probe: tests/fuzz_content_probe.c src/content_probe.h $(BUILD_CONFIG) | $(COV_BUILD)
+$(COV_BUILD)/fuzz_content_probe: tests/fuzz_content_probe.c tests/prng.h src/content_probe.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/fuzz_picture_view: tests/fuzz_picture_view.c tests/cli_parse.h src/picture_view.h src/chroma_classify.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -Itests/stubs -o $@ $< $(COV_LDFLAGS)
@@ -1181,13 +1181,13 @@ $(BUILD)/test_usm_pool_dispatch.o: src/usm_pool_dispatch.c src/usm_pool.h src/us
 $(BUILD)/test_usm_pool_variants: tests/test_usm_pool_variants.c \
     $(BUILD)/test_usm_pool_sse2.o $(BUILD)/test_usm_pool_avx2.o \
     $(BUILD)/test_usm_pool_avx512.o $(BUILD)/test_usm_pool_dispatch.o \
-    src/usm.h src/usm_pool.h src/cpu_level.h $(BUILD_CONFIG) | $(BUILD)
+    tests/prng.h src/usm.h src/usm_pool.h src/cpu_level.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< \
 	    $(BUILD)/test_usm_pool_sse2.o $(BUILD)/test_usm_pool_avx2.o \
 	    $(BUILD)/test_usm_pool_avx512.o $(BUILD)/test_usm_pool_dispatch.o \
 	    $(TEST_LDFLAGS) -lpthread
 
-$(BUILD)/test_content_probe: tests/test_content_probe.c src/content_probe.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/test_content_probe: tests/test_content_probe.c tests/prng.h src/content_probe.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
 $(BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h src/scaler_status.h $(BUILD_CONFIG) | $(BUILD)
@@ -1199,5 +1199,5 @@ $(BUILD)/test_scaler_swscale: tests/test_scaler_swscale.c src/scaler_swscale.c s
 $(BUILD)/test_picture_view: tests/test_picture_view.c src/picture_view.h src/chroma_classify.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -Itests/stubs -o $@ $< $(TEST_LDFLAGS)
 
-$(BUILD)/test_lifetime: tests/test_lifetime.c $(BUILD)/usm_pool_test.o $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/test_lifetime: tests/test_lifetime.c tests/prng.h $(BUILD)/usm_pool_test.o $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(BUILD)/usm_pool_test.o $(TEST_LDFLAGS) -lpthread

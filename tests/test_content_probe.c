@@ -9,6 +9,7 @@
  *****************************************************************************/
 
 #include "../src/content_probe.h"
+#include "prng.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -377,10 +378,8 @@ static void test_fused_metrics_match_references(void)
         uint8_t *buf = malloc(bytes ? bytes : 1);
         CHECK(buf != NULL);
         if (!buf) continue;
-        for (size_t j = 0; j < bytes; j++) {
-            s ^= s << 13; s ^= s >> 17; s ^= s << 5;
-            buf[j] = (uint8_t)s;
-        }
+        for (size_t j = 0; j < bytes; j++)
+            buf[j] = (uint8_t)up_xs32(&s);
         uint64_t lap_n = 0, edge_n = 0;
         uint64_t lap = up_laplacian_variance(buf, shapes[i].stride,
                                              shapes[i].w, shapes[i].h, &lap_n);

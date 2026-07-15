@@ -26,6 +26,7 @@
 
 #include "../src/usm_pool.h"
 #include "../src/usm.h"
+#include "prng.h"
 
 #include <stdio.h>
 #include <stdint.h>
@@ -35,17 +36,6 @@
 /* ---- test framework (same minimal pattern as other suites) ---- */
 
 #include "test_harness.h"
-
-/* ---- helpers ---- */
-
-static void fill_deterministic(uint8_t *buf, size_t n, uint32_t seed)
-{
-    uint32_t s = seed ? seed : 0xC0FFEEu;
-    for (size_t i = 0; i < n; i++) {
-        s = s * 1664525u + 1013904223u;
-        buf[i] = (uint8_t)(s >> 24);
-    }
-}
 
 /* ---- Lifetime test 1: create + immediate destroy (no apply) ----
  *
@@ -92,7 +82,7 @@ static void test_create_apply_destroy(void)
     for (int trial = 0; trial < 30; trial++) {
         usm_pool_t *p = up_usm_pool_create(4, width, height, 0);
         CHECK(p != NULL);
-        fill_deterministic(src, n, 0xD00Du + trial);
+        up_fill_random(src, n, 0xD00Du + (uint32_t)trial);
         memset(dst, 0xAA, n);
         int rc = up_usm_pool_apply(p, dst, width, src, width, amount);
         CHECK(rc == 0);
@@ -141,7 +131,7 @@ static void test_alternating_cold_warm(void)
     uint8_t *src = malloc(n);
     uint8_t *dst = malloc(n);
     CHECK(src && dst);
-    fill_deterministic(src, n, 42);
+    up_fill_random(src, n, 42);
 
     int amount = up_usm_amount_pct_to_q8(50);
     for (int i = 0; i < 50; i++) {
@@ -227,7 +217,7 @@ static void test_input_buffer_can_be_freed(void)
         uint8_t *src = malloc(n);
         CHECK(src);
         if (!src) continue;
-        fill_deterministic(src, n, 0xA1B2u + i);
+        up_fill_random(src, n, 0xA1B2u + (uint32_t)i);
         memset(dst, 0xCC, n);
         int rc = up_usm_pool_apply(p, dst, width, src, width, amount);
         CHECK(rc == 0);
@@ -253,7 +243,7 @@ static void test_dst_buffer_swappable(void)
     size_t n = (size_t)width * height;
     uint8_t *src = malloc(n);
     CHECK(src);
-    fill_deterministic(src, n, 7);
+    up_fill_random(src, n, 7);
 
     usm_pool_t *p = up_usm_pool_create(2, width, height, 0);
     CHECK(p != NULL);
@@ -300,7 +290,7 @@ static void test_variable_sizes_in_succession(void)
         uint8_t *dst = malloc(n);
         CHECK(src && dst);
         if (src && dst) {
-            fill_deterministic(src, n, (uint32_t)i);
+            up_fill_random(src, n, (uint32_t)i);
             up_usm_pool_apply(p, dst, sizes[i][0], src, sizes[i][0], up_usm_amount_pct_to_q8(30));
         }
         free(src); free(dst);
@@ -325,7 +315,7 @@ static void test_many_pools_alive_simultaneously(void)
     uint8_t *src = malloc(n);
     uint8_t *dst = malloc(n);
     CHECK(src && dst);
-    fill_deterministic(src, n, 0xBEEF);
+    up_fill_random(src, n, 0xBEEF);
 
     for (int i = 0; i < NPOOLS; i++) {
         pools[i] = up_usm_pool_create(2 + i, width, height, 0);

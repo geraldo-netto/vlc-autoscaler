@@ -12,23 +12,13 @@
 #include "../src/usm_pool.h"
 #include "../src/usm.h"
 #include "cli_parse.h"
+#include "prng.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
-static uint32_t xs32(uint32_t *s)
-{
-    uint32_t v = *s;
-    v ^= v << 13; v ^= v >> 17; v ^= v << 5;
-    *s = v; return v;
-}
-static void fill_xs(uint8_t *buf, size_t n, uint32_t seed)
-{
-    uint32_t s = seed; for (size_t i = 0; i < n; i++) buf[i] = (uint8_t)xs32(&s);
-}
 
 struct bench_args {
     int n_threads;
@@ -92,14 +82,15 @@ static void fill_frame(uint8_t *src, int width, int height, int mode, int i)
 {
     size_t plane = (size_t)width * (size_t)height;
     if (mode == 0) {
-        fill_xs(src, plane, 0xDEADBEEFu + (uint32_t)i * 2654435761u);
+        up_fill_random(src, plane,
+                       0xDEADBEEFu + (uint32_t)i * 2654435761u);
     } else if (mode == 1) {
         memset(src, 128 + (i & 7), plane);
     } else {
         size_t half = (size_t)width * (size_t)(height / 2);
         memset(src, 128 + (i & 7), half);
-        fill_xs(src + half, plane - half,
-                0xDEADBEEFu + (uint32_t)i * 2654435761u);
+        up_fill_random(src + half, plane - half,
+                       0xDEADBEEFu + (uint32_t)i * 2654435761u);
     }
 }
 
@@ -107,7 +98,7 @@ static int run_warmup(usm_pool_t *pool, uint8_t *src, uint8_t *dst,
                       int width, size_t plane, int amount)
 {
     for (int i = 0; i < 5; i++) {
-        fill_xs(src, plane, 0xC0FFEEu + (uint32_t)i);
+        up_fill_random(src, plane, 0xC0FFEEu + (uint32_t)i);
         if (up_usm_pool_apply(pool, dst, width, src, width, amount) != 0) {
             fprintf(stderr, "warm apply fail\n"); return 1;
         }
@@ -137,7 +128,7 @@ static int run_timed(usm_pool_t *pool, uint8_t *src, uint8_t *dst,
     /* Fill the source ONCE before timing. The USM kernel's work is
      * content-independent (only the opt-in flat-skip path branches on
      * content), so regenerating a random frame each iteration would just
-     * fold the serial fill_xs cost into the measurement and swamp the
+     * fold the serial fill cost into the measurement and swamp the
      * thing we want to measure. Fill once, then time apply() only. */
     fill_frame(src, a->width, a->height, a->mode, 0);
 

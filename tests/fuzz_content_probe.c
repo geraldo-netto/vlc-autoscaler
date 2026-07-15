@@ -32,6 +32,7 @@
  *****************************************************************************/
 
 #include "../src/content_probe.h"
+#include "prng.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -54,22 +55,14 @@ static const int common_h[] = {
     0, 1, 2, 4, 8, 16, 64, 128, 240, 360, 480, 720, 1080, 2160, 4320,
 };
 
-/* xorshift32 deterministic for the smoke main */
-static uint32_t xs_state = 0xC0FFEEu;
-static uint32_t xs(void) {
-    uint32_t s = xs_state;
-    s ^= s << 13;
-    s ^= s >> 17;
-    s ^= s << 5;
-    xs_state = s;
-    return s;
-}
+/* Deterministic fallback bytes when a fuzz input is too short. */
+static uint32_t fallback_prng_state = 0xC0FFEEu;
 
 /* Pull a value of type T from the fuzz input, defaulting to a random
  * source when the input is too short. */
 #define PULL(buf, off, size, T, dst) do { \
     if ((off) + sizeof(T) <= (size)) { memcpy(&(dst), (buf) + (off), sizeof(T)); (off) += sizeof(T); } \
-    else { (dst) = (T)xs(); } \
+    else { (dst) = (T)up_xs32(&fallback_prng_state); } \
 } while (0)
 
 /* Parse fuzz bytes into (w, h, stride). Advances *off. */
@@ -117,7 +110,7 @@ static uint8_t *alloc_and_fill_plane(const uint8_t *data, size_t size, size_t of
     if (fill_from_input > alloc) fill_from_input = alloc;
     memcpy(plane, data + off, fill_from_input);
     for (size_t i = fill_from_input; i < alloc; i++)
-        plane[i] = (uint8_t)xs();
+        plane[i] = (uint8_t)up_xs32(&fallback_prng_state);
     return plane;
 }
 
@@ -261,7 +254,7 @@ static int smoke_iter(long i)
     (void)i;
     uint8_t buf[64];
     for (size_t j = 0; j < sizeof buf; j += 4) {
-        uint32_t r = xs();
+        uint32_t r = up_xs32(&fallback_prng_state);
         memcpy(buf + j, &r, 4);
     }
     run_one(buf, sizeof buf);

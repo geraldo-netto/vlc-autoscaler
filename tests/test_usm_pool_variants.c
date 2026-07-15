@@ -39,22 +39,12 @@
  * definitions live in the per-variant .o files (built with -DUSM_VARIANT). */
 #include "../src/usm_pool_variants.h"
 
+#include "prng.h"
 #include "test_harness.h"
 
 /* CPU feature flags, populated once in main(). */
 static int has_avx2 = 0;
 static int has_avx512 = 0;
-
-/* Generate a deterministic but varied pixel pattern. */
-static void fill_pattern(uint8_t *buf, size_t n, uint32_t seed)
-{
-    /* Linear congruential — deterministic across runs and platforms. */
-    uint32_t s = seed | 1u;
-    for (size_t i = 0; i < n; i++) {
-        s = s * 1664525u + 1013904223u;
-        buf[i] = (uint8_t)(s >> 16);
-    }
-}
 
 /* Run the SSE2 variant (always available on any x86_64). */
 static int run_sse2(uint8_t *dst, const uint8_t *src,
@@ -162,7 +152,7 @@ static void check_one(int n_workers, int w, int h, int amount_q8, uint32_t seed)
         /* malloc failed */ CHECK(0);
         return;
     }
-    fill_pattern(src, n, seed);
+    up_fill_random(src, n, seed);
     check_pattern(src, w, h, n_workers, amount_q8);
     free(src);
 }

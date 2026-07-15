@@ -98,7 +98,6 @@ zero CCN violations, and a maximum CCN of 10.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| DUP-12 | open | S | Six test/benchmark files carry private deterministic PRNG implementations instead of the canonical `tests/prng.h`: `tests/bench_usm_pool.c:22-31`, `tests/fuzz_content_probe.c:57-66`, `tests/test_content_probe.c:374-383`, `tests/test_usm_pool_variants.c:49-56`, `tests/fuzz_usm_variants.c:101-111`, and `tests/test_lifetime.c:41-48`. | Their comparisons do not depend on distinct streams. Use `up_xs32` / `up_fill_random` so generator fixes and intent remain centralized. |
 
 No additional unparked duplication finding. Deferred items remain in
 **Open — parked**.

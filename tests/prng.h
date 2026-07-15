@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
- * prng.h — one deterministic PRNG for test/fuzzer buffer fills (DUP-2)
+ * prng.h — deterministic PRNG for tests, fuzzers, and benchmarks
  *****************************************************************************
- * Several tests carried their own byte-fill helper with divergent xorshift
- * constants, so "deterministic random" meant a different stream per file.
- * This is the single canonical xorshift32 (shift triple 13/17/5); callers that
- * only need a filled buffer use up_fill_random, callers that draw scalars
- * (e.g. per-plane geometry loops) use up_xs32 directly.
+ * This is the canonical xorshift32 stream (shift triple 13/17/5). Callers that
+ * only need a filled buffer use up_fill_random; callers that draw scalars use
+ * up_xs32 directly.
  *****************************************************************************/
 #ifndef TEST_PRNG_H
 #define TEST_PRNG_H

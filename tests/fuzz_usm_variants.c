@@ -26,6 +26,7 @@
 /* Variant entry points: one shared set of prototypes (ABI-2). */
 #include "../src/usm_pool_variants.h"
 #include "../src/cpu_level.h"
+#include "prng.h"
 
 /* Bound dimensions to keep memory and time reasonable per iteration.
  * The test suite (test_usm_pool_variants) covers larger sizes deterministically;
@@ -105,10 +106,7 @@ static void fill_source(uint8_t *src, size_t n,
     if (size > 8) {
         for (size_t k = 8; k < size && k < 8 + 16; k++) s = (s << 5) ^ data[k];
     }
-    for (size_t i = 0; i < n; i++) {
-        s = s * 1664525u + 1013904223u;
-        src[i] = (uint8_t)(s >> 16);
-    }
+    up_fill_random(src, n, s);
 }
 
 /* Run SSE2 reference. Returns 1 when dst holds real output; 0 when the
