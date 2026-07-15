@@ -943,6 +943,8 @@ resolutions, API boundaries, and prior regressions.
 - `tests/corpus_scaler_chroma/` feeds `fuzz_scaler_chroma` legacy mapping seeds
   parsed as `<4sB3x>` and structured crop-window seeds parsed as little-endian
   `<4sBHHII>` (fourcc, NULL-mask byte, dimensions-minus-one, and offsets).
+- `tests/corpus_scaler_seam/` feeds `fuzz_scaler_seam` zimg seam inputs covering
+  graph setup, allocation failures, and source/destination plane geometry.
 - `tests/corpus_usm_variants/` feeds `fuzz_usm_variants` values parsed as
   `<HHhBB>`.
 

@@ -21,6 +21,12 @@ fi
 EOF
 chmod 0755 "${bin_dir}/vlc"
 
+cat > "${bin_dir}/whereis" <<'EOF'
+#!/bin/sh
+printf 'vlc: %s/vlc\n' "$(dirname -- "$0")"
+EOF
+chmod 0755 "${bin_dir}/whereis"
+
 cat > "${bin_dir}/update-desktop-database" <<'EOF'
 #!/bin/sh
 exit 0
@@ -42,6 +48,7 @@ import sys
 
 home = sys.argv[1]
 wrapper = os.path.join(home, ".local", "bin", "vlc-autoupscale")
+vlc = os.path.join(os.path.dirname(home), "bin", "vlc")
 desktop = os.path.join(home, ".local", "share", "applications",
                        "vlc-autoupscale.desktop")
 action = os.path.join(home, ".local", "share", "nemo", "actions",
@@ -110,8 +117,16 @@ def parse_first_quoted_arg(value):
 
 for path, field_code in ((desktop, "%U"), (action, "%F")):
     program, tail = parse_first_quoted_arg(exec_value(path))
-    assert program == wrapper, (path, program, wrapper)
-    assert tail == field_code, (path, tail, field_code)
+    if program != wrapper:
+        raise AssertionError((path, program, wrapper))
+    if tail != field_code:
+        raise AssertionError((path, tail, field_code))
+
+with open(wrapper, encoding="utf-8") as fh:
+    wrapper_text = fh.read()
+expected_vlc_assignment = f'VLC_BIN="{vlc}"'
+if expected_vlc_assignment not in wrapper_text:
+    raise AssertionError((expected_vlc_assignment, wrapper_text))
 
 print("install action Exec escaping OK")
 PY

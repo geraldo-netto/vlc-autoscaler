@@ -66,12 +66,13 @@ files with their own IDs, so the original VLC shortcut keeps working unchanged.
 scripts/install-vlc-autoupscale-action.sh
 ```
 
-It installs three files under `$HOME` and warns if VLC does not list the
-`autoupscale` module yet:
+It finds the executable VLC path with `whereis`, embeds that absolute path in
+the wrapper, installs three files under `$HOME`, and warns if VLC does not list
+the `autoupscale` module yet:
 
 | File | Purpose |
 | --- | --- |
-| `~/.local/bin/vlc-autoupscale` | Wrapper that calls `vlc` with the filter flags. |
+| `~/.local/bin/vlc-autoupscale` | Wrapper that calls the discovered VLC binary with the filter flags. |
 | `~/.local/share/applications/vlc-autoupscale.desktop` | Adds "VLC (AutoUpscale)" to the *Open With* menu and the app launcher. |
 | `~/.local/share/nemo/actions/vlc-autoupscale.nemo_action` | Adds "Play with VLC (AutoUpscale)" to the right-click menu of video files. |
 
@@ -124,7 +125,8 @@ VLC_AUTOUPSCALE_ARGS="--video-filter=autoupscale --autoupscale-target=4 --autoup
     vlc-autoupscale clip.mkv
 ```
 
-See [USAGE.md](USAGE.md) for the recipes and the full option table.
+See [USAGE.md](USAGE.md) for recipes and the [README option table](../README.md#options)
+for the complete configuration reference.
 
 ## Important Fields and Tokens
 

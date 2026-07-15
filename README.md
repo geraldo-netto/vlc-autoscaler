@@ -525,6 +525,7 @@ tests/
   corpus/                 binary seeds for fuzz_upscale_logic
   corpus_frame_shape/     binary seeds for fuzz_frame_shape
   corpus_scaler_chroma/   8/17-byte mapping and crop seeds for fuzz_scaler_chroma
+  corpus_scaler_seam/     zimg scaler seam and allocation-failure seeds
   corpus_usm_variants/    binary seeds for fuzz_usm_variants
 
 scripts/

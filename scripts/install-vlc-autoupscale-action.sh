@@ -23,6 +23,19 @@ ACTION="${ACTION_DIR}/vlc-autoupscale.nemo_action"
 
 SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
+find_vlc_binary() {
+    command -v whereis >/dev/null 2>&1 || return 1
+    locations=$(whereis -b vlc) || return 1
+    for candidate in $locations; do
+        [ "$candidate" = "vlc:" ] && continue
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 desktop_exec_quote() {
     cr=$(printf '\r')
     case $1 in
@@ -58,7 +71,10 @@ uninstall() {
 
 install_wrapper() {
     mkdir -p "$BIN_DIR"
-    install -m 0755 "${SRC_DIR}/vlc-autoupscale.sh" "$WRAPPER"
+    escaped_vlc_bin=$(printf '%s' "$VLC_BIN" | sed 's/[\\&|]/\\&/g')
+    sed "s|^VLC_BIN=vlc$|VLC_BIN=\"${escaped_vlc_bin}\"|" \
+        "${SRC_DIR}/vlc-autoupscale.sh" > "$WRAPPER"
+    chmod 0755 "$WRAPPER"
 }
 
 install_desktop() {
@@ -98,11 +114,7 @@ EOF
 }
 
 check_plugin() {
-    if ! command -v vlc >/dev/null 2>&1; then
-        echo "Warning: vlc not found in PATH." >&2
-        return
-    fi
-    if ! vlc --list 2>/dev/null | grep -q autoupscale; then
+    if ! "$VLC_BIN" --list 2>/dev/null | grep -q autoupscale; then
         echo "Warning: VLC does not list the 'autoupscale' module." >&2
         echo "         Build and install the plugin first (see README.md)." >&2
     fi
@@ -119,6 +131,11 @@ case "${1:-}" in
         exit 2
         ;;
 esac
+
+VLC_BIN=$(find_vlc_binary) || {
+    echo "error: whereis did not find an executable VLC binary" >&2
+    exit 1
+}
 
 install_wrapper
 install_desktop

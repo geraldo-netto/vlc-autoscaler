@@ -10,6 +10,7 @@
 set -eu
 
 DEFAULT_ARGS="--video-filter=autoupscale --autoupscale-target=2 --autoupscale-algo=3 --autoupscale-usm=20"
+VLC_BIN=vlc
 
 # SH-3: `-` not `:-`, so an explicitly empty VLC_AUTOUPSCALE_ARGS means "no
 # flags" instead of silently re-injecting the defaults.
@@ -21,4 +22,4 @@ ARGS="${VLC_AUTOUPSCALE_ARGS-$DEFAULT_ARGS}"
 set -f
 
 # shellcheck disable=SC2086  # word splitting is intentional; globbing is off
-exec vlc ${ARGS} -- "$@"
+exec "$VLC_BIN" ${ARGS} -- "$@"
