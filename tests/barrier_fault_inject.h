@@ -12,7 +12,6 @@
 static atomic_int g_fail_next_done_wait;
 static atomic_int g_fail_next_done_signal;
 static atomic_int g_done_timedwait_seen;
-static atomic_int g_suppress_next_broadcast;
 static atomic_int g_fail_next_broadcast;
 static atomic_int g_fail_next_mutex_lock;
 static atomic_int g_fail_next_worker_mutex_lock;
@@ -46,9 +45,6 @@ int __wrap_pthread_cond_broadcast(pthread_cond_t *cond)
     if (atomic_exchange_explicit(&g_fail_next_broadcast, 0,
                                  memory_order_relaxed))
         return EINVAL;
-    if (atomic_exchange_explicit(&g_suppress_next_broadcast, 0,
-                                 memory_order_relaxed))
-        return 0;
     return __real_pthread_cond_broadcast(cond);
 }
 
@@ -67,12 +63,6 @@ int __wrap_pthread_mutex_lock(pthread_mutex_t *mutex)
                                     memory_order_relaxed))
         return EINVAL;
     return __real_pthread_mutex_lock(mutex);
-}
-
-static inline void barrier_fault_inject_lose_next_wake(void)
-{
-    atomic_store_explicit(&g_suppress_next_broadcast, 1,
-                          memory_order_relaxed);
 }
 
 static inline void barrier_fault_inject_next_dispatch(void)
@@ -110,9 +100,7 @@ static inline int barrier_fault_used_timed_completion_wait(void)
 
 static inline int barrier_fault_injection_consumed(void)
 {
-    return atomic_load_explicit(&g_suppress_next_broadcast,
-                                memory_order_relaxed) == 0
-        && atomic_load_explicit(&g_fail_next_broadcast,
+    return atomic_load_explicit(&g_fail_next_broadcast,
                                 memory_order_relaxed) == 0
         && atomic_load_explicit(&g_fail_next_mutex_lock,
                                 memory_order_relaxed) == 0
