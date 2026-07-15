@@ -684,7 +684,7 @@ static void test_all_algos(void)
     const int algos[] = { UP_ALGO_FAST_BILINEAR, UP_ALGO_BICUBIC,
                           UP_ALGO_LANCZOS, UP_ALGO_SPLINE36 };
     for (size_t i = 0; i < sizeof(algos) / sizeof(algos[0]); i++) {
-        zt_pic_t src, dst;
+        zt_pic_t src = { 0 }, dst = { 0 };
         int ok = zt_pic_alloc(&src, VLC_CODEC_I420, 640, 360) == 0
               && zt_pic_alloc(&dst, VLC_CODEC_I420, 1280, 720) == 0;
         CHECK(ok);
@@ -850,7 +850,7 @@ static void test_construction_pthread_fail(void)
     lim.rlim_cur = 1;
     if (setrlimit(RLIMIT_NPROC, &lim) != 0) { END(); return; }
 
-    zt_pic_t src, dst;
+    zt_pic_t src = { 0 }, dst = { 0 };
     int ok = zt_pic_alloc(&src, VLC_CODEC_I420, 854, 480) == 0
           && zt_pic_alloc(&dst, VLC_CODEC_I420, 1920, 1080) == 0;
     int rc1 = SCALER_PROCESS_OK, rc2 = SCALER_PROCESS_OK;
@@ -945,7 +945,7 @@ static void test_open_rejects_unsupported(void)
 static void test_extreme_ratio_no_crash(void)
 {
     BEGIN("extreme src->dst ratio: graceful success or fatal status");
-    zt_pic_t src, dst;
+    zt_pic_t src = { 0 }, dst = { 0 };
     int ok = zt_pic_alloc(&src, VLC_CODEC_I420, 100, 8) == 0
           && zt_pic_alloc(&dst, VLC_CODEC_I420, 1920, 1080) == 0;
     int rc = 0;
