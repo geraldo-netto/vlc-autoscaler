@@ -200,7 +200,6 @@ dispatcher have real production call sites.
 |---|---|---|---|---|
 | UNUSED-2 | open | S | Production retains unused or redundant fields: `sws_priv_t.av_fmt` (`src/scaler_swscale.c:27,93`), `stripe_worker_t.worker_id` (`src/scaler_zimg.c:195,746-768`), and picture-view `pixel_pitch/width/height/row_bytes` (`src/picture_view.h:18-26,120-140`) are write-only; `filter_sys_t.probe.enabled` is assigned and read only immediately to initialize `probe.active` (`src/autoupscale.c:328-343,624-630`). | Remove the first two and assign the probe predicate directly to `active`, updating its stale comment. Remove the four view metadata fields or isolate their non-runtime diagnostic purpose; production consumers read only `pixels` and `pitch`. |
 | UNUSED-3 | open | S | Nine `static inline` functions have no production-rooted caller: the USM reference subtree (`src/usm.h:66-74,175-186,237-255,273-308`) and the content reference subtree (`src/content_probe.h:71-111,134-193`). | Move intentional reference helpers and support types to a clearly named support header. |
-| UNUSED-5 | open | S | Warning capture in `tests/test_scaler_swscale.c:9-36` is unused: included production code emits only Info/Dbg, while `g_warn_calls == 0` assertions at `:216,222,258` are vacuous. | Remove the `msg_Warn` apparatus/assertions or add a real warning contract. |
 
 No other unused static function, macro, field, or orphan call subtree was found.
 

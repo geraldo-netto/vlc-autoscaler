@@ -7,14 +7,12 @@
 #include <string.h>
 
 static int g_info_calls;
-static int g_warn_calls;
 static char g_last_log[256];
 
-static void capture_log(int info, void *obj, const char *format, ...)
+static void capture_log(void *obj, const char *format, ...)
 {
     (void)obj;
-    if (info) g_info_calls++;
-    else      g_warn_calls++;
+    g_info_calls++;
     va_list ap;
     va_start(ap, format);
     (void)vsnprintf(g_last_log, sizeof g_last_log, format, ap);
@@ -24,16 +22,13 @@ static void capture_log(int info, void *obj, const char *format, ...)
 static void reset_logs(void)
 {
     g_info_calls = 0;
-    g_warn_calls = 0;
     g_last_log[0] = '\0';
 }
 
 #undef msg_Dbg
 #define msg_Dbg(obj, ...) ((void)(obj))
 #undef msg_Info
-#define msg_Info(obj, ...) capture_log(1, (obj), __VA_ARGS__)
-#undef msg_Warn
-#define msg_Warn(obj, ...) capture_log(0, (obj), __VA_ARGS__)
+#define msg_Info(obj, ...) capture_log((obj), __VA_ARGS__)
 
 #include "../src/scaler_swscale.c"
 
@@ -213,13 +208,13 @@ static void test_process_status_and_forwarding(void)
     reset_logs();
     g_scale_result = ctx.dst_h - 1;
     CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_TRANSIENT);
-    CHECK(g_info_calls == 1 && g_warn_calls == 0);
+    CHECK(g_info_calls == 1);
     CHECK(strcmp(g_last_log,
                  "swscale: sws_scale emitted fewer lines than the target "
                  "height; dropping frame(s) (logged only once)") == 0);
     g_scale_result = -1;
     CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_TRANSIENT);
-    CHECK(g_info_calls == 1 && g_warn_calls == 0);
+    CHECK(g_info_calls == 1);
     END();
 }
 
@@ -255,7 +250,7 @@ static void test_geometry_rejection_recovers(void)
     CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_TRANSIENT);
     src.p[0].i_pitch = src_pitch;
     CHECK(sws_process(&ctx, &src, &dst) == SCALER_PROCESS_OK);
-    CHECK(g_info_calls == 1 && g_warn_calls == 0);
+    CHECK(g_info_calls == 1);
     CHECK(strcmp(g_last_log,
                  "swscale: frame geometry unusable (crop/stride/subsample "
                  "mismatch); dropping frame(s) (logged only once)") == 0);
