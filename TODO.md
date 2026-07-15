@@ -198,7 +198,6 @@ dispatcher have real production call sites.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| UNUSED-3 | open | S | Nine `static inline` functions have no production-rooted caller: the USM reference subtree (`src/usm.h:66-74,175-186,237-255,273-308`) and the content reference subtree (`src/content_probe.h:71-111,134-193`). | Move intentional reference helpers and support types to a clearly named support header. |
 
 No other unused static function, macro, field, or orphan call subtree was found.
 

@@ -55,24 +55,6 @@ static inline int up_usm_amount_pct_to_q8(int amount_pct)
     return (amount_pct * 256) / 100;
 }
 
-/*
- * Workspace size (in bytes) for one plane of the given dimensions.
- * Returns 0 on invalid input, oversized planes, or multiplication overflow.
- *
- * Hard cap: 16384 x 16384 (256 MB workspace). Anything larger than 8K
- * video isn't a use case this filter targets, and capping here prevents
- * absurd allocations even if a caller passes garbage dimensions.
- */
-static inline size_t up_usm_workspace_size(int width, int height)
-{
-    if (width <= 0 || height <= 0) return 0;
-    if (width > 16384 || height > 16384) return 0;
-    size_t w = (size_t)width;
-    size_t h = (size_t)height;
-    if (w > SIZE_MAX / h) return 0;
-    return w * h;
-}
-
 /* Horizontal 3-tap blur with [1,2,1]/4 kernel and edge replication.
  * `out` and `in` may not overlap. Width must be > 0.
  *
@@ -100,47 +82,6 @@ static inline void up_usm__hblur_row(uint8_t *restrict out,
     out[width-1] = (uint8_t)(((int)in[width-2] + (int)in[width-1] * 3 + 2) >> 2);
 }
 
-/* Plane I/O descriptor for up_usm_apply_plane / up_usm__pass2_combine. */
-typedef struct {
-    uint8_t       *dst;         /* destination (may equal src, in-place)  */
-    int            dst_stride;
-    const uint8_t *src;         /* source (read-only)                     */
-    int            src_stride;
-    int            width;       /* plane dimensions in pixels             */
-    int            height;
-} up_usm_plane_io_t;
-
-/*
- * Apply unsharp mask to a single 8-bit plane.
- *
- *   io              : plane descriptor (dst may equal src for in-place)
- *   amount_q8       : sharpening amount in Q8 fixed point
- *                       0    = identity (output = input)
- *                       256  = 1.0 (typical)
- *                       512  = 2.0 (strong)
- *                     Normal user-derived values are 0..512. Negative
- *                     values are clamped to 0; values above the defensive
- *                     UP_USM_AMOUNT_Q8_MAX ceiling are clamped down.
- *   workspace       : caller-provided buffer of at least
- *                     up_usm_workspace_size(io->width, io->height) bytes.
- *                     Contents on entry don't matter; on exit they're
- *                     a horizontal-blurred copy of src (caller may reuse).
- *
- * Returns 1 on success, 0 on invalid input. On failure the destination
- * plane is left unchanged.
- *
- * In-place is supported (dst == src, same stride). The implementation
- * reads each row's source pixel before writing the corresponding
- * destination pixel within an iteration, and never re-reads it across
- * iterations, so aliasing is safe.
- *
- * NOTE (WIRE-2): production does NOT call this directly — the plugin
- * routes USM through the threaded up_usm_pool_apply(). This single-
- * threaded version is deliberately retained as the BYTE-IDENTITY TEST
- * ORACLE: tests/test_usm_pool.c, tests/stress_usm_pool.c and the variant
- * suites assert the pool's output matches this function bit-for-bit. It
- * is intentionally test-only, not a dead/unwired path.
- */
 /*
  * Internal: identity-copy fast path used when amount_q8 == 0. Skips the
  * memcpy entirely if dst aliases src with the same stride. Keeps the
@@ -160,29 +101,12 @@ static inline void up_usm__apply_identity(
 }
 
 /* Clamp a Q8 sharpening amount to [0, UP_USM_AMOUNT_Q8_MAX]. Shared by the
- * single-threaded apply and the threaded pool (DUP-4). */
+ * threaded pool and its test oracle. */
 static inline int up_usm__clamp_amount_q8(int amount_q8)
 {
     if (amount_q8 < 0) return 0;
     if (amount_q8 > UP_USM_AMOUNT_Q8_MAX) return UP_USM_AMOUNT_Q8_MAX;
     return amount_q8;
-}
-
-/*
- * Internal: pass 1 of the USM. Horizontal-blur every source row into the
- * dense workspace buffer.
- */
-static inline void up_usm__pass1_hblur(
-    uint8_t *workspace,
-    const uint8_t *src, int src_stride,
-    int width, int height)
-{
-    for (int y = 0; y < height; y++) {
-        up_usm__hblur_row(
-            workspace + (size_t)y * (size_t)width,
-            src + (size_t)y * (size_t)src_stride,
-            width);
-    }
 }
 
 static inline int up_usm__floor_div_q8(int value)
@@ -229,34 +153,8 @@ static inline void up_usm__combine_row(
     }
 }
 
-/*
- * Internal: pass 2 of the USM. For each row y, picks workspace rows
- * y-1, y, y+1 (clamped at boundaries), then combines via the per-row
- * helper.
- */
-static inline void up_usm__pass2_combine(
-    const up_usm_plane_io_t *io,
-    const uint8_t *workspace,
-    int amount_q8)
-{
-    const int width  = io->width;
-    const int height = io->height;
-    for (int y = 0; y < height; y++) {
-        int yu = (y > 0) ? (y - 1) : 0;
-        int yd = (y < height - 1) ? (y + 1) : (height - 1);
-        up_usm__combine_row(
-            io->dst + (size_t)y * (size_t)io->dst_stride,
-            io->src + (size_t)y * (size_t)io->src_stride,
-            workspace + (size_t)yu * (size_t)width,
-            workspace + (size_t)y  * (size_t)width,
-            workspace + (size_t)yd * (size_t)width,
-            width, amount_q8);
-    }
-}
-
-/* Shared plane-argument core (DUP-5): non-null buffers and strides wide
- * enough for `width` pixels. The single-plane oracle and the pool layer
- * their own extra checks (dims here, in-place aliasing there) on top. */
+/* Shared plane-argument core: non-null buffers and strides wide enough for
+ * `width` pixels. The pool and its test oracle layer their own checks. */
 static inline int up_usm__plane_args_ok(
     const uint8_t *dst, int dst_stride,
     const uint8_t *src, int src_stride,
@@ -264,46 +162,6 @@ static inline int up_usm__plane_args_ok(
 {
     if (dst == NULL || src == NULL) return 0;
     if (dst_stride < width || src_stride < width) return 0;
-    return 1;
-}
-
-/* Extracted to keep up_usm_apply_plane within the complexity limit. The six
- * boolean clauses below would otherwise count one branch each in the
- * caller. */
-static inline int up_usm__args_valid(
-    const uint8_t *dst, int dst_stride,
-    const uint8_t *src, int src_stride,
-    int width, int height)
-{
-    if (width <= 0 || height <= 0) return 0;
-    return up_usm__plane_args_ok(dst, dst_stride, src, src_stride, width);
-}
-
-static inline int up_usm_apply_plane(
-    const up_usm_plane_io_t *io,
-    int amount_q8,
-    uint8_t *workspace)
-{
-    if (io == NULL) return 0;
-    if (!up_usm__args_valid(io->dst, io->dst_stride, io->src, io->src_stride,
-                            io->width, io->height))
-        return 0;
-
-    amount_q8 = up_usm__clamp_amount_q8(amount_q8);
-
-    /* Identity fast path. */
-    if (amount_q8 == 0) {
-        up_usm__apply_identity(io->dst, io->dst_stride, io->src,
-                               io->src_stride, io->width, io->height);
-        return 1;
-    }
-
-    /* Anything else needs workspace. */
-    if (workspace == NULL) return 0;
-
-    up_usm__pass1_hblur(workspace, io->src, io->src_stride,
-                        io->width, io->height);
-    up_usm__pass2_combine(io, workspace, amount_q8);
     return 1;
 }
 

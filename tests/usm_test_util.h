@@ -2,7 +2,7 @@
 #ifndef AUTOUPSCALE_USM_TEST_UTIL_H
 #define AUTOUPSCALE_USM_TEST_UTIL_H
 
-#include "../src/usm.h"
+#include "usm_reference.h"
 
 #define UP_TEST_USM_APPLY_PLANE(dst_, dst_stride_, src_, src_stride_,       \
                                 width_, height_, amount_q8_, workspace_)    \

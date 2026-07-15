@@ -31,7 +31,7 @@
  *
  *****************************************************************************/
 
-#include "../src/content_probe.h"
+#include "content_probe_reference.h"
 #include "prng.h"
 
 #include <stdint.h>

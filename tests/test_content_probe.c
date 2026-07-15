@@ -8,7 +8,7 @@
  *   3. Advisory decision: returns 1 only on (very soft AND very blocky)
  *****************************************************************************/
 
-#include "../src/content_probe.h"
+#include "content_probe_reference.h"
 #include "prng.h"
 
 #include <limits.h>
