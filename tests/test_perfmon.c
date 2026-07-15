@@ -30,15 +30,15 @@ static void test_init_disabled_for_zero_fps(void)
     END();
 }
 
-/* OBS-3: --autoupscale-target-fps=0 is documented as the way to silence the
+/* OBS-2: --autoupscale-target-fps=0 is documented as the way to silence the
  * one-shot tuning hint. It used to switch off recording entirely, so
  * up_perfmon_ewma_us returned a hard 0 forever — an operator who silenced the
  * hint and then polled autoupscale-ewma-us (or read the periodic stats line)
  * saw "0 us per frame", indistinguishable from a real measurement. The
- * advisory kill-switch must kill the WARNING, not the telemetry. */
+ * advisory kill-switch must kill the advisory, not the telemetry. */
 static void test_disabled_advisory_keeps_ewma_live(void)
 {
-    BEGIN("target_fps=0 silences the advisory but keeps the EWMA live (OBS-3)");
+    BEGIN("target_fps=0 silences the advisory but keeps the EWMA live (OBS-2)");
     up_perfmon_t pm;
     up_perfmon_init(&pm, 0);
 

@@ -168,7 +168,10 @@ exports only the expected VLC entry points.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| OBS-2 | open | S | Help and state comments say `target-fps=0` disables performance monitoring (`src/autoupscale.c:123-127,298-300`; `README.md:118,179-181`), but EWMA/stat monitoring remains active and only the advisory is disabled (`src/perfmon.h:61-71,102-134`). | Change help/docs to “disable the performance advisory” and keep the telemetry behavior explicit. |
+
+No open finding. Actionable degradation reasons and pinning outcomes are
+visible without verbose logging, and advisory-disable wording preserves the
+distinction from active EWMA/stat telemetry.
 
 ## wiring gaps
 

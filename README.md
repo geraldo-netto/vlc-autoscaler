@@ -115,7 +115,7 @@ rules still apply.
 | `--autoupscale-skip-above`          | 0–8192 | 720     | In AUTO, source heights ≥ this value are passed through untouched; 0 disables the gate |
 | `--autoupscale-usm`                 | 0–200  | **20**  | Unsharp-mask amount (%) applied to luma post-upscale     |
 | `--autoupscale-backend`             | 0–2    | 0       | 0 = auto (zimg → swscale), 1 = zimg only, 2 = swscale only |
-| `--autoupscale-target-fps`          | 0–240  | 60      | Per-frame work over `1 / target_fps` triggers a one-time tuning hint. 0 disables monitoring. |
+| `--autoupscale-target-fps`          | 0–240  | 60      | Per-frame work over `1 / target_fps` triggers a one-time tuning hint. 0 suppresses the tuning hint; EWMA/stat telemetry remains active. |
 | `--autoupscale-threads`             | 0–64   | 0       | Worker preference shared by zimg and USM. zimg normally uses row stripes and may add column cells on wide/short frames; each pool can clamp lower for frame geometry. 0 = auto (`cores/2 − 2`); 1..64 = explicit preference, capped by CPUs allowed through taskset/cgroup affinity. The USM pool additionally caps itself at 12 workers — the pass is memory-bandwidth-bound and measurably regresses past that (set `--autoupscale-usm-stripe-min-rows` to take over the partition policy and bypass the cap). A pool that resolves to a single worker runs on the calling thread with no thread or barrier at all. swscale remains single-threaded. |
 | `--autoupscale-pin-threads`         | 0–1    | 0       | 1 = pin each zimg worker round-robin across the exact CPU IDs allowed by the process affinity mask (Linux, best-effort). Off by default — pinning can hurt on a typical desktop by fighting the scheduler; enable only on a dedicated high-core/NUMA transcode box where you measured a gain. Does not affect the USM pool. |
 | `--autoupscale-zerocopy-dst`        | 0–1    | **1**   | 1 = aligned row-only graphs write directly into VLC's destination picture (default); column cells still copy tile scratch out. Avoids a frame-sized copy on the row-only path. Set to 0 to force copy-out. |
@@ -178,7 +178,8 @@ autoupscale filter:   Or set --autoupscale-target-fps=0 to silence this warning.
 
 The hint fires once per stream after the fixed warmup and sample windows
 defined in `src/perfmon.h`, so brief codec-startup spikes don't trigger false
-alarms. Set `--autoupscale-target-fps=0` to disable monitoring entirely.
+alarms. Set `--autoupscale-target-fps=0` to silence this advisory; the EWMA,
+periodic stats, and exported variables remain active.
 
 ### Exported VLC variables
 

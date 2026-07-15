@@ -124,7 +124,8 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 #define TARGET_FPS_LONGTEXT N_( \
     "If the average per-frame processing time exceeds 1/target_fps, the " \
     "plugin emits a one-time warning suggesting how to tune down. Set to " \
-    "0 to disable performance monitoring. Default 60.")
+    "0 to disable only that advisory; EWMA telemetry remains active. " \
+    "Default 60.")
 
 #define THREADS_TEXT    N_("Worker preference for zimg and USM")
 #define THREADS_LONGTEXT N_( \
@@ -295,7 +296,7 @@ struct filter_sys_t
     int           usm_amount_q8;
     usm_pool_t   *usm_pool;
 
-    /* Performance monitoring. Disabled when target_fps <= 0. */
+    /* Performance telemetry. target_fps <= 0 disables only the advisory. */
     up_perfmon_t  perfmon;
     int           target_fps;     /* kept around so we can include it in warn msg */
     int           algo;           /* kept around for warn message */
