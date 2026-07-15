@@ -11,6 +11,7 @@ fixed throughput claims.
 make build-bench
 make bench
 make bench-usm-halo
+make bench-worker-pool
 make bench-flatskip
 make bench-zimg
 scripts/bench_matrix.sh build/bench_usm_pool
@@ -97,3 +98,8 @@ microseconds and process maximum resident set in KiB before steady-state frame
 time. Compare separate process runs by geometry, chroma, zero-copy mode, and
 worker count; `ru_maxrss` includes the harness and libraries, so compare deltas
 rather than treating it as backend-only allocation.
+
+`bench-worker-pool` times the shared dispatch gate with deliberately tiny
+callbacks, exposing the upper bound of wake/barrier overhead by worker count
+without mixing in scaler work. It is a microbenchmark, not an end-to-end frame
+latency result.

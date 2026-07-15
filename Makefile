@@ -944,7 +944,7 @@ endif
 # comparison so the skip's payoff is visible.
 BENCH_CFLAGS := -O3 $(MARCH_FLAG) $(WARN) -MMD -MP $(EXTRA_CFLAGS)
 
-build-bench: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip $(if $(HAVE_ZIMG),$(BUILD)/bench_scaler_zimg)
+build-bench: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip $(BUILD)/bench_worker_pool $(if $(HAVE_ZIMG),$(BUILD)/bench_scaler_zimg)
 
 $(BUILD)/usm_pool_bench.o: src/usm_pool.c $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) -c -o $@ $<
@@ -954,6 +954,8 @@ $(BUILD)/bench_usm_pool: tests/bench_usm_pool.c tests/prng.h $(BUILD)/usm_pool_b
 	$(CC) $(BENCH_CFLAGS) -o $@ $< $(BUILD)/usm_pool_bench.o -lpthread
 $(BUILD)/bench_usm_pool_flatskip: tests/bench_usm_pool.c tests/prng.h $(BUILD)/usm_pool_bench_flatskip.o $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) -o $@ $< $(BUILD)/usm_pool_bench_flatskip.o -lpthread
+$(BUILD)/bench_worker_pool: tests/bench_worker_pool.c src/worker_pool.h src/threading.h tests/cli_parse.h $(BUILD_CONFIG) | $(BUILD)
+	$(CC) $(BENCH_CFLAGS) -o $@ $< -lpthread
 
 bench: $(BUILD)/bench_usm_pool
 	@echo "requested_threads,effective_threads,width,height,frames,amount,fill,us_per_frame"
@@ -966,6 +968,10 @@ bench: $(BUILD)/bench_usm_pool
 
 bench-usm-halo: $(BUILD)/bench_usm_pool
 	@./scripts/bench_usm_halo.sh $(BUILD)/bench_usm_pool
+
+bench-worker-pool: $(BUILD)/bench_worker_pool
+	@echo "workers,iterations,us_per_dispatch"
+	@for n in 1 2 4 8 12 16 24 32; do $(BUILD)/bench_worker_pool $$n 10000; done
 
 bench-flatskip: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip
 	@echo "kernel,requested_threads,effective_threads,width,height,frames,amount,fill,us_per_frame"
