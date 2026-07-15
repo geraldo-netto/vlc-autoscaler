@@ -105,26 +105,29 @@ _Static_assert(UP_TILE_THREADS_MAX == UP_THREADS_MAX,
 /*
  * SCAL-4: best-effort pin one worker thread to a single CPU core. Opt-in
  * (--autoupscale-pin-threads), isolates the non-portable pthread_setaffinity_np
- * here. Failure is ignored: pinning is an optimization, never a correctness
- * requirement, and can fail benignly (CPU offline, cgroup cpuset, container
- * limits). No-op where the CPU-affinity capability is absent.
+ * here. Failure is reported after startup: pinning is an optimization, never
+ * a correctness requirement, and can fail benignly (CPU offline, cgroup
+ * cpuset, container limits). No-op where the CPU-affinity capability is
+ * absent.
  *
  * PORT-2: guard on the same UP_HAVE_CPU_AFFINITY capability macro that
  * threading.h derives (CPU_ALLOC family present AND !UP_NO_CPU_AFFINITY), not
  * a bare __linux__ — so a Linux libc lacking the CPU_ALLOC macros, or a build
- * that forces affinity off, degrades to a no-op instead of failing to compile. */
-static void pin_worker_to_cpu(pthread_t thread, int cpu)
+ * that forces affinity off, reports failure instead of failing to compile. */
+static bool pin_worker_to_cpu(pthread_t thread, int cpu)
 {
 #if UP_HAVE_CPU_AFFINITY
     size_t set_size = CPU_ALLOC_SIZE((size_t)cpu + 1);
     cpu_set_t *set = CPU_ALLOC((size_t)cpu + 1);
-    if (set == NULL) return;
+    if (set == NULL) return false;
     CPU_ZERO_S(set_size, set);
     CPU_SET_S((size_t)cpu, set_size, set);
-    (void)pthread_setaffinity_np(thread, set_size, set);
+    bool pinned = pthread_setaffinity_np(thread, set_size, set) == 0;
     CPU_FREE(set);
+    return pinned;
 #else
     (void)thread; (void)cpu;
+    return false;
 #endif
 }
 
@@ -256,6 +259,8 @@ typedef struct
     /* SCAL-4/5: pin workers only to exact IDs in the allowed CPU set. */
     bool              pin_cpus;
     up_cpu_topology_t cpu_topology;
+    int               pin_attempts;
+    int               pin_successes;
 
     /* Scratch buffers + geometry. Layouts are sized in Open(); buffers are
      * allocated on the first valid frame and retained for the plugin lifetime.
@@ -777,13 +782,16 @@ static int init_stripe_worker(stripe_worker_t *w, zimg_priv_t *p,
 
 /* Pool hook: SCAL-4 best-effort pin (opt-in), right after the pool spawns the
  * thread. Round-robin so a worker count above the core count still spreads
- * evenly; failure is ignored inside the helper. */
+ * evenly. The creator invokes this hook sequentially, so plain counters are
+ * sufficient. */
 static void zimg_pool_on_spawn(void *owner, int i, pthread_t thread)
 {
     zimg_priv_t *p = (zimg_priv_t *)owner;
     if (!p->pin_cpus || p->cpu_topology.pin_count <= 0) return;
-    pin_worker_to_cpu(thread,
-                      p->cpu_topology.pin_ids[i % p->cpu_topology.pin_count]);
+    p->pin_attempts++;
+    if (pin_worker_to_cpu(
+            thread, p->cpu_topology.pin_ids[i % p->cpu_topology.pin_count]))
+        p->pin_successes++;
 }
 
 /*
@@ -856,6 +864,31 @@ static const up_worker_pool_ops_t zimg_pool_ops = {
     .all_or_nothing = true,   /* a missing cell leaves the frame unwritten */
 };
 
+static void log_zimg_pinning(vlc_object_t *log_obj, const zimg_priv_t *p)
+{
+    if (!p->pin_cpus) return;
+    const int worker_count = up_worker_pool_count(&p->pool);
+    if (up_worker_pool_inline(&p->pool)) {
+        msg_Info(log_obj,
+                 "zimg: CPU pinning requested but not applicable; "
+                 "worker runs inline on caller thread");
+        return;
+    }
+    if (p->pin_attempts == 0) {
+        msg_Info(log_obj,
+                 "zimg: CPU pinning requested but unavailable; no usable "
+                 "CPU affinity mask (%d scheduler-managed pthread workers)",
+                 worker_count);
+        return;
+    }
+    const int failures = p->pin_attempts - p->pin_successes;
+    if (failures > 0)
+        msg_Info(log_obj,
+                 "zimg: CPU pinning applied to %d/%d pthread workers "
+                 "(%d scheduler-managed)",
+                 p->pin_successes, p->pin_attempts, failures);
+}
+
 /* Diagnostic log emitted once after successful lazy initialization. */
 static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
 {
@@ -883,6 +916,7 @@ static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
              p->plan.src_zerocopy ? "zero-copy" : "copy",
              p->plan.col_tiled ? "tiled+copy" : (p->plan.dst_zerocopy ? "zero-copy" : "copy"),
              tmp_bytes >> 20);
+    log_zimg_pinning(log_obj, p);
 }
 
 /*

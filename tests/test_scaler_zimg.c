@@ -33,6 +33,7 @@
 #include "../src/threading.h"
 
 #include <errno.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <sys/resource.h>
@@ -87,6 +88,118 @@ int __wrap_zimg_filter_graph_process(const zimg_filter_graph *graph,
 static void zt_process_fail(int on)
 {
     atomic_store_explicit(&g_process_fail, on, memory_order_relaxed);
+}
+
+enum zt_topology_mode {
+    ZT_TOPOLOGY_REAL,
+    ZT_TOPOLOGY_FOUR_CPUS,
+    ZT_TOPOLOGY_UNAVAILABLE,
+};
+
+static atomic_int g_topology_mode;
+static atomic_int g_pin_success_limit = ATOMIC_VAR_INIT(-1);
+static atomic_int g_pin_call_count;
+static atomic_int g_pin_log_count;
+static char g_pin_log[256];
+
+#if UP_HAVE_CPU_AFFINITY
+static atomic_int g_cpu_alloc_success_limit = ATOMIC_VAR_INIT(-1);
+static atomic_int g_cpu_alloc_call_count;
+
+cpu_set_t *__real___sched_cpualloc(size_t count);
+cpu_set_t *__wrap___sched_cpualloc(size_t count)
+{
+    int limit = atomic_load_explicit(&g_cpu_alloc_success_limit,
+                                     memory_order_relaxed);
+    int call = atomic_fetch_add_explicit(&g_cpu_alloc_call_count, 1,
+                                         memory_order_relaxed);
+    if (limit >= 0 && call >= limit) return NULL;
+    return __real___sched_cpualloc(count);
+}
+
+int __real_sched_getaffinity(pid_t pid, size_t size, cpu_set_t *set);
+int __wrap_sched_getaffinity(pid_t pid, size_t size, cpu_set_t *set)
+{
+    int mode = atomic_load_explicit(&g_topology_mode, memory_order_relaxed);
+    if (mode == ZT_TOPOLOGY_REAL)
+        return __real_sched_getaffinity(pid, size, set);
+    if (mode == ZT_TOPOLOGY_UNAVAILABLE) {
+        errno = EINVAL;
+        return -1;
+    }
+    CPU_ZERO_S(size, set);
+    for (int cpu = 0; cpu < 4; cpu++) CPU_SET_S((size_t)cpu, size, set);
+    return 0;
+}
+#endif
+
+long __real_sysconf(int name);
+long __wrap_sysconf(int name)
+{
+    if (name == _SC_NPROCESSORS_ONLN &&
+        atomic_load_explicit(&g_topology_mode, memory_order_relaxed)
+            != ZT_TOPOLOGY_REAL)
+        return 4;
+    return __real_sysconf(name);
+}
+
+#if UP_HAVE_CPU_AFFINITY
+int __real_pthread_setaffinity_np(pthread_t thread, size_t size,
+                                  const cpu_set_t *set);
+int __wrap_pthread_setaffinity_np(pthread_t thread, size_t size,
+                                  const cpu_set_t *set)
+{
+    int limit = atomic_load_explicit(&g_pin_success_limit,
+                                     memory_order_relaxed);
+    if (limit < 0) return __real_pthread_setaffinity_np(thread, size, set);
+    int call = atomic_fetch_add_explicit(&g_pin_call_count, 1,
+                                         memory_order_relaxed);
+    return call < limit ? 0 : EPERM;
+}
+#endif
+
+void __wrap_vlc_Log(vlc_object_t *obj, int prio, const char *module,
+                    const char *file, unsigned line, const char *func,
+                    const char *format, ...)
+{
+    (void)obj; (void)prio; (void)module; (void)file; (void)line; (void)func;
+    char rendered[sizeof g_pin_log];
+    va_list ap;
+    va_start(ap, format);
+    (void)vsnprintf(rendered, sizeof rendered, format, ap);
+    va_end(ap);
+    if (strstr(rendered, "CPU pinning") == NULL) return;
+    (void)snprintf(g_pin_log, sizeof g_pin_log, "%s", rendered);
+    atomic_fetch_add_explicit(&g_pin_log_count, 1, memory_order_relaxed);
+}
+
+static void zt_pin_scenario(enum zt_topology_mode topology, int successes,
+                            int cpu_alloc_successes)
+{
+    g_pin_log[0] = '\0';
+    atomic_store_explicit(&g_pin_call_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_pin_log_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_pin_success_limit, successes,
+                          memory_order_relaxed);
+    atomic_store_explicit(&g_topology_mode, topology, memory_order_relaxed);
+#if UP_HAVE_CPU_AFFINITY
+    atomic_store_explicit(&g_cpu_alloc_call_count, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_cpu_alloc_success_limit, cpu_alloc_successes,
+                          memory_order_relaxed);
+#else
+    (void)cpu_alloc_successes;
+#endif
+}
+
+static void zt_pin_scenario_reset(void)
+{
+    atomic_store_explicit(&g_topology_mode, ZT_TOPOLOGY_REAL,
+                          memory_order_relaxed);
+    atomic_store_explicit(&g_pin_success_limit, -1, memory_order_relaxed);
+#if UP_HAVE_CPU_AFFINITY
+    atomic_store_explicit(&g_cpu_alloc_success_limit, -1,
+                          memory_order_relaxed);
+#endif
 }
 
 #include "test_harness.h"
@@ -920,6 +1033,76 @@ static int run_zimg_pinned(const struct zcfg *c, uint32_t seed, zt_pic_t *out)
     return rc;
 }
 
+static int run_zimg_pin_diagnostic(int threads)
+{
+    const struct zcfg *c = &CFGS[1];
+    zt_pic_t src = { 0 };
+    zt_pic_t dst = { 0 };
+    vlc_object_t log_obj = { 0 };
+    int rc = -2;
+    if (zt_pic_alloc(&src, c->chroma, c->sw, c->sh) != 0) goto out;
+    if (zt_pic_alloc(&dst, c->chroma, c->dw, c->dh) != 0) goto out;
+    zt_pic_fill(&src, 0xAFF1u);
+    zt_pic_memset(&dst, 0x00);
+
+    scaler_ctx_t ctx;
+    zt_ctx_init(&ctx, c->chroma, c->sw, c->sh, c->dw, c->dh, threads, 0);
+    ctx.pin_cpus = 1;
+    ctx.log_obj = &log_obj;
+    if (ctx.backend->open(&ctx) != 0) goto out;
+    rc = ctx.backend->process(&ctx, &src.pic, &dst.pic);
+    ctx.backend->close(&ctx);
+out:
+    zt_pic_free(&src);
+    zt_pic_free(&dst);
+    return rc;
+}
+
+static void test_pin_diagnostics(void)
+{
+    static const struct {
+        int threads;
+        enum zt_topology_mode topology;
+        int successes;
+        int cpu_alloc_successes;
+        int calls;
+        const char *message;
+    } CASES[] = {
+        { 1, ZT_TOPOLOGY_FOUR_CPUS, 0, -1, 0,
+          "zimg: CPU pinning requested but not applicable; worker runs "
+          "inline on caller thread" },
+        { 4, ZT_TOPOLOGY_UNAVAILABLE, 0, -1, 0,
+          "zimg: CPU pinning requested but unavailable; no usable CPU "
+          "affinity mask (4 scheduler-managed pthread workers)" },
+#if UP_HAVE_CPU_AFFINITY
+        { 4, ZT_TOPOLOGY_FOUR_CPUS, 2, -1, 4,
+          "zimg: CPU pinning applied to 2/4 pthread workers "
+          "(2 scheduler-managed)" },
+        { 4, ZT_TOPOLOGY_FOUR_CPUS, 4, 1, 0,
+          "zimg: CPU pinning applied to 0/4 pthread workers "
+          "(4 scheduler-managed)" },
+        { 4, ZT_TOPOLOGY_FOUR_CPUS, 4, -1, 4, NULL },
+#endif
+    };
+
+    BEGIN("CPU pinning reports inline, unavailable, and partial outcomes");
+    for (size_t i = 0; i < sizeof CASES / sizeof *CASES; i++) {
+        zt_pin_scenario(CASES[i].topology, CASES[i].successes,
+                        CASES[i].cpu_alloc_successes);
+        CHECK(run_zimg_pin_diagnostic(CASES[i].threads) == SCALER_PROCESS_OK);
+        CHECK(atomic_load_explicit(&g_pin_call_count, memory_order_relaxed)
+              == CASES[i].calls);
+        int logs = atomic_load_explicit(&g_pin_log_count,
+                                        memory_order_relaxed);
+        CHECK(logs == (CASES[i].message != NULL));
+        CHECK(CASES[i].message != NULL
+              ? strcmp(g_pin_log, CASES[i].message) == 0
+              : g_pin_log[0] == '\0');
+        zt_pin_scenario_reset();
+    }
+    END();
+}
+
 /* SCAL-4: pinning is an optimization only — output must be byte-identical to
  * the unpinned path, and the pin/spawn/teardown must be crash- and race-free
  * (this case is what the TSan harness exercises for the affinity code). */
@@ -1065,6 +1248,7 @@ int main(void)
     test_extreme_ratio_no_crash();
     test_construction_pthread_fail();
     test_barrier_failure_drains_and_sticks();
+    test_pin_diagnostics();
     test_pin_cpus_matches();
     test_tiling_matches_untiled();
     test_process_failure_emits_nothing();

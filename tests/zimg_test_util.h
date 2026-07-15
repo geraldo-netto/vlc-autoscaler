@@ -2,11 +2,11 @@
 /*****************************************************************************
  * zimg_test_util.h — construct bare picture_t objects for the zimg backend
  *****************************************************************************
- * The zimg backend (src/scaler_zimg.c) is VLC-typed but does NOT touch VLC's
- * picture pool, refcounting, or logging at runtime (it only reads/writes
- * p[k].p_pixels / i_pitch and skips all msg_* when log_obj == NULL). That
- * lets a test/bench build its own plain picture_t with malloc'd planes and
- * drive backend->open()/process()/close() directly — no running VLC.
+ * The zimg backend (src/scaler_zimg.c) is VLC-typed but does not touch VLC's
+ * picture pool or refcounting at runtime. A NULL log_obj skips messages, and
+ * the diagnostic tests wrap vlc_Log. That lets a test/bench build its own
+ * plain picture_t with malloc'd planes and drive backend->open()/process()/
+ * close() directly — no running VLC.
  *
  * Shared by tests/test_scaler_zimg.c and tests/bench_scaler_zimg.c. Requires
  * VLC + libzimg headers (built only when HAVE_ZIMG).
@@ -27,8 +27,7 @@
 
 extern const scaler_backend_t scaler_backend_zimg_impl;
 
-/* msg_* macros reference this symbol; the plugin normally provides it. The
- * test never actually logs (log_obj is NULL), but the reference must link. */
+/* msg_* macros reference this symbol; the plugin normally provides it. */
 #ifdef ZIMG_TEST_DEFINE_MODULE_NAME
 const char vlc_module_name[] = "test_scaler_zimg";
 #endif

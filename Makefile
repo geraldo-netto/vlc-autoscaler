@@ -640,7 +640,9 @@ ZIMG_H_LIBS    := $(VLC_LIBS) $(ZIMG_LIBS) -lpthread
 # test_scaler_zimg defines __wrap_aligned_alloc (MEM-1 OOM fault injection)
 # on top of the barrier wraps; only links of that file may use this.
 ZIMG_TEST_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc \
-    -Wl,--wrap=zimg_filter_graph_process
+    -Wl,--wrap=zimg_filter_graph_process -Wl,--wrap=sched_getaffinity \
+    -Wl,--wrap=sysconf -Wl,--wrap=pthread_setaffinity_np \
+    -Wl,--wrap=__sched_cpualloc -Wl,--wrap=vlc_Log
 
 # scaler_zimg.c compiled once per sanitizer/optimization mode; header
 # dependencies come from -MMD (the coverage-zimg recipe rebuilds from
