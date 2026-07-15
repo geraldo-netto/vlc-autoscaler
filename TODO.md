@@ -212,7 +212,6 @@ picks so a later audit does not revive it without new evidence.
 
 | id | status | effort | description | why not now |
 |---|---|---|---|---|
-| PERF-P1b | parked | S | Add a regression benchmark threshold for the confirmed worst halo-snapshot case without asserting noisy absolute wall time. | Blocked on PERF-P1a. Compare in-place against same-shape out-of-place medians; run as a benchmark, not a correctness gate. |
 | PERF-P1c | parked | M | If PERF-P1a confirms a bottleneck, prototype worker-owned halo copies with a snapshot-ready phase before any worker writes in place. | Do not fold this into the existing go gate: readiness must prevent neighbour overwrite. Require unit fault-injection for every new wait failure, in-place byte-equivalence regression tests, ASan/UBSan/TSan stress, and `fuzz_usm_variants` coverage. |
 | PERF-P2a | parked | S | Benchmark SSE2, AVX2, and AVX-512 USM variants independently on representative widths, worker counts, and amounts (`src/usm_pool_dispatch.c:87-121`). | Still applicable at HEAD, but no host regression is known. Reuse variant entry points and record CPU model/governor; do not alter selection without evidence. |
 | PERF-P2b | parked | S | Define a deterministic max-ISA selection policy only if PERF-P2a finds a repeatable wider-ISA regression. | The cheapest safe policy is a load-time maximum variant override, leaving current widest-supported selection as default; avoid an adaptive runtime tuner. |
@@ -251,6 +250,9 @@ picks so a later audit does not revive it without new evidence.
 Recorded so future full-project rescans do not repeatedly promote the same
 non-findings:
 
+- Adding a CI threshold for in-place USM halo snapshots: the paired alias-mode
+  benchmark found no consistent in-place regression on the measured host, and
+  cache/write differences prevent the comparison from isolating copy cost.
 - Unifying `worker_copy_in_stripe` / `worker_copy_out_stripe` /
   `worker_copy_out_tile`: their direction and offset invariants differ; a generic
   helper would require a wide parameter surface.
