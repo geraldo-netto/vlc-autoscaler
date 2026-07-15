@@ -109,7 +109,7 @@ void up_usm_pool_destroy(usm_pool_t *pool);
  * the first apply(); afterwards it also reflects any partial-spawn
  * shrink from lazy init. Returns 0 for a NULL pool. Callers logging
  * pool parallelism should query this after the first apply(), not echo
- * the thread count they asked for.
+ * the worker count they requested.
  */
 int up_usm_pool_effective_threads(const usm_pool_t *pool);
 

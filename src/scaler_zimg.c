@@ -870,12 +870,13 @@ static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
     size_t tmp_bytes = 0;
     const stripe_worker_t *workers =
         (const stripe_worker_t *)up_worker_pool_slot(&p->pool, 0);
-    for (int i = 0; i < up_worker_pool_count(&p->pool); i++)
+    const int worker_count = up_worker_pool_count(&p->pool);
+    for (int i = 0; i < worker_count; i++)
         tmp_bytes += workers[i].tmp_size;
     msg_Info(log_obj,
-             "zimg: %d worker thread%s (grid %dx%d), %dx%d -> %dx%d, "
+             "zimg: %d worker%s (grid %dx%d), %dx%d -> %dx%d, "
              "scratch %zu MB (src %s, dst %s), graph-tmp %zu MB",
-             p->plan.n_threads, p->plan.n_threads == 1 ? "" : "s",
+             worker_count, worker_count == 1 ? "" : "s",
              p->plan.n_rows, p->plan.n_cols,
              p->src_w, p->src_h, p->dst_w, p->dst_h,
              src_mb + dst_mb,

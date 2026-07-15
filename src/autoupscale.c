@@ -373,10 +373,10 @@ struct filter_sys_t
      * var_SetInteger export and the paired var_Destroy at Close(). */
     int                stats_vars_ok;
 
-    /* OBS-1: one-shot log of the USM pool's real worker count, deferred
-     * to after the first apply() because lazy init may shrink it (the
-     * engagement log's threads= reflects neither pool). */
-    int                usm_threads_logged;
+    /* One-shot log of the USM pool's real worker count, deferred to after
+     * the first apply() because lazy init may shrink it (the engagement
+     * log's threads= reflects neither pool). */
+    int                usm_workers_logged;
 };
 
 /*****************************************************************************
@@ -988,12 +988,14 @@ static int ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
         DisableUsm( p_sys );
         return status;
     }
-    if( !p_sys->usm_threads_logged )
+    if( !p_sys->usm_workers_logged )
     {
-        p_sys->usm_threads_logged = 1;
+        p_sys->usm_workers_logged = 1;
+        const int workers =
+            up_usm_pool_effective_threads( p_sys->usm_pool );
         msg_Info( p_filter,
-                  "AutoUpscale: USM pool running %d worker thread(s)",
-                  up_usm_pool_effective_threads( p_sys->usm_pool ) );
+                  "AutoUpscale: USM pool running %d worker%s",
+                  workers, workers == 1 ? "" : "s" );
     }
     return UP_USM_APPLY_OK;
 }
