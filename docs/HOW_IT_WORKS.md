@@ -941,8 +941,9 @@ resolutions, API boundaries, and prior regressions.
 - `tests/corpus/` feeds `fuzz_upscale_logic` values parsed as `<iiiiII>`.
 - `tests/corpus_frame_shape/` feeds `fuzz_frame_shape` values parsed as
   `<IIiiii>`.
-- `tests/corpus_scaler_chroma/` feeds `fuzz_scaler_chroma` values parsed as
-  `<4s B 3x>`.
+- `tests/corpus_scaler_chroma/` feeds `fuzz_scaler_chroma` legacy mapping seeds
+  parsed as `<4sB3x>` and structured crop-window seeds parsed as little-endian
+  `<4sBHHII>` (fourcc, NULL-mask byte, dimensions-minus-one, and offsets).
 - `tests/corpus_usm_variants/` feeds `fuzz_usm_variants` values parsed as
   `<HHhBB>`.
 

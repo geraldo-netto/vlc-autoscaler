@@ -167,7 +167,7 @@ jobs:
         run: |
           mkdir -p corpus_scaler_chroma
           if [ -d tests/corpus_scaler_chroma ]; then cp tests/corpus_scaler_chroma/* corpus_scaler_chroma/ 2>/dev/null || true; fi
-          build/fuzz_scaler_chroma corpus_scaler_chroma -max_total_time=60 -max_len=8 -print_final_stats=1
+          build/fuzz_scaler_chroma corpus_scaler_chroma -max_total_time=60 -max_len=17 -print_final_stats=1
 
       - name: Run libFuzzer (content_probe)
         run: |
