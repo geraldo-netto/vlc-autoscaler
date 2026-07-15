@@ -387,6 +387,9 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/tes
 	    echo "=== usm_pool_dispatch (runtime SIMD selection) ==="; \
 	    $(BUILD)/test_usm_pool_dispatch; \
 	 else echo "=== usm_pool_dispatch (skipped: non-x86 host) ==="; fi
+	@echo
+	@echo "=== install action ==="
+	@sh tests/test_install_action.sh
 
 $(BUILD)/test_usm_pool_dispatch: tests/test_usm_pool_dispatch.c src/usm_pool_dispatch.c src/usm_pool_variants.h src/usm_pool.h src/cpu_level.h tests/test_harness.h | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)

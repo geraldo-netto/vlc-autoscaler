@@ -23,12 +23,29 @@ ACTION="${ACTION_DIR}/vlc-autoupscale.nemo_action"
 
 SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
-# SH-1: Desktop-Entry and Nemo-Action Exec values are parsed with shell-like
-# word splitting, so a $HOME containing a space ("/home/j smith") would make the
-# launcher try to exec /home/j and the entries would silently do nothing. Quote
-# the program path per the Desktop Entry spec: inside double quotes, the
-# characters \ " ` $ must each be escaped with a backslash.
-EXEC_PATH="\"$(printf '%s' "$WRAPPER" | sed 's/[\\"`$]/\\&/g')\""
+desktop_exec_quote() {
+    cr=$(printf '\r')
+    case $1 in
+        *'
+'*|*"$cr"*)
+            echo "error: desktop Exec paths cannot contain newlines" >&2
+            exit 1
+            ;;
+    esac
+    escaped=$(printf '%s' "$1" | sed \
+        -e 's/\\/\\\\\\\\/g' \
+        -e 's/"/\\\\"/g' \
+        -e 's/`/\\\\`/g' \
+        -e 's/[$]/\\\\$/g' \
+        -e 's/%/%%/g')
+    printf '"%s"' "$escaped"
+}
+
+# Desktop Entry string decoding runs before Exec command-line parsing. Emit
+# both layers: doubled backslashes survive the general-string pass, backslash
+# escapes protect the command parser inside quotes, and %% prevents field-code
+# expansion inside the literal wrapper path.
+EXEC_PATH=$(desktop_exec_quote "$WRAPPER")
 
 VIDEO_MIMES="video/mp4;video/x-matroska;video/x-msvideo;video/quicktime;video/webm;video/mpeg;video/x-ms-wmv;video/x-flv;video/mp2t;"
 VIDEO_EXTS="mp4;mkv;avi;mov;webm;m4v;ts;mpg;mpeg;wmv;flv;"
@@ -60,6 +77,8 @@ Categories=AudioVideo;Player;Video;
 MimeType=${VIDEO_MIMES}
 StartupNotify=true
 EOF
+    command -v desktop-file-validate >/dev/null 2>&1 &&
+        desktop-file-validate "$DESKTOP"
     update-desktop-database "$APP_DIR" 2>/dev/null || true
 }
 

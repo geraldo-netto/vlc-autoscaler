@@ -126,7 +126,6 @@ picture pool.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| PORT-2 | open | S | The generated Desktop Entry/Nemo `Exec` value applies only one quoting pass (`scripts/install-vlc-autoupscale-action.sh:26-32,47-56,66-76`). | Desktop Entry general-string decoding occurs before command-line quoting, and `%` also introduces field codes. Valid paths containing backslash, `%`, `$`, or related reserved characters can resolve to the wrong command or an invalid entry. Implement both escaping layers, double literal `%`, and validate the generated desktop file. |
 
 ## error handling
 
