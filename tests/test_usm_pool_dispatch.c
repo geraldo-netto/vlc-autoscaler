@@ -15,13 +15,19 @@
 #include "../src/usm_pool.h"
 #include "../src/usm_pool_variants.h"
 
+struct usm_pool_s {
+    uint8_t sentinel;
+};
+
+static usm_pool_t stub_pool;
+
 /* Define the nine suffixed entry points the dispatcher binds to. They are
  * inert: the tests check selection and forwarding, never the kernels. */
 #define DEFINE_STUB_VARIANT(name)                                             \
     usm_pool_t *up_usm_pool_create_##name(int n_threads, int width,           \
                                           int height, int stripe_min_rows)    \
     { (void)n_threads; (void)width; (void)height; (void)stripe_min_rows;      \
-      return (usm_pool_t *)(uintptr_t)0x1; }                                  \
+      return &stub_pool; }                                                    \
     void up_usm_pool_destroy_##name(usm_pool_t *pool) { (void)pool; }         \
     int up_usm_pool_apply_##name(usm_pool_t *pool, uint8_t *dst,              \
                                  int dst_stride, const uint8_t *src,          \
