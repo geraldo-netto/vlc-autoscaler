@@ -126,7 +126,6 @@ picture pool.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| PORT-1 | open | M | The GCC < 12 / Clang < 17 fallback in `src/cpu_level.h:25-48` treats AVX2+FMA+BMI+BMI2 as full x86-64-v3/v4 support, omitting the full inherited v2 level and required features such as F16C, LZCNT, and MOVBE. Full-level objects are selected at `Makefile:195-208` and the whole plugin is gated at `src/autoupscale.c:687-700`. | A masked VM CPU can pass the fallback and then execute an unsupported instruction. Require a compiler with full-level builtins for multiversion builds or implement complete CPUID/XGETBV level checks. |
 | PORT-2 | open | S | The generated Desktop Entry/Nemo `Exec` value applies only one quoting pass (`scripts/install-vlc-autoupscale-action.sh:26-32,47-56,66-76`). | Desktop Entry general-string decoding occurs before command-line quoting, and `%` also introduces field codes. Valid paths containing backslash, `%`, `$`, or related reserved characters can resolve to the wrong command or an invalid entry. Implement both escaping layers, double literal `%`, and validate the generated desktop file. |
 
 ## error handling

@@ -73,9 +73,73 @@ static void test_public_api_forwards(void)
     END();
 }
 
+static up_cpu_x86_features_t full_v4_features(void)
+{
+    return (up_cpu_x86_features_t) {
+        .max_basic = 7,
+        .max_ext = 0x80000001u,
+        .leaf1_ecx = UP_X86_1_ECX_SSE3 | UP_X86_1_ECX_SSSE3
+            | UP_X86_1_ECX_FMA | UP_X86_1_ECX_CX16
+            | UP_X86_1_ECX_SSE41 | UP_X86_1_ECX_SSE42
+            | UP_X86_1_ECX_MOVBE | UP_X86_1_ECX_POPCNT
+            | UP_X86_1_ECX_OSXSAVE | UP_X86_1_ECX_AVX
+            | UP_X86_1_ECX_F16C,
+        .leaf1_edx = UP_X86_1_EDX_SSE2,
+        .leaf7_ebx = UP_X86_7_EBX_BMI | UP_X86_7_EBX_AVX2
+            | UP_X86_7_EBX_BMI2 | UP_X86_7_EBX_AVX512F
+            | UP_X86_7_EBX_AVX512DQ | UP_X86_7_EBX_AVX512CD
+            | UP_X86_7_EBX_AVX512BW | UP_X86_7_EBX_AVX512VL,
+        .ext1_ecx = UP_X86_EXT1_ECX_LAHF | UP_X86_EXT1_ECX_LZCNT,
+        .xcr0 = UINT64_C(0xe6),
+    };
+}
+
+static void test_cpu_level_fallback_requires_complete_v3(void)
+{
+    BEGIN("cpu-level fallback requires complete inherited v2/v3 features");
+    up_cpu_x86_features_t f = full_v4_features();
+    CHECK(up_cpu_features_support_v3(&f));
+
+    f = full_v4_features();
+    f.leaf1_ecx &= ~UP_X86_1_ECX_F16C;
+    CHECK(!up_cpu_features_support_v3(&f));
+
+    f = full_v4_features();
+    f.leaf1_ecx &= ~UP_X86_1_ECX_MOVBE;
+    CHECK(!up_cpu_features_support_v3(&f));
+
+    f = full_v4_features();
+    f.ext1_ecx &= ~UP_X86_EXT1_ECX_LZCNT;
+    CHECK(!up_cpu_features_support_v3(&f));
+
+    f = full_v4_features();
+    f.ext1_ecx &= ~UP_X86_EXT1_ECX_LAHF;
+    CHECK(!up_cpu_features_support_v3(&f));
+    END();
+}
+
+static void test_cpu_level_fallback_requires_os_state(void)
+{
+    BEGIN("cpu-level fallback requires AVX/AVX-512 OS save state");
+    up_cpu_x86_features_t f = full_v4_features();
+    f.xcr0 = UINT64_C(0x2);
+    CHECK(!up_cpu_features_support_v3(&f));
+
+    f = full_v4_features();
+    f.xcr0 = UINT64_C(0x6);
+    CHECK(up_cpu_features_support_v3(&f));
+    CHECK(!up_cpu_features_support_v4(&f));
+
+    f = full_v4_features();
+    CHECK(up_cpu_features_support_v4(&f));
+    END();
+}
+
 int main(void)
 {
     test_select_ops_prefers_highest_isa();
     test_public_api_forwards();
+    test_cpu_level_fallback_requires_complete_v3();
+    test_cpu_level_fallback_requires_os_state();
     return test_harness_report();
 }
