@@ -6,6 +6,7 @@
 #include "../src/threading.h"
 
 #include <errno.h>
+#include <stdbool.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,7 +18,9 @@
 /* Fault injection (linked with -Wl,--wrap=pthread_cond_init): make the next
  * pthread_cond_init fail once so up_pool_gate_init's mutex-cleanup path runs. */
 static atomic_int g_fail_cond_init_after;
+static atomic_int g_fail_pthread_create_after;
 static atomic_int g_monotonic_cond_init;
+static atomic_bool g_fail_monotonic_clock;
 static atomic_bool g_fake_monotonic_clock;
 static struct timespec g_fake_monotonic_time;
 extern int __real_pthread_cond_init(pthread_cond_t *,
@@ -42,12 +45,32 @@ int __real_clock_gettime(clockid_t clock_id, struct timespec *time);
 int __wrap_clock_gettime(clockid_t clock_id, struct timespec *time)
 {
     if (clock_id == CLOCK_MONOTONIC
+        && atomic_exchange_explicit(&g_fail_monotonic_clock, false,
+                                    memory_order_acquire)) {
+        errno = EIO;
+        return -1;
+    }
+    if (clock_id == CLOCK_MONOTONIC
         && atomic_exchange_explicit(&g_fake_monotonic_clock, false,
                                     memory_order_acquire)) {
         *time = g_fake_monotonic_time;
         return 0;
     }
     return __real_clock_gettime(clock_id, time);
+}
+
+int __real_pthread_create(pthread_t *, const pthread_attr_t *,
+                          void *(*)(void *), void *);
+int __wrap_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
+                          void *(*start)(void *), void *arg)
+{
+    const int remaining = atomic_load_explicit(
+        &g_fail_pthread_create_after, memory_order_relaxed);
+    if (remaining > 0
+        && atomic_fetch_sub_explicit(&g_fail_pthread_create_after, 1,
+                                     memory_order_relaxed) == 1)
+        return EAGAIN;
+    return __real_pthread_create(thread, attr, start, arg);
 }
 
 /*
@@ -357,6 +380,7 @@ typedef struct {
     uint64_t        seen_gen;
     atomic_int      runs;
     pthread_t       thread;
+    bool            started;
 } gate_worker_t;
 
 static void *gate_worker_main(void *arg)
@@ -369,38 +393,159 @@ static void *gate_worker_main(void *arg)
     return NULL;
 }
 
-static void gate_worker_start(gate_worker_t *w, up_pool_gate_t *gate)
+static int gate_init_required(up_pool_gate_t *gate)
+{
+    const int rc = up_pool_gate_init(gate);
+    CHECK_EQ(rc, 0);
+    return rc;
+}
+
+static int gate_arm_required(up_pool_gate_t *gate, int pending)
+{
+    const int lock_rc = up_pool_gate_lock(gate);
+    CHECK_EQ(lock_rc, 0);
+    if (lock_rc != 0) return -1;
+
+    up_pool_gate_arm_locked(gate, pending);
+    const int unlock_rc = up_pool_gate_unlock_broadcast(gate);
+    CHECK_EQ(unlock_rc, 0);
+    return unlock_rc;
+}
+
+static int gate_dispatch_required(up_pool_gate_t *gate, int pending)
+{
+    if (gate_arm_required(gate, pending) != 0) return -1;
+    const int wait_rc = up_pool_gate_wait_all(gate);
+    CHECK_EQ(wait_rc, 0);
+    return wait_rc;
+}
+
+static void gate_worker_prepare(gate_worker_t *w, up_pool_gate_t *gate)
 {
     w->gate        = gate;
     w->seen_gen    = gate->generation;
+    w->started     = false;
     atomic_init(&w->runs, 0);
-    CHECK_EQ(pthread_create(&w->thread, NULL, gate_worker_main, w), 0);
+}
+
+static int gate_worker_launch(gate_worker_t *w)
+{
+    const int rc = pthread_create(&w->thread, NULL, gate_worker_main, w);
+    if (rc == 0) w->started = true;
+    return rc;
+}
+
+static int gate_worker_start(gate_worker_t *w, up_pool_gate_t *gate)
+{
+    gate_worker_prepare(w, gate);
+    return gate_worker_launch(w);
+}
+
+static int gate_workers_start(gate_worker_t *workers, int count,
+                              up_pool_gate_t *gate, int *create_rc)
+{
+    int started = 0;
+    *create_rc = 0;
+    while (started < count) {
+        *create_rc = gate_worker_start(&workers[started], gate);
+        if (*create_rc != 0) break;
+        started++;
+    }
+    return started;
+}
+
+static int join_started_thread(pthread_t thread, bool *started)
+{
+    if (!*started) return 0;
+    const int rc = pthread_join(thread, NULL);
+    CHECK_EQ(rc, 0);
+    if (rc == 0) *started = false;
+    return rc;
+}
+
+static int cancel_started_thread(pthread_t thread, bool started)
+{
+    if (!started) return 0;
+    const int rc = pthread_cancel(thread);
+    CHECK_EQ(rc, 0);
+    return rc;
+}
+
+static int gate_workers_cancel(gate_worker_t *workers, int count)
+{
+    int result = 0;
+    for (int i = 0; i < count; i++)
+        if (cancel_started_thread(workers[i].thread, workers[i].started) != 0)
+            result = -1;
+    return result;
+}
+
+static int gate_workers_join(gate_worker_t *workers, int count)
+{
+    int result = 0;
+    for (int i = 0; i < count; i++)
+        if (join_started_thread(workers[i].thread, &workers[i].started) != 0)
+            result = -1;
+    return result;
+}
+
+static int gate_workers_stop(gate_worker_t *workers, int count,
+                             up_pool_gate_t *gate)
+{
+    const int exit_rc = up_pool_gate_request_exit(gate);
+    CHECK_EQ(exit_rc, 0);
+    if (exit_rc != 0 && gate_workers_cancel(workers, count) != 0) return -1;
+    return gate_workers_join(workers, count);
+}
+
+static int mutex_roundtrip(pthread_mutex_t *mutex)
+{
+    const int lock_rc = pthread_mutex_trylock(mutex);
+    CHECK_EQ(lock_rc, 0);
+    if (lock_rc != 0) return -1;
+    const int unlock_rc = pthread_mutex_unlock(mutex);
+    CHECK_EQ(unlock_rc, 0);
+    return unlock_rc;
 }
 
 static void test_pool_gate_dispatch_cycles(void)
 {
     BEGIN("pool gate: N workers x M dispatches, then clean exit");
     enum { N = 4, M = 25 };
-    up_pool_gate_t gate;
-    CHECK_EQ(up_pool_gate_init(&gate), 0);
+    up_pool_gate_t gate = {0};
+    if (gate_init_required(&gate) != 0) {
+        END();
+        return;
+    }
     CHECK_EQ(up_pool_gate_ready(&gate), 1);
 
-    static gate_worker_t ws[N];
-    for (int i = 0; i < N; i++)
-        gate_worker_start(&ws[i], &gate);
+    gate_worker_t workers[N] = {0};
+    int create_rc = 0;
+    const int started = gate_workers_start(workers, N, &gate, &create_rc);
+    CHECK_EQ(started, N);
+    CHECK_EQ(create_rc, 0);
+    if (started != N) {
+        if (gate_workers_stop(workers, started, &gate) == 0)
+            up_pool_gate_destroy(&gate);
+        END();
+        return;
+    }
 
     for (int gen = 0; gen < M; gen++) {
-        CHECK_EQ(up_pool_gate_lock(&gate), 0);
-        up_pool_gate_arm_locked(&gate, N);
-        CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
-        CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
+        if (gate_dispatch_required(&gate, N) != 0) {
+            if (gate_workers_stop(workers, N, &gate) == 0)
+                up_pool_gate_destroy(&gate);
+            END();
+            return;
+        }
     }
 
-    CHECK_EQ(up_pool_gate_request_exit(&gate), 0);
-    for (int i = 0; i < N; i++) {
-        pthread_join(ws[i].thread, NULL);
-        CHECK_EQ(atomic_load(&ws[i].runs), M);
+    if (gate_workers_stop(workers, N, &gate) != 0) {
+        END();
+        return;
     }
+    for (int i = 0; i < N; i++)
+        CHECK_EQ(atomic_load(&workers[i].runs), M);
 
     up_pool_gate_destroy(&gate);
     up_pool_gate_destroy(&gate);  /* double destroy must be a no-op */
@@ -408,18 +553,61 @@ static void test_pool_gate_dispatch_cycles(void)
     END();
 }
 
+static void test_pool_gate_partial_start_cleanup(void)
+{
+    BEGIN("pool gate: create failure joins only the successful prefix");
+    enum { N = 4, EXPECTED_STARTED = 2 };
+    up_pool_gate_t gate = {0};
+    if (gate_init_required(&gate) != 0) {
+        END();
+        return;
+    }
+
+    gate_worker_t workers[N] = {0};
+    int create_rc = 0;
+    atomic_store(&g_fail_pthread_create_after, EXPECTED_STARTED + 1);
+    const int started = gate_workers_start(workers, N, &gate, &create_rc);
+    CHECK_EQ(started, EXPECTED_STARTED);
+    CHECK_EQ(create_rc, EAGAIN);
+    CHECK_EQ(atomic_load(&g_fail_pthread_create_after), 0);
+    atomic_store(&g_fail_pthread_create_after, 0);
+
+    if (gate_workers_stop(workers, started, &gate) == 0) {
+        for (int i = 0; i < N; i++) CHECK_EQ(workers[i].started, false);
+        up_pool_gate_destroy(&gate);
+    }
+    END();
+}
+
 static void test_pool_gate_cancel_releases_wait_lock(void)
 {
     BEGIN("pool gate: cancelling a waiter releases the gate lock");
-    up_pool_gate_t gate;
-    CHECK_EQ(up_pool_gate_init(&gate), 0);
+    up_pool_gate_t gate = {0};
+    if (gate_init_required(&gate) != 0) {
+        END();
+        return;
+    }
 
-    static gate_worker_t w;
-    gate_worker_start(&w, &gate);
-    CHECK_EQ(pthread_cancel(w.thread), 0);
-    CHECK_EQ(pthread_join(w.thread, NULL), 0);
-    CHECK_EQ(pthread_mutex_trylock(&gate.lock), 0);
-    CHECK_EQ(pthread_mutex_unlock(&gate.lock), 0);
+    gate_worker_t worker = {0};
+    const int create_rc = gate_worker_start(&worker, &gate);
+    CHECK_EQ(create_rc, 0);
+    if (create_rc != 0) {
+        up_pool_gate_destroy(&gate);
+        END();
+        return;
+    }
+    const int cancel_rc = cancel_started_thread(worker.thread, worker.started);
+    if (cancel_rc != 0) {
+        if (gate_workers_stop(&worker, 1, &gate) == 0)
+            up_pool_gate_destroy(&gate);
+        END();
+        return;
+    }
+    if (join_started_thread(worker.thread, &worker.started) != 0
+        || mutex_roundtrip(&gate.lock) != 0) {
+        END();
+        return;
+    }
 
     up_pool_gate_destroy(&gate);
     END();
@@ -434,23 +622,38 @@ static void *gate_completion_wait_main(void *arg)
 static void test_pool_gate_cancel_releases_done_lock(void)
 {
     BEGIN("pool gate: cancelling completion wait releases its lock");
-    up_pool_gate_t gate;
-    CHECK_EQ(up_pool_gate_init(&gate), 0);
-    CHECK_EQ(up_pool_gate_lock(&gate), 0);
-    up_pool_gate_arm_locked(&gate, 1);
-    CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
+    up_pool_gate_t gate = {0};
+    if (gate_init_required(&gate) != 0) {
+        END();
+        return;
+    }
+    if (gate_arm_required(&gate, 1) != 0) {
+        END();
+        return;
+    }
 
     atomic_store(&g_done_timedwait_seen, 0);
-    pthread_t waiter;
-    CHECK_EQ(pthread_create(&waiter, NULL, gate_completion_wait_main, &gate), 0);
+    pthread_t waiter = {0};
+    bool waiter_started = false;
+    const int create_rc = pthread_create(&waiter, NULL,
+                                         gate_completion_wait_main, &gate);
+    CHECK_EQ(create_rc, 0);
+    if (create_rc != 0) {
+        up_pool_gate_destroy(&gate);
+        END();
+        return;
+    }
+    waiter_started = true;
     const struct timespec tick = { .tv_sec = 0, .tv_nsec = 1000000 };
     for (int i = 0; i < 1000 && !barrier_fault_used_timed_completion_wait(); i++)
         nanosleep(&tick, NULL);
     CHECK_EQ(barrier_fault_used_timed_completion_wait(), 1);
-    CHECK_EQ(pthread_cancel(waiter), 0);
-    CHECK_EQ(pthread_join(waiter, NULL), 0);
-    CHECK_EQ(pthread_mutex_trylock(&gate.done_lock), 0);
-    CHECK_EQ(pthread_mutex_unlock(&gate.done_lock), 0);
+    (void)cancel_started_thread(waiter, waiter_started);
+    if (join_started_thread(waiter, &waiter_started) != 0
+        || mutex_roundtrip(&gate.done_lock) != 0) {
+        END();
+        return;
+    }
 
     up_pool_gate_destroy(&gate);
     END();
@@ -461,25 +664,42 @@ static void test_pool_gate_cancel_releases_done_lock(void)
 static void test_pool_gate_exit_completes_unseen(void)
 {
     BEGIN("pool gate: exit request still completes an unseen dispatch");
-    up_pool_gate_t gate;
-    CHECK_EQ(up_pool_gate_init(&gate), 0);
+    up_pool_gate_t gate = {0};
+    if (gate_init_required(&gate) != 0) {
+        END();
+        return;
+    }
 
-    static gate_worker_t w;
-    w.gate     = &gate;
-    w.seen_gen = gate.generation;
-    atomic_init(&w.runs, 0);
+    gate_worker_t worker = {0};
+    gate_worker_prepare(&worker, &gate);
 
     /* Arm a dispatch AND request exit before the worker even starts: it
      * must run the unseen generation exactly once, then exit. */
-    CHECK_EQ(up_pool_gate_lock(&gate), 0);
-    up_pool_gate_arm_locked(&gate, 1);
-    CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
-    CHECK_EQ(up_pool_gate_request_exit(&gate), 0);
+    if (gate_arm_required(&gate, 1) != 0) {
+        END();
+        return;
+    }
+    const int exit_rc = up_pool_gate_request_exit(&gate);
+    CHECK_EQ(exit_rc, 0);
+    if (exit_rc != 0) {
+        END();
+        return;
+    }
 
-    CHECK_EQ(pthread_create(&w.thread, NULL, gate_worker_main, &w), 0);
-    CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
-    pthread_join(w.thread, NULL);
-    CHECK_EQ(atomic_load(&w.runs), 1);
+    const int create_rc = gate_worker_launch(&worker);
+    CHECK_EQ(create_rc, 0);
+    if (create_rc != 0) {
+        up_pool_gate_destroy(&gate);
+        END();
+        return;
+    }
+    const int wait_rc = up_pool_gate_wait_all(&gate);
+    CHECK_EQ(wait_rc, 0);
+    if (join_started_thread(worker.thread, &worker.started) != 0) {
+        END();
+        return;
+    }
+    CHECK_EQ(atomic_load(&worker.runs), 1);
 
     up_pool_gate_destroy(&gate);
     END();
@@ -488,22 +708,35 @@ static void test_pool_gate_exit_completes_unseen(void)
 static void test_pool_gate_signal_failure_reported(void)
 {
     BEGIN("pool gate: completion-signal failure breaks the dispatch");
-    up_pool_gate_t gate;
-    CHECK_EQ(up_pool_gate_init(&gate), 0);
+    up_pool_gate_t gate = {0};
+    if (gate_init_required(&gate) != 0) {
+        END();
+        return;
+    }
 
-    static gate_worker_t w;
-    gate_worker_start(&w, &gate);
+    gate_worker_t worker = {0};
+    const int create_rc = gate_worker_start(&worker, &gate);
+    CHECK_EQ(create_rc, 0);
+    if (create_rc != 0) {
+        up_pool_gate_destroy(&gate);
+        END();
+        return;
+    }
     barrier_fault_inject_next_done_signal();
-    CHECK_EQ(up_pool_gate_lock(&gate), 0);
-    up_pool_gate_arm_locked(&gate, 1);
-    CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
+    if (gate_arm_required(&gate, 1) != 0) {
+        if (gate_workers_stop(&worker, 1, &gate) == 0)
+            up_pool_gate_destroy(&gate);
+        END();
+        return;
+    }
 
     CHECK_EQ(up_pool_gate_wait_all(&gate), -1);
-    CHECK_EQ(atomic_load(&w.runs), 1);
     CHECK_EQ(barrier_fault_injection_consumed(), 1);
-
-    CHECK_EQ(up_pool_gate_request_exit(&gate), 0);
-    pthread_join(w.thread, NULL);
+    if (gate_workers_stop(&worker, 1, &gate) != 0) {
+        END();
+        return;
+    }
+    CHECK_EQ(atomic_load(&worker.runs), 1);
     up_pool_gate_destroy(&gate);
     END();
 }
@@ -546,15 +779,21 @@ static void test_pool_gate_init_cond_failure(void)
 {
     BEGIN("gate init cleans up when either condition init fails");
     for (int nth = 1; nth <= 2; nth++) {
-        up_pool_gate_t gate;
+        up_pool_gate_t gate = {0};
         atomic_store(&g_fail_cond_init_after, nth);
-        CHECK_EQ(up_pool_gate_init(&gate), -1);
+        const int failed_rc = up_pool_gate_init(&gate);
+        CHECK_EQ(failed_rc, -1);
+        if (failed_rc == 0) up_pool_gate_destroy(&gate);
         CHECK_EQ(atomic_load(&g_fail_cond_init_after), 0);
+        atomic_store(&g_fail_cond_init_after, 0);
 
         atomic_store(&g_monotonic_cond_init, 0);
-        CHECK_EQ(up_pool_gate_init(&gate), 0);
-        CHECK_EQ(atomic_load(&g_monotonic_cond_init), 1);
-        up_pool_gate_destroy(&gate);
+        const int retry_rc = up_pool_gate_init(&gate);
+        CHECK_EQ(retry_rc, 0);
+        if (retry_rc == 0) {
+            CHECK_EQ(atomic_load(&g_monotonic_cond_init), 1);
+            up_pool_gate_destroy(&gate);
+        }
     }
     END();
 }
@@ -578,8 +817,16 @@ static void fake_monotonic_time(time_t seconds, long nanoseconds)
 
 static void test_deadline_input_and_overflow_checks(void)
 {
-    BEGIN("monotonic deadline rejects invalid and overflowing inputs");
+    BEGIN("monotonic deadline reports clock, input, and overflow failures");
     struct timespec deadline;
+
+    atomic_store_explicit(&g_fail_monotonic_clock, true,
+                          memory_order_release);
+    errno = 0;
+    CHECK_EQ(up__deadline_after_ms(&deadline, 1), -1);
+    CHECK_EQ(errno, EIO);
+    CHECK_EQ(atomic_load(&g_fail_monotonic_clock), false);
+    atomic_store(&g_fail_monotonic_clock, false);
 
     errno = 0;
     CHECK_EQ(up__deadline_after_ms(NULL, 0), -1);
@@ -601,13 +848,18 @@ static void test_deadline_input_and_overflow_checks(void)
     END();
 }
 
-/* Elapsed wall-clock milliseconds since `start`. */
-static long elapsed_ms(const struct timespec *start)
+static int monotonic_now_required(struct timespec *time)
 {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return (now.tv_sec - start->tv_sec) * 1000
-         + (now.tv_nsec - start->tv_nsec) / 1000000;
+    const int rc = clock_gettime(CLOCK_MONOTONIC, time);
+    CHECK_EQ(rc, 0);
+    return rc;
+}
+
+static long elapsed_ms(const struct timespec *start,
+                       const struct timespec *end)
+{
+    return (end->tv_sec - start->tv_sec) * 1000
+         + (end->tv_nsec - start->tv_nsec) / 1000000;
 }
 
 /*
@@ -624,19 +876,33 @@ static long elapsed_ms(const struct timespec *start)
 static void test_pool_gate_wait_times_out(void)
 {
     BEGIN("pool gate: a dispatch nobody completes times out, never hangs");
-    up_pool_gate_t gate;
-    CHECK_EQ(up_pool_gate_init(&gate), 0);
+    up_pool_gate_t gate = {0};
+    if (gate_init_required(&gate) != 0) {
+        END();
+        return;
+    }
 
     struct timespec t0;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    if (monotonic_now_required(&t0) != 0) {
+        up_pool_gate_destroy(&gate);
+        END();
+        return;
+    }
 
-    CHECK_EQ(up_pool_gate_lock(&gate), 0);
-    up_pool_gate_arm_locked(&gate, 1);      /* one worker owed... */
-    CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0); /* ...and none exists */
+    if (gate_arm_required(&gate, 1) != 0) {
+        END();
+        return;
+    }
 
     atomic_store(&g_done_timedwait_seen, 0);
     CHECK_EQ(up_pool_gate_wait_all(&gate), -1);
-    const long waited = elapsed_ms(&t0);
+    struct timespec t1;
+    if (monotonic_now_required(&t1) != 0) {
+        up_pool_gate_destroy(&gate);
+        END();
+        return;
+    }
+    const long waited = elapsed_ms(&t0, &t1);
     CHECK(waited >= UP_POOL_BARRIER_TIMEOUT_MS / 2);   /* it really waited */
     CHECK(waited < 10 * UP_POOL_BARRIER_TIMEOUT_MS);   /* and it really returned */
     CHECK_EQ(barrier_fault_used_timed_completion_wait(), 1);
@@ -648,12 +914,16 @@ static void test_pool_gate_wait_times_out(void)
 static void test_pool_gate_wait_error_is_reported(void)
 {
     BEGIN("pool gate: a completion wait error breaks the dispatch");
-    up_pool_gate_t gate;
-    CHECK_EQ(up_pool_gate_init(&gate), 0);
+    up_pool_gate_t gate = {0};
+    if (gate_init_required(&gate) != 0) {
+        END();
+        return;
+    }
 
-    CHECK_EQ(up_pool_gate_lock(&gate), 0);
-    up_pool_gate_arm_locked(&gate, 1);
-    CHECK_EQ(up_pool_gate_unlock_broadcast(&gate), 0);
+    if (gate_arm_required(&gate, 1) != 0) {
+        END();
+        return;
+    }
     barrier_fault_inject_next_done_wait();
     atomic_store(&g_done_timedwait_seen, 0);
     CHECK_EQ(up_pool_gate_wait_all(&gate), -1);
@@ -675,10 +945,23 @@ static void test_pool_gate_request_exit_guards(void)
     CHECK_EQ(up_pool_gate_request_exit(&gate), 0);
     CHECK_EQ(gate.exit_requested, 0);
 
-    CHECK_EQ(up_pool_gate_init(&gate), 0);
-    CHECK_EQ(up_pool_gate_request_exit(&gate), 0);
+    if (gate_init_required(&gate) != 0) {
+        END();
+        return;
+    }
+    const int first_exit_rc = up_pool_gate_request_exit(&gate);
+    CHECK_EQ(first_exit_rc, 0);
+    if (first_exit_rc != 0) {
+        END();
+        return;
+    }
     CHECK_EQ(gate.exit_requested, 1);
-    CHECK_EQ(up_pool_gate_request_exit(&gate), 0);   /* idempotent */
+    const int second_exit_rc = up_pool_gate_request_exit(&gate);
+    CHECK_EQ(second_exit_rc, 0);   /* idempotent */
+    if (second_exit_rc != 0) {
+        END();
+        return;
+    }
     CHECK_EQ(gate.exit_requested, 1);
     up_pool_gate_destroy(&gate);
     END();
@@ -708,6 +991,7 @@ int main(void)
     test_detect_cores_invariants();
 #endif
     test_pool_gate_dispatch_cycles();
+    test_pool_gate_partial_start_cleanup();
     test_pool_gate_cancel_releases_wait_lock();
     test_pool_gate_cancel_releases_done_lock();
     test_pool_gate_exit_completes_unseen();

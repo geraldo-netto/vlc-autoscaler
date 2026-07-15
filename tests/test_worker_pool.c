@@ -207,6 +207,34 @@ static void fake_init(fake_pool_t *f, const up_worker_pool_ops_t *ops,
     fault_reset();
 }
 
+static int fake_start_required(fake_pool_t *f, int expected_workers)
+{
+    const int start_rc = up_worker_pool_ensure_started(&f->pool);
+    CHECK_EQ(start_rc, 0);
+    if (start_rc != 0) return -1;
+
+    const int workers = up_worker_pool_count(&f->pool);
+    CHECK_EQ(workers, expected_workers);
+    return workers == expected_workers ? 0 : -1;
+}
+
+static int fake_dispatch_required(fake_pool_t *f)
+{
+    const int rc = up_worker_pool_dispatch(&f->pool);
+    CHECK_EQ(rc, 0);
+    return rc;
+}
+
+static int mutex_roundtrip(pthread_mutex_t *mutex)
+{
+    const int lock_rc = pthread_mutex_trylock(mutex);
+    CHECK_EQ(lock_rc, 0);
+    if (lock_rc != 0) return -1;
+    const int unlock_rc = pthread_mutex_unlock(mutex);
+    CHECK_EQ(unlock_rc, 0);
+    return unlock_rc;
+}
+
 /* Every worker of a successful dispatch ran exactly `expected` times. */
 static void check_run_counts(fake_pool_t *f, int expected)
 {
@@ -226,15 +254,23 @@ static void test_threaded_dispatch_cycles(void)
     fake_pool_t f;
     fake_init(&f, &partial_ops, N);
 
-    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
-    CHECK_EQ(up_worker_pool_count(&f.pool), N);
+    if (fake_start_required(&f, N) != 0) {
+        up_worker_pool_destroy(&f.pool);
+        END();
+        return;
+    }
     CHECK_EQ(up_worker_pool_inline(&f.pool), 0);
     CHECK_EQ(f.prepare_calls, 1);
     CHECK_EQ(f.spawn_calls, N);
     CHECK_EQ(f.finalize_n, N);
 
-    for (int i = 0; i < M; i++)
-        CHECK_EQ(up_worker_pool_dispatch(&f.pool), 0);
+    for (int i = 0; i < M; i++) {
+        if (fake_dispatch_required(&f) != 0) {
+            up_worker_pool_destroy(&f.pool);
+            END();
+            return;
+        }
+    }
     check_run_counts(&f, M);
     CHECK_EQ(up_worker_pool_broken(&f.pool), 0);
 
@@ -255,13 +291,20 @@ static void test_single_worker_runs_inline(void)
     fake_pool_t f;
     fake_init(&f, &partial_ops, 1);
 
-    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
+    if (fake_start_required(&f, 1) != 0) {
+        up_worker_pool_destroy(&f.pool);
+        END();
+        return;
+    }
     CHECK_EQ(up_worker_pool_inline(&f.pool), 1);
-    CHECK_EQ(up_worker_pool_count(&f.pool), 1);
     CHECK_EQ(f.spawn_calls, 0);
     CHECK_EQ(atomic_load(&g_thread_create_calls), 0);
 
-    CHECK_EQ(up_worker_pool_dispatch(&f.pool), 0);
+    if (fake_dispatch_required(&f) != 0) {
+        up_worker_pool_destroy(&f.pool);
+        END();
+        return;
+    }
     check_run_counts(&f, 1);
     CHECK_EQ(up_pool_gate_ready(&f.pool.gate), 0);   /* no gate at all */
 
@@ -280,14 +323,21 @@ static void test_partial_spawn_is_usable(void)
     fake_init(&f, &partial_ops, 6);
     atomic_store(&g_spawn_budget, 2);   /* the 3rd pthread_create fails */
 
-    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
-    CHECK_EQ(up_worker_pool_count(&f.pool), 2);
+    if (fake_start_required(&f, 2) != 0) {
+        up_worker_pool_destroy(&f.pool);
+        END();
+        return;
+    }
     CHECK_EQ(f.finalize_n, 2);
     /* The slot whose thread failed to spawn was constructed, then released. */
     CHECK_EQ(f.construct_calls, 3);
     CHECK_EQ(f.release_calls, 1);
 
-    CHECK_EQ(up_worker_pool_dispatch(&f.pool), 0);
+    if (fake_dispatch_required(&f) != 0) {
+        up_worker_pool_destroy(&f.pool);
+        END();
+        return;
+    }
     check_run_counts(&f, 1);
 
     up_worker_pool_destroy(&f.pool);
@@ -410,8 +460,16 @@ static void test_bare_ops(void)
     fake_pool_t f;
     fake_init(&f, &bare_ops, 3);
 
-    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
-    CHECK_EQ(up_worker_pool_dispatch(&f.pool), 0);
+    if (fake_start_required(&f, 3) != 0) {
+        up_worker_pool_destroy(&f.pool);
+        END();
+        return;
+    }
+    if (fake_dispatch_required(&f) != 0) {
+        up_worker_pool_destroy(&f.pool);
+        END();
+        return;
+    }
     check_run_counts(&f, 1);
     CHECK_EQ(f.spawn_calls, 0);
     up_worker_pool_destroy(&f.pool);
@@ -427,11 +485,14 @@ static void test_bare_ops(void)
  * exists to prevent. Exercise both checked pthread failures on the dispatch
  * path: taking the gate lock and broadcasting the armed generation.
  */
-static void check_gate_failure_poisons_and_stops(void (*inject)(void))
+static int check_gate_failure_poisons_and_stops(void (*inject)(void))
 {
     fake_pool_t f;
     fake_init(&f, &partial_ops, 3);
-    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
+    if (fake_start_required(&f, 3) != 0) {
+        up_worker_pool_destroy(&f.pool);
+        return -1;
+    }
     CHECK_EQ(atomic_load(&g_thread_create_calls), 3);
     CHECK_EQ(atomic_load(&g_thread_join_calls), 0);
 
@@ -447,23 +508,32 @@ static void check_gate_failure_poisons_and_stops(void (*inject)(void))
     CHECK_EQ(atomic_load(&g_thread_create_calls), 3);
     CHECK_EQ(atomic_load(&g_thread_join_calls), 3);
     CHECK_EQ(f.release_calls, 3);
+    return 0;
 }
 
 static void test_gate_failures_poison_and_stop(void)
 {
     BEGIN("pthread gate failures: dispatch fails, pool poisoned, threads joined");
-    check_gate_failure_poisons_and_stops(barrier_fault_inject_next_mutex_lock);
-    check_gate_failure_poisons_and_stops(barrier_fault_inject_next_dispatch);
+    if (check_gate_failure_poisons_and_stops(
+            barrier_fault_inject_next_mutex_lock) != 0) {
+        END();
+        return;
+    }
+    (void)check_gate_failure_poisons_and_stops(
+        barrier_fault_inject_next_dispatch);
     END();
 }
 
 /* The failure can occur inside stop itself, after workers are already asleep.
  * Neither a failed lock nor a failed broadcast may strand the subsequent join. */
-static void check_exit_failure_cancels_and_stops(void (*inject)(void))
+static int check_exit_failure_cancels_and_stops(void (*inject)(void))
 {
     fake_pool_t f;
     fake_init(&f, &partial_ops, 3);
-    CHECK_EQ(up_worker_pool_ensure_started(&f.pool), 0);
+    if (fake_start_required(&f, 3) != 0) {
+        up_worker_pool_destroy(&f.pool);
+        return -1;
+    }
     CHECK_EQ(atomic_load(&g_thread_create_calls), 3);
     CHECK_EQ(atomic_load(&g_thread_join_calls), 0);
     inject();
@@ -471,44 +541,85 @@ static void check_exit_failure_cancels_and_stops(void (*inject)(void))
 
     CHECK_EQ(barrier_fault_injection_consumed(), 1);
     CHECK_EQ(atomic_load(&g_thread_join_calls), 3);
-    CHECK_EQ(pthread_mutex_trylock(&f.pool.gate.lock), 0);
-    CHECK_EQ(pthread_mutex_unlock(&f.pool.gate.lock), 0);
+    if (mutex_roundtrip(&f.pool.gate.lock) != 0) return -1;
     up_worker_pool_destroy(&f.pool);
     CHECK_EQ(atomic_load(&g_thread_create_calls), 3);
     CHECK_EQ(atomic_load(&g_thread_join_calls), 3);
     CHECK_EQ(f.release_calls, 3);
+    return 0;
 }
 
 static void test_exit_failures_cancel_and_stop(void)
 {
     BEGIN("pthread exit failures: cancellation prevents stuck joins");
-    check_exit_failure_cancels_and_stops(barrier_fault_inject_next_mutex_lock);
-    check_exit_failure_cancels_and_stops(barrier_fault_inject_next_dispatch);
+    if (check_exit_failure_cancels_and_stops(
+            barrier_fault_inject_next_mutex_lock) != 0) {
+        END();
+        return;
+    }
+    (void)check_exit_failure_cancels_and_stops(
+        barrier_fault_inject_next_dispatch);
     END();
 }
 
-static void check_worker_cancel_state_failure(int state)
+static int stop_direct_worker(up_worker_pool_t *pool,
+                              up_pool_thread_t *worker)
+{
+    const int exit_rc = up_pool_gate_request_exit(&pool->gate);
+    CHECK_EQ(exit_rc, 0);
+    if (exit_rc != 0) {
+        const int cancel_rc = pthread_cancel(worker->thread);
+        CHECK_EQ(cancel_rc, 0);
+        if (cancel_rc != 0) return -1;
+    }
+
+    const int join_rc = pthread_join(worker->thread, NULL);
+    CHECK_EQ(join_rc, 0);
+    if (join_rc == 0) worker->started = false;
+    return join_rc;
+}
+
+static int check_worker_cancel_state_failure(int state)
 {
     up_worker_pool_t pool = {0};
     up_pool_thread_t worker = { .pool = &pool };
-    CHECK_EQ(up_pool_gate_init(&pool.gate), 0);
+    const int init_rc = up_pool_gate_init(&pool.gate);
+    CHECK_EQ(init_rc, 0);
+    if (init_rc != 0) return -1;
 
     atomic_store(&g_fail_cancel_state, state);
-    CHECK_EQ(pthread_create(&worker.thread, NULL,
-                            up__pool_worker_main, &worker), 0);
-    CHECK_EQ(pthread_join(worker.thread, NULL), 0);
+    const int create_rc = pthread_create(&worker.thread, NULL,
+                                         up__pool_worker_main, &worker);
+    CHECK_EQ(create_rc, 0);
+    if (create_rc != 0) {
+        atomic_store(&g_fail_cancel_state, -1);
+        up_pool_gate_destroy(&pool.gate);
+        return -1;
+    }
+    worker.started = true;
+    if (stop_direct_worker(&pool, &worker) != 0) return -1;
+
     CHECK_EQ(atomic_load(&g_fail_cancel_state), -1);
     CHECK_EQ(atomic_load(&pool.gate.sync_failed), 1);
 
     up_pool_gate_destroy(&pool.gate);
+    return 0;
 }
 
 static void test_worker_cancel_state_failures(void)
 {
     BEGIN("worker cancellation-state failures break the pool gate");
     fault_reset();
-    check_worker_cancel_state_failure(PTHREAD_CANCEL_DISABLE);
-    check_worker_cancel_state_failure(PTHREAD_CANCEL_ENABLE);
+    if (check_worker_cancel_state_failure(PTHREAD_CANCEL_DISABLE) != 0) {
+        END();
+        return;
+    }
+    if (check_worker_cancel_state_failure(PTHREAD_CANCEL_ENABLE) != 0) {
+        END();
+        return;
+    }
+    CHECK_EQ(atomic_load(&g_thread_create_calls), 2);
+    CHECK_EQ(atomic_load(&g_thread_join_calls), 2);
     END();
 }
 

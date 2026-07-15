@@ -138,8 +138,6 @@ this technical domain; another business/domain pattern would not clarify it.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| ERR-6 | open | M | Thread/gate tests record setup failures nonfatally, then continue with dependent state (`tests/test_threading.c:372-507,604-684`; `tests/test_worker_pool.c:497-510`). | Resource failures can use or destroy uninitialized mutex/condition objects, pthread IDs, or timestamps and make the suite hang/crash. Return setup status, guard dependent cleanup/actions, track successful spawns, and check clocks. |
-
 No additional open finding. Relevant production allocation, backend, picture, clock,
 synchronization, and processing failures are propagated or deliberately
 treated as invariant-only cases. The documented recovery contract preserves

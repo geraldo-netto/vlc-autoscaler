@@ -138,9 +138,11 @@ TEST_LDFLAGS := -fsanitize=address,undefined
 BARRIER_WRAP_LDFLAGS := -Wl,--wrap=pthread_cond_timedwait \
 	-Wl,--wrap=pthread_cond_signal -Wl,--wrap=pthread_mutex_lock \
 	-Wl,--wrap=pthread_cond_broadcast
-# test_threading fault-injects condition initialization and deadline clocks.
+# test_threading fault-injects condition initialization, thread creation, and
+# deadline clocks.
 THREADING_WRAP_LDFLAGS := -Wl,--wrap=pthread_cond_init \
-	-Wl,--wrap=clock_gettime $(BARRIER_WRAP_LDFLAGS)
+	-Wl,--wrap=pthread_create -Wl,--wrap=clock_gettime \
+	$(BARRIER_WRAP_LDFLAGS)
 USM_POOL_WRAP_LDFLAGS := $(BARRIER_WRAP_LDFLAGS) -Wl,--wrap=aligned_alloc \
 	-Wl,--wrap=pthread_create
 # worker_pool fault injection and owned thread-lifecycle accounting.
