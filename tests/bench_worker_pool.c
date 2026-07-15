@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#define UP_WORKER_POOL_TIMING 1
 #include "../src/worker_pool.h"
 #include "cli_parse.h"
 
@@ -8,6 +9,7 @@
 typedef struct {
     up_worker_pool_t pool;
     unsigned char slots[UP_POOL_CACHELINE];
+    struct timespec finished[UP_THREADS_MAX];
 } bench_pool_t;
 
 static int construct_slot(void *owner, int index)
@@ -23,9 +25,16 @@ static void run_slot(void *owner, int index)
     bench->slots[(size_t)index % sizeof bench->slots]++;
 }
 
+static void record_finish(void *owner, int index)
+{
+    bench_pool_t *bench = (bench_pool_t *)owner;
+    (void)clock_gettime(CLOCK_MONOTONIC, &bench->finished[index]);
+}
+
 static const up_worker_pool_ops_t ops = {
     .construct = construct_slot,
     .run = run_slot,
+    .after_run = record_finish,
     .all_or_nothing = true,
 };
 
@@ -58,6 +67,23 @@ static int dispatch_many(up_worker_pool_t *pool, long iterations)
     return 0;
 }
 
+static double completion_skew_us(const bench_pool_t *bench, int workers)
+{
+    const struct timespec *low = &bench->finished[0];
+    const struct timespec *high = low;
+    for (int i = 1; i < workers; i++) {
+        const struct timespec *value = &bench->finished[i];
+        if (value->tv_sec < low->tv_sec ||
+            (value->tv_sec == low->tv_sec && value->tv_nsec < low->tv_nsec))
+            low = value;
+        if (value->tv_sec > high->tv_sec ||
+            (value->tv_sec == high->tv_sec && value->tv_nsec > high->tv_nsec))
+            high = value;
+    }
+    return (high->tv_sec - low->tv_sec) * 1.0e6
+         + (high->tv_nsec - low->tv_nsec) / 1000.0;
+}
+
 int main(int argc, char **argv)
 {
     long workers = 0;
@@ -78,6 +104,7 @@ int main(int argc, char **argv)
 
     double us = 0.0;
     if (elapsed_us(&start, &end, (int)iterations, &us) != 0) return 1;
-    printf("%ld,%ld,%.3f\n", workers, iterations, us);
+    printf("%ld,%ld,%.3f,%.3f\n", workers, iterations, us,
+           completion_skew_us(&bench, (int)workers));
     return up_worker_pool_destroy(&bench.pool) == 0 ? 0 : 1;
 }

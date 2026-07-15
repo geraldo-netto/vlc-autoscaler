@@ -972,7 +972,7 @@ bench-usm-halo: $(BUILD)/bench_usm_pool
 	@./scripts/bench_usm_halo.sh $(BUILD)/bench_usm_pool
 
 bench-worker-pool: $(BUILD)/bench_worker_pool
-	@echo "workers,iterations,us_per_dispatch"
+	@echo "workers,iterations,us_per_dispatch,last_completion_skew_us"
 	@for n in 1 2 4 8 12 16 24 32; do $(BUILD)/bench_worker_pool $$n 10000; done
 
 bench-pipeline: $(BUILD)/bench_pipeline

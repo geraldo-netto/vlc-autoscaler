@@ -102,8 +102,9 @@ rather than treating it as backend-only allocation.
 
 `bench-worker-pool` times the shared dispatch gate with deliberately tiny
 callbacks, exposing the upper bound of wake/barrier overhead by worker count
-without mixing in scaler work. It is a microbenchmark, not an end-to-end frame
-latency result.
+without mixing in scaler work. Its benchmark-only completion hook also reports
+the last dispatch's earliest-to-latest worker completion skew. It is a
+microbenchmark, not an end-to-end frame latency result.
 
 `bench-pipeline` runs zimg followed by in-place USM, matching their sequential
 production order while keeping both persistent pools alive. It reports the

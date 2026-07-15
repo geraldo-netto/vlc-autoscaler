@@ -90,6 +90,10 @@ typedef struct {
      * before the first dispatch (repartition work over the real count). */
     void (*finalize)(void *owner, int n_workers);
 
+#ifdef UP_WORKER_POOL_TIMING
+    void (*after_run)(void *owner, int index);
+#endif
+
     /* true: every requested worker must come up or the pool fails (zimg — a
      * missing grid cell would leave part of the frame unwritten).
      * false: a partial spawn is usable (USM — stripes repartition over
@@ -170,6 +174,9 @@ static inline void *up__pool_worker_main(void *arg)
         const int gate_rc = up_pool_gate_wait_for_go(&p->gate, &t->seen_gen);
         if (gate_rc <= 0) break;
         p->ops->run(p->owner, t->index);
+#ifdef UP_WORKER_POOL_TIMING
+        if (p->ops->after_run) p->ops->after_run(p->owner, t->index);
+#endif
         up_pool_gate_worker_done(&p->gate);
     }
     return NULL;
@@ -386,6 +393,9 @@ static inline int up_worker_pool_dispatch(up_worker_pool_t *p)
 {
     if (p->inline_run) {
         p->ops->run(p->owner, 0);
+#ifdef UP_WORKER_POOL_TIMING
+        if (p->ops->after_run) p->ops->after_run(p->owner, 0);
+#endif
         return 0;
     }
 
