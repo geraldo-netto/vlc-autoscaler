@@ -94,7 +94,6 @@
 # include <sched.h>
 #endif
 
-#define ALIGN_DOWN_2(x) UP_ALIGN_DOWN_2(x)
 
 /* SCAL-3: a column tile narrower than this isn't worth its own zimg graph. */
 #define ZIMG_COL_MIN_WIDTH 64

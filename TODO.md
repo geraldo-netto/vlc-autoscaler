@@ -198,7 +198,6 @@ dispatcher have real production call sites.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| UNUSED-1 | open | S | `ALIGN_DOWN_2` occurs only at `src/scaler_zimg.c:98`. | Delete the alias. |
 | UNUSED-2 | open | S | Production retains unused or redundant fields: `sws_priv_t.av_fmt` (`src/scaler_swscale.c:27,93`), `stripe_worker_t.worker_id` (`src/scaler_zimg.c:195,746-768`), and picture-view `pixel_pitch/width/height/row_bytes` (`src/picture_view.h:18-26,120-140`) are write-only; `filter_sys_t.probe.enabled` is assigned and read only immediately to initialize `probe.active` (`src/autoupscale.c:328-343,624-630`). | Remove the first two and assign the probe predicate directly to `active`, updating its stale comment. Remove the four view metadata fields or isolate their non-runtime diagnostic purpose; production consumers read only `pixels` and `pitch`. |
 | UNUSED-3 | open | S | Nine `static inline` functions have no production-rooted caller: the USM reference subtree (`src/usm.h:66-74,175-186,237-255,273-308`) and the content reference subtree (`src/content_probe.h:71-111,134-193`). | Move intentional reference helpers and support types to a clearly named support header. |
 | UNUSED-4 | open | S | `barrier_fault_inject_lose_next_wake()` and its suppression state/branches (`tests/barrier_fault_inject.h:15,49-51,72-76,113-114`) have no caller. | Delete the dormant lost-wake injection subtree or restore an explicit contract test that consumes it. |
