@@ -120,7 +120,7 @@ jobs:
             libvlccore-dev libvlc-dev libzimg-dev
 
       - name: Build fuzzers
-        run: make fuzz
+        run: make fuzz EXTRA_CFLAGS=-Werror
 
       # BUILD-9: every built fuzzer gets at least a short libFuzzer pass;
       # previously 8 of 13 were built but never run.
