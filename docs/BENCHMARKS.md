@@ -12,6 +12,7 @@ make build-bench
 make bench
 make bench-usm-halo
 make bench-worker-pool
+make bench-pipeline
 make bench-flatskip
 make bench-zimg
 scripts/bench_matrix.sh build/bench_usm_pool
@@ -103,3 +104,8 @@ rather than treating it as backend-only allocation.
 callbacks, exposing the upper bound of wake/barrier overhead by worker count
 without mixing in scaler work. It is a microbenchmark, not an end-to-end frame
 latency result.
+
+`bench-pipeline` runs zimg followed by in-place USM, matching their sequential
+production order while keeping both persistent pools alive. It reports the
+combined first-frame initialization, process RSS, and steady frame time by
+worker count.
