@@ -5,7 +5,7 @@
 # headers and TUs, prints per-file line coverage, and exits non-zero if
 # any tracked file falls below the threshold.
 #
-# Usage: COV_DIR=build_dev/cov THRESHOLD=90 scripts/coverage_report.sh
+# Usage: COV_DIR=build_dev/cov THRESHOLD=80 scripts/coverage_report.sh
 
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

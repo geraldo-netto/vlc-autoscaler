@@ -9,7 +9,7 @@
 # across runs - a function is "tested" if at least one test exercises
 # it adequately, regardless of which test it is.
 #
-# Usage: COV_DIR=build/cov THRESHOLD=90 scripts/coverage_per_function.sh
+# Usage: COV_DIR=build/cov THRESHOLD=80 scripts/coverage_per_function.sh
 
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
