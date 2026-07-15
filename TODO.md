@@ -227,7 +227,6 @@ picks so a later audit does not revive it without new evidence.
 | SCAL-P1b | parked | M | If SCAL-P1a confirms stable skew, prototype weighted static stripe/cell sizing before considering dynamic work stealing. | This is the main corner cut: preserve one dispatch and one completion barrier. Add pure partition unit tests and fuzz invariants for non-empty, contiguous, chroma-aligned, full-frame coverage. |
 | SCAL-P1c | parked | M | Integrate a winning weighted-static policy without changing worker ownership or graph lifetime. | Blocked on SCAL-P1b outperforming equal partitions. Require byte/seam regression tests against single-worker output, zimg integration fuzz, USM variant fuzz, and sanitizer/TSan stress. |
 | SCAL-P1d | parked | L | Consider bounded dynamic work queues only if weighted static partitioning fails under measured production-like contention. | Requires a design review first. Tests must cover exactly-once cell ownership, cancellation/failure draining, deterministic output, fault injection, integration fuzz, and ASan/UBSan/TSan stress. |
-| SCAL-P2c | parked | S | Apply the resource cap before grid construction, preserving at least one worker and current geometry floors. | Blocked on SCAL-P2a/P2b. Add lazy-open integration regressions for capped/uncapped cases, output/seam equivalence, allocation-failure coverage, zimg fuzz, and sanitizers. |
 | SCAL-P2d | parked | L | Investigate graph or temporary-buffer sharing only if the worker cap causes a measured throughput regression. | zimg thread-safety and per-call temporary ownership must be proven first; require concurrency-focused integration tests and TSan before any shared resource ships. |
 | SCAL-P3a | parked | S | Measure combined persistent thread count, memory, startup, and frame latency when zimg and USM are both enabled (`src/autoupscale.c:578-600,972-1009,1076-1092,1188-1210`). | Still applicable at HEAD, but sequential passes do not establish that duplicate pools matter. Extend end-to-end benchmarks only. |
 | SCAL-P3b | parked | S | First cap the two independent pools to one shared CPU budget when both are enabled. | This is the cheapest mitigation and avoids lifecycle coupling. Add pure allocation-policy unit/fuzz tests plus Open integration regressions for zimg-only, USM-only, both, and explicit thread preferences. |
@@ -257,6 +256,8 @@ non-findings:
 - Adding a zimg resource budget: measured 1--16-worker 720p runs stayed below
   9 MiB process RSS; lazy startup rose from about 3 ms to 13 ms but is a
   bounded one-time cost, not evidence for reducing steady-state parallelism.
+- Applying a zimg resource-derived worker cap: the measured resource budget
+  did not cross a material threshold, so no cap value has a valid basis.
 - Unifying `worker_copy_in_stripe` / `worker_copy_out_stripe` /
   `worker_copy_out_tile`: their direction and offset invariants differ; a generic
   helper would require a wide parameter surface.
