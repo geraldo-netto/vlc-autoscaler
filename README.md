@@ -626,11 +626,8 @@ arithmetic in more lanes, not different arithmetic.
 Measure on the deployment host if compiler choice matters for throughput.
 
 `make test`, `make fuzz-smoke`, `make stress`, and `make analyze` do not need
-VLC headers. `make scan-build` analyzes real production plugin builds, so it
-needs the same VLC and FFmpeg development packages as `make plugin` (zimg is
-optional). `test-zimg`, `stress-zimg`, `bench-zimg`, and `coverage-zimg` need
-VLC and zimg development packages; swscale and picture-view contract tests use
-local stubs.
+VLC headers. The zimg harness targets and production analysis use the external
+SDKs listed below; swscale and picture-view contract tests use local stubs.
 
 ## Requirements
 
@@ -639,11 +636,19 @@ local stubs.
 - **For the plugin:** VLC 3.x and FFmpeg (`libswscale`, `libavutil`)
   development headers/libraries, a C compiler, `make`, and `pkg-config`;
   libzimg development files are optional.
-- **For tests / smoke fuzz / stress:** a C compiler with ASan, UBSan, and TSan
-  support plus pthreads. `make fuzz` additionally requires clang's
-  `-fsanitize=fuzzer`.
-- **For static analysis:** `cppcheck`, `lizard`, and Clang's `scan-build`
-  (`clang-tools` on Debian/Ubuntu).
+- **For tests / smoke fuzz / stress:** the compiler selected by `CC`, with
+  pthreads and ASan, UBSan, and TSan support. `make test` also uses Python 3.
+- **For libFuzzer:** Clang with `-fsanitize=fuzzer`; select it with `CLANG`.
+- **For coverage:** a matched `COV_CC` / `GCOV` pair, Bash, Python 3, an `awk`
+  implementation, and GNU coreutils (including `realpath`).
+- **For zimg verification:** VLC and zimg development files. The optional
+  `test-zimg`, `stress-zimg`, `bench-zimg`, and `coverage-zimg` targets use the
+  compiler selected by `CC`.
+- **For static analysis:** `cppcheck` and `lizard`. `make scan-build` also
+  needs Clang's `scan-build` (`clang-tools` on Debian/Ubuntu), plus the VLC and
+  FFmpeg development files used by the production plugin; zimg remains
+  optional.
+- **For guarded build cleanup:** Git and GNU `realpath`.
 
 ## VLC 3.x vs 4.x
 
