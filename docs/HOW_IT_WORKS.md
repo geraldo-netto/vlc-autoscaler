@@ -617,11 +617,10 @@ By compiling the entire usm_pool.c TU at three -march levels, each
 variant gets to inline its kernels at its own SIMD width. The tradeoff is
 additional binary size and build complexity.
 
-**ISA guard limitation:** the dispatcher uses `up_cpu_supports_v3()` and
-`up_cpu_supports_v4()`. Supported compilers probe the complete levels directly.
-The compatibility fallback for older compilers checks a feature conjunction
-that does not enumerate every inherited feature, so deploy those builds only
-where the chosen variant's full ISA level is known to be available.
+**ISA guards:** the dispatcher uses `up_cpu_supports_v3()` and
+`up_cpu_supports_v4()`. GCC 12+ and Clang 17+ use compiler builtins for the
+complete levels. Older compilers use explicit CPUID/XGETBV checks for the same
+inherited v2/v3/v4 feature sets and required OS-managed AVX/AVX-512 state.
 
 Decoded MD5 is **byte-identical** across SSE2, AVX2, AVX-512 builds
 AND across MULTIVERSION=0/1 — the kernels do bytewise saturating

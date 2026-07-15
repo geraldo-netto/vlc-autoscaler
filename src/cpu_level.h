@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************
- * cpu_level.h — runtime x86-64 micro-architecture level probes (PORT-6)
+ * cpu_level.h — runtime x86-64 micro-architecture level probes
  *****************************************************************************
  * Objects compiled at -march=x86-64-v3/v4 may use ANY instruction of that
  * level (BMI/BMI2/F16C/FMA/LZCNT/MOVBE at v3; +AVX512CD/DQ/VL at v4), so a

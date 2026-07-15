@@ -340,7 +340,7 @@ int main(void)
 {
     __builtin_cpu_init();
     /* Level probes, not headline features: the variant kernels are compiled
-     * at -march=x86-64-v3/v4, so running them needs the full level (PORT-6). */
+     * at -march=x86-64-v3/v4, so running them needs the full level. */
     has_avx2   = up_cpu_supports_v3();
     has_avx512 = up_cpu_supports_v4();
 

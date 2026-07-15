@@ -117,7 +117,8 @@ int up_usm_pool_effective_threads(const usm_pool_t *pool);
  * Name of the active SIMD variant, for diagnostic logging. Exactly one
  * strong definition is linked, depending on build mode (ABI-1):
  *   - MULTIVERSION=1: usm_pool_dispatch.c sets it at .so load to the chosen
- *     variant ("avx512" / "avx2" / "sse2") via __builtin_cpu_supports().
+ *     variant ("avx512" / "avx2" / "sse2") through the shared full-level CPU
+ *     probes.
  *   - MULTIVERSION=0: usm_pool.c (compiled without USM_VARIANT) defines it as
  *     "default" — the single baseline reflects the build-time -march level,
  *     which the user already chose, so no runtime detection is done.

@@ -694,7 +694,7 @@ static int CreateStatsVars( filter_t *p_filter )
 /* CX-1: reject CPUs below the build's -march LEVEL. This whole object is
  * compiled at that level, so the headline feature alone does not cover
  * BMI2/FMA/... (v3) or AVX512VL/... (v4) instructions the compiler is free
- * to emit anywhere in the plugin (BUILD-5/PORT-6). Returns VLC_SUCCESS when
+ * to emit anywhere in the plugin. Returns VLC_SUCCESS when
  * the CPU is adequate (always, off x86-64). Extracted from Open() so the two
  * `#if` decision points don't count against Open's CCN. */
 static int CheckCpuLevel( vlc_object_t *p_this )

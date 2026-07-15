@@ -611,11 +611,10 @@ make MARCH=x86-64 MULTIVERSION=1
 When `MULTIVERSION=1` the plugin links three copies of `usm_pool.c`
 compiled at SSE2 / AVX2 / AVX-512 baselines, plus a thin runtime
 dispatcher (`usm_pool_dispatch.c`) that selects one at `.so` load time via
-`up_cpu_supports_v3()` / `up_cpu_supports_v4()`. Supported compilers probe the
-complete levels directly. The compatibility fallback for older compilers does
-not enumerate every inherited feature, so deploy those builds only to CPUs
-known to satisfy the selected level. Per-frame overhead after selection is an
-indirect call.
+`up_cpu_supports_v3()` / `up_cpu_supports_v4()`. GCC 12+ and Clang 17+ use
+compiler builtins for the complete levels. Older compilers use explicit
+CPUID/XGETBV checks for the same inherited feature sets and required OS-managed
+vector state. Per-frame overhead after selection is one indirect call.
 
 The decoded output is **byte-identical** across all SIMD widths and
 across `MULTIVERSION=0` / `=1` (verified by reproducible MD5 and the

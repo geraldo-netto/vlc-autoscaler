@@ -99,8 +99,8 @@ COVERAGE_PROFILE_FLAGS := --coverage -fprofile-arcs -ftest-coverage \
 #   make MARCH=x86-64       # legacy SSE2 only — runs anywhere x86-64
 #
 # Combine with MULTIVERSION=1 to include several SIMD variants selected at
-# runtime. The whole plugin must still use a baseline supported by every
-# deployment CPU; the variant-guard limitation is tracked as PORT-6.
+# runtime. The rest of the plugin still uses MARCH, so its baseline must be
+# supported by every deployment CPU.
 #
 # Decoded MD5 is byte-identical across all SIMD widths because the
 # kernels do bytewise saturating arithmetic; SIMD just runs more lanes
@@ -171,11 +171,10 @@ PLUGIN_OBJS := $(patsubst src/%.c,$(BUILD)/%.o,$(PLUGIN_SRCS))
 # that maximizes performance on the build host.
 #
 # Set MULTIVERSION=1 to ship the SIMD variants of usm_pool.c plus a thin
-# runtime dispatcher
-# (usm_pool_dispatch.c) that selects a variant at .so load time via
-# __builtin_cpu_supports(). The full-level guard gap remains PORT-6. Pair this
-# with an appropriate MARCH baseline (e.g.
-# x86-64-v3 or x86-64) so the rest of the plugin uses the intended baseline:
+# runtime dispatcher (usm_pool_dispatch.c) that selects a variant at .so load
+# time through complete x86-64-v3/v4 runtime probes. Pair this with an
+# appropriate MARCH baseline (e.g. x86-64-v3 or x86-64) so the rest of the
+# plugin uses the intended baseline:
 #
 #   make MARCH=x86-64-v3 MULTIVERSION=1   # compatible with Haswell/Zen 1+,
 #                                          # selects a USM variant at load
