@@ -224,7 +224,6 @@ picks so a later audit does not revive it without new evidence.
 | SCAL-3c | parked | S | Build a pure stable CPU-ordering helper for the selected physical-core/SMT/NUMA policy. | Blocked on SCAL-3a. Fuzz ordering invariants: no duplicates, no disallowed IDs, stable output, complete allowed-prefix coverage, and bounds at `UP_THREADS_MAX`. |
 | SCAL-3d | parked | S | Wire the selected order into opt-in zimg pinning while retaining round-robin fallback and current success accounting. | Blocked on SCAL-3b/SCAL-3c. Extend wrapped-affinity integration tests for exact worker-to-CPU mapping and failures; run zimg seam regression/fuzz plus ASan/UBSan/TSan stress. |
 | SCAL-P1d | parked | L | Consider bounded dynamic work queues only if weighted static partitioning fails under measured production-like contention. | Requires a design review first. Tests must cover exactly-once cell ownership, cancellation/failure draining, deterministic output, fault injection, integration fuzz, and ASan/UBSan/TSan stress. |
-| SCAL-P4c | parked | M | If wake overhead remains material, prototype a bounded fan-out/tree wake while retaining the existing completion barrier. | Avoid Linux-only futexes unless portability scope changes. Unit-test every partial-init/wake/stop failure with wrappers; stress repeated generations and cancellation under TSan. |
 | SCAL-P4d | parked | M | Integrate a winning wake strategy behind the shared worker-pool gate without changing owner callbacks. | Blocked on SCAL-P4c outperforming broadcast. Require worker-pool regression/fault tests, generation-wrap and lost-wake stress, USM/zimg integration fuzz, ASan/UBSan/TSan, and clean fallback to broadcast. |
 
 ## Audit picks deliberately rejected
@@ -263,6 +262,10 @@ non-findings:
   unequal stripe cost; changing geometry cannot make late workers start sooner.
 - Integrating weighted static partitions: the prototype prerequisite was
   rejected because measured completion skew exists without partitioned work.
+- Replacing condition broadcast with tree wake: after the 12-worker cap, the
+  measured pipeline still gained about 28 us/frame from 8 to 12 workers while
+  the empty-dispatch cost was about 17 us; current wake remains net-positive
+  without adding another failure-sensitive synchronization topology.
 - Unifying `worker_copy_in_stripe` / `worker_copy_out_stripe` /
   `worker_copy_out_tile`: their direction and offset invariants differ; a generic
   helper would require a wide parameter surface.
