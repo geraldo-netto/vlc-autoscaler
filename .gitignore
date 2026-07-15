@@ -36,6 +36,9 @@ fuzz_corpus/
 .vscode/
 compile_commands.json
 
+# Local development environments
+.venv/
+
 # Generated docs
 docs/_build/
 
