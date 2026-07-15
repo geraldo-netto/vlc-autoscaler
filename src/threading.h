@@ -66,6 +66,7 @@
 
 /* Hard upper bound on worker, synchronization, and scratch-resource growth. */
 #define UP_THREADS_MAX    64
+#define UP_THREADS_AUTO_MAX 12
 #define UP_CPU_COUNT_MAX  (UP_THREADS_MAX * 4)
 #define UP_CPU_ID_LIMIT   8192
 
@@ -183,9 +184,9 @@ static inline int up_detect_cores(void)
  *
  * Returns: at least 1, at most min(total_cores, UP_THREADS_MAX).
  *
- * Examples (auto policy, total_cores / 2 - 2, clamped):
- *   up_threads_decide(0, 64)    -> 30   (auto: 32-2)
- *   up_threads_decide(0, 32)    -> 14   (auto: 16-2)
+ * Examples (auto policy, total_cores / 2 - 2, capped at the measured knee):
+ *   up_threads_decide(0, 64)    -> 12
+ *   up_threads_decide(0, 32)    -> 12
  *   up_threads_decide(0, 24)    -> 10   (auto: 12-2)
  *   up_threads_decide(0, 16)    ->  6   (auto: 8-2)
  *   up_threads_decide(0,  8)    ->  2   (auto: 4-2)
@@ -208,6 +209,7 @@ static inline int up_threads_decide(int user_pref, int total_cores)
          * audio, vout, the OS, plus any libraries VLC pulls in. */
         n = total_cores / 2 - 2;
         if (n < 1) n = 1;
+        if (n > UP_THREADS_AUTO_MAX) n = UP_THREADS_AUTO_MAX;
     } else {
         n = user_pref;
     }

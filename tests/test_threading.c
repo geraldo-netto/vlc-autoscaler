@@ -74,14 +74,14 @@ int __wrap_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
 }
 
 /*
- * Auto policy: cores/2 - 2, clamped to [1, UP_THREADS_MAX].
+ * Auto policy: cores/2 - 2, clamped to [1, UP_THREADS_AUTO_MAX].
  * Walking through the formula at each interesting core count.
  */
 static void test_auto_typical(void)
 {
     BEGIN("auto: typical core counts -> cores/2 - 2");
-    CHECK_EQ(up_threads_decide(UP_THREADS_AUTO, 64), 30);  /* 32-2 */
-    CHECK_EQ(up_threads_decide(UP_THREADS_AUTO, 32), 14);  /* 16-2 */
+    CHECK_EQ(up_threads_decide(UP_THREADS_AUTO, 64), 12);
+    CHECK_EQ(up_threads_decide(UP_THREADS_AUTO, 32), 12);
     CHECK_EQ(up_threads_decide(UP_THREADS_AUTO, 24), 10);  /* 12-2 */
     CHECK_EQ(up_threads_decide(UP_THREADS_AUTO, 16),  6);  /*  8-2 */
     CHECK_EQ(up_threads_decide(UP_THREADS_AUTO, 12),  4);  /*  6-2 */
@@ -134,8 +134,7 @@ static void test_explicit_clamped_to_max(void)
     /* On hypothetical big-iron with 200 cores. */
     CHECK_EQ(up_threads_decide(200, 200), UP_THREADS_MAX);
     CHECK_EQ(up_threads_decide(1000, 200), UP_THREADS_MAX);
-    /* Auto on 200 cores: cores/2-2 = 98, capped at UP_THREADS_MAX (64). */
-    CHECK_EQ(up_threads_decide(UP_THREADS_AUTO, 200), UP_THREADS_MAX);
+    CHECK_EQ(up_threads_decide(UP_THREADS_AUTO, 200), UP_THREADS_AUTO_MAX);
     END();
 }
 
@@ -151,8 +150,8 @@ static void test_negative_user_pref_means_auto(void)
  * overrides from the same input topology. */
 static void test_32_core_target_machine(void)
 {
-    BEGIN("32-core target: auto uses 14, explicit overrides work");
-    CHECK_EQ(up_threads_decide(UP_THREADS_AUTO, 32), 14);
+    BEGIN("32-core target: auto uses measured cap, explicit overrides work");
+    CHECK_EQ(up_threads_decide(UP_THREADS_AUTO, 32), UP_THREADS_AUTO_MAX);
     CHECK_EQ(up_threads_decide(1,  32),  1);
     CHECK_EQ(up_threads_decide(16, 32), 16);
     CHECK_EQ(up_threads_decide(32, 32), 32);

@@ -130,14 +130,14 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 #define THREADS_TEXT    N_("Worker preference for zimg and USM")
 #define THREADS_LONGTEXT N_( \
     "Worker preference shared by zimg and USM. 0 = auto (cores/2 - 2, " \
-    "clamped to [1,64]); 1..64 = explicit preference, capped by CPUs " \
+    "clamped to [1,12]); 1..64 = explicit preference, capped by CPUs " \
     "allowed to the process. Each pool may clamp lower for frame geometry. " \
     "The zimg backend normally uses horizontal stripes and adds column " \
     "tiles for very wide/short frames. It runs one persistent worker " \
     "per grid cell; swscale remains single-threaded. Higher values can " \
     "reduce per-frame " \
     "latency at the cost of more memory and lower per-thread cache " \
-    "locality; the auto default reserves half the machine for the rest " \
+    "locality; the auto default uses at most 12 workers and reserves the rest " \
     "of VLC and other libraries. Override if you measured otherwise.")
 
 #define PIN_TEXT        N_("Pin scaler worker threads to CPU cores")

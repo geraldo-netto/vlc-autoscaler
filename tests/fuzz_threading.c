@@ -9,7 +9,7 @@
  *  - Result is always <= UP_THREADS_MAX.
  *  - Result is always <= max(total_cores, 1).
  *  - When user_pref == UP_THREADS_AUTO and total_cores >= 1, result equals
- *    clamp(total_cores/2 - 2, 1, UP_THREADS_MAX), but never exceeding
+ *    clamp(total_cores/2 - 2, 1, UP_THREADS_AUTO_MAX), but never exceeding
  *    total_cores.
  *  - When user_pref > 0, result is min(user_pref, total_cores, UP_THREADS_MAX).
  *
@@ -131,13 +131,13 @@ static int check_bounds(int n, int user_pref, int cores, int effective_cores)
     return 0;
 }
 
-/* Auto path: should equal clamp(cores/2 - 2, 1, MAX), then further
+/* Auto path: should equal clamp(cores/2 - 2, 1, AUTO_MAX), then further
  * clamped to <= effective_cores. Returns 1 on failure. */
 static int check_auto(int n, int cores, int effective_cores)
 {
     long expected = (long)effective_cores / 2 - 2;
     if (expected < 1) expected = 1;
-    if (expected > UP_THREADS_MAX) expected = UP_THREADS_MAX;
+    if (expected > UP_THREADS_AUTO_MAX) expected = UP_THREADS_AUTO_MAX;
     if (expected > effective_cores) expected = effective_cores;
     if ((long)n != expected) {
         fprintf(stderr,
