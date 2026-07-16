@@ -76,8 +76,8 @@ VLC_PLUGIN_DIR  := $(VLC_PLUGIN_BASE)/video_filter
 # Fail fast, at parse time, when a plugin build is requested without the
 # required SDKs — otherwise the first object compile dies on a cryptic
 # "vlc_common.h: No such file" long before any friendly message.
-PLUGIN_GOALS := all plugin install scan-build check-multiversion-isa \
-                check-hardening \
+PLUGIN_GOALS := all plugin install scan-build abi-layout-check \
+                check-visibility check-multiversion-isa check-hardening \
                 $(BUILD)/$(PLUGIN).so
 ifneq ($(filter $(PLUGIN_GOALS),$(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)),)
   ifeq ($(strip $(VLC_LIBS)),)
