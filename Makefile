@@ -1003,11 +1003,9 @@ bench-flatskip: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip
 # dropped here because it conflicts with --coverage on some toolchains and we
 # already test under ASan elsewhere.
 #
-# Coverage is meaningful for the testable header/.c surface only. The VLC-
-# typed translation units (autoupscale.c, scaler_zimg.c) are NOT covered
-# by direct unit tests — their pure logic was extracted into header
-# modules (upscale_logic.h, content_probe.h, etc.) precisely so it CAN be
-# unit-tested. See `make coverage-summary` for the per-module % numbers.
+# Coverage includes the VLC-facing lifecycle contract through a narrow stub
+# boundary. scaler_zimg.c remains separately reported because it needs its
+# optional zimg runtime, while its deterministic seams are fuzzed directly.
 COV_BUILD := $(BUILD)/cov
 COVERAGE_THRESHOLD ?= 80
 # Coverage profiles are compiler-specific; override these as a matched GCC pair.
@@ -1030,6 +1028,7 @@ COV_TESTS := \
     $(COV_BUILD)/test_content_probe \
     $(COV_BUILD)/test_scaler_pick \
     $(COV_BUILD)/test_scaler_swscale \
+    $(COV_BUILD)/test_autoupscale_lifecycle \
     $(COV_BUILD)/test_picture_view \
     $(COV_BUILD)/test_lifetime \
     $(if $(IS_X86),$(COV_BUILD)/test_usm_pool_dispatch \
@@ -1092,6 +1091,8 @@ $(COV_BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h 
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_scaler_swscale: tests/test_scaler_swscale.c src/scaler_swscale.c src/scaler.h src/scaler_status.h src/picture_view.h src/chroma_classify.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h tests/stubs/libswscale/swscale.h tests/stubs/libavutil/pixfmt.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -Itests/stubs -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/test_autoupscale_lifecycle: tests/test_autoupscale_lifecycle.c src/autoupscale.c src/scaler.h src/usm_pool.h tests/test_harness.h tests/lifecycle_stubs/vlc_common.h tests/lifecycle_stubs/vlc_filter.h tests/lifecycle_stubs/vlc_picture.h tests/lifecycle_stubs/vlc_plugin.h $(BUILD_CONFIG) | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -march=x86-64 -Itests/lifecycle_stubs -Itests/stubs -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_picture_view: tests/test_picture_view.c src/picture_view.h src/chroma_classify.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -Itests/stubs -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_lifetime: tests/test_lifetime.c tests/prng.h $(COV_BUILD)/usm_pool_cov.o $(BUILD_CONFIG) | $(COV_BUILD)

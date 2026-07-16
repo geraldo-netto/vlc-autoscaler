@@ -1,11 +1,11 @@
 # Production modules exercised by the unit and deterministic-fuzz suites.
 # Intentional exclusions:
-# - src/autoupscale.c and src/scaler.c are VLC-bound glue; their extracted pure
-#   helpers are gated below.
+# - src/scaler.c is VLC-bound glue; its extracted selection logic is gated below.
 # - src/scaler_zimg.c has a separate coverage-zimg report.
 # - src/usm_pool.h and src/usm_pool_variants.h contain declarations only.
 # - tests/ helpers are test infrastructure, not production coverage targets.
 src/upscale_logic.h
+src/autoupscale.c
 src/usm.h
 src/perfmon.h
 src/threading.h

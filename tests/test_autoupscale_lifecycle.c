@@ -15,7 +15,7 @@ typedef struct
     int value;
 } lifecycle_config_t;
 
-static const lifecycle_config_t lifecycle_config[] = {
+static lifecycle_config_t lifecycle_config[] = {
     { "autoupscale-skip-above", 720 },
     { "autoupscale-target", 1 },
     { "autoupscale-algo", UP_ALGO_SPLINE36 },
@@ -32,6 +32,11 @@ static const lifecycle_config_t lifecycle_config[] = {
     { "autoupscale-usm-sharp-threshold", 0 },
 };
 
+static const int lifecycle_config_defaults[] = {
+    720, 1, UP_ALGO_SPLINE36, SCALER_BACKEND_AUTO, 0, 0, 1, 0,
+    1, 1, 0, 0, 0, 0,
+};
+
 static picture_t *g_next_output;
 static scaler_process_status_t g_zimg_status;
 static scaler_process_status_t g_swscale_status;
@@ -43,6 +48,16 @@ static int g_zimg_close_calls;
 static int g_swscale_close_calls;
 static int g_var_create_calls;
 static int g_var_destroy_calls;
+static int g_var_set_calls;
+static int g_var_create_fail_at;
+static int g_picker_none;
+static int g_zimg_open_result;
+static int g_swscale_open_result;
+static usm_pool_t *g_usm_pool_create_result;
+static int g_usm_apply_status;
+static int g_usm_apply_calls;
+static int g_usm_destroy_calls;
+static int g_usm_effective_threads;
 
 int64_t lifecycle_var_inherit(const char *name)
 {
@@ -56,7 +71,8 @@ int lifecycle_var_create(const char *name)
 {
     (void)name;
     g_var_create_calls++;
-    return VLC_SUCCESS;
+    return g_var_create_calls == g_var_create_fail_at
+        ? VLC_EGENERIC : VLC_SUCCESS;
 }
 
 void lifecycle_var_destroy(const char *name)
@@ -69,6 +85,7 @@ void lifecycle_var_set_integer(const char *name, int64_t value)
 {
     (void)name;
     (void)value;
+    g_var_set_calls++;
 }
 
 void picture_Release(picture_t *pic)
@@ -96,10 +113,13 @@ static int fake_supports(vlc_fourcc_t chroma, int algo)
 
 static int fake_open(scaler_ctx_t *ctx)
 {
-    if (ctx->backend->id == SCALER_BACKEND_ZIMG)
+    if (ctx->backend->id == SCALER_BACKEND_ZIMG) {
         g_zimg_open_calls++;
-    else
+        if (g_zimg_open_result != 0) return -1;
+    } else {
         g_swscale_open_calls++;
+        if (g_swscale_open_result != 0) return -1;
+    }
     ctx->priv = ctx;
     return 0;
 }
@@ -149,6 +169,7 @@ const scaler_backend_t *scaler_pick(int pref, vlc_fourcc_t chroma, int algo)
 {
     (void)chroma;
     (void)algo;
+    if (g_picker_none) return NULL;
     if (pref == SCALER_BACKEND_SWSCALE) return &fake_swscale;
     if (pref == SCALER_BACKEND_ZIMG || pref == SCALER_BACKEND_AUTO)
         return &fake_zimg;
@@ -162,7 +183,7 @@ usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
     (void)width;
     (void)height;
     (void)stripe_min_rows;
-    return NULL;
+    return g_usm_pool_create_result;
 }
 
 int up_usm_pool_apply(usm_pool_t *pool, uint8_t *dst, int dst_stride,
@@ -174,24 +195,28 @@ int up_usm_pool_apply(usm_pool_t *pool, uint8_t *dst, int dst_stride,
     (void)src;
     (void)src_stride;
     (void)amount_q8;
-    return UP_USM_APPLY_FAILED_UNCHANGED;
+    g_usm_apply_calls++;
+    return g_usm_apply_status;
 }
 
 void up_usm_pool_destroy(usm_pool_t *pool)
 {
     (void)pool;
+    g_usm_destroy_calls++;
 }
 
 int up_usm_pool_effective_threads(const usm_pool_t *pool)
 {
     (void)pool;
-    return 0;
+    return g_usm_effective_threads;
 }
 
 const char *up_usm_pool_variant_name = "test";
 
 static void reset_state(void)
 {
+    for (size_t i = 0; i < sizeof lifecycle_config / sizeof lifecycle_config[0]; i++)
+        lifecycle_config[i].value = lifecycle_config_defaults[i];
     g_next_output = NULL;
     g_zimg_status = SCALER_PROCESS_OK;
     g_swscale_status = SCALER_PROCESS_OK;
@@ -203,6 +228,26 @@ static void reset_state(void)
     g_swscale_close_calls = 0;
     g_var_create_calls = 0;
     g_var_destroy_calls = 0;
+    g_var_set_calls = 0;
+    g_var_create_fail_at = 0;
+    g_picker_none = 0;
+    g_zimg_open_result = 0;
+    g_swscale_open_result = 0;
+    g_usm_pool_create_result = NULL;
+    g_usm_apply_status = UP_USM_APPLY_OK;
+    g_usm_apply_calls = 0;
+    g_usm_destroy_calls = 0;
+    g_usm_effective_threads = 1;
+}
+
+static void set_config(const char *name, int value)
+{
+    for (size_t i = 0; i < sizeof lifecycle_config / sizeof lifecycle_config[0]; i++) {
+        if (strcmp(name, lifecycle_config[i].name) == 0) {
+            lifecycle_config[i].value = value;
+            return;
+        }
+    }
 }
 
 static void init_picture(picture_t *pic, int properties_tag)
@@ -210,6 +255,34 @@ static void init_picture(picture_t *pic, int properties_tag)
     memset(pic, 0, sizeof(*pic));
     pic->i_planes = 3;
     pic->properties_tag = properties_tag;
+}
+
+static void init_i420_picture(picture_t *pic, uint8_t *storage,
+                              int width, int height, int properties_tag)
+{
+    const int chroma_width = (width + 1) / 2;
+    const int chroma_height = (height + 1) / 2;
+    const size_t y_size = (size_t)width * (size_t)height;
+    const size_t chroma_size = (size_t)chroma_width * (size_t)chroma_height;
+    init_picture(pic, properties_tag);
+    pic->format.i_chroma = VLC_CODEC_I420;
+    pic->format.i_width = (unsigned)width;
+    pic->format.i_height = (unsigned)height;
+    pic->format.i_visible_width = (unsigned)width;
+    pic->format.i_visible_height = (unsigned)height;
+    pic->p[0] = (plane_t) { storage, height, width, 1, height, width };
+    pic->p[1] = (plane_t) { storage + y_size, chroma_height, chroma_width,
+                            1, chroma_height, chroma_width };
+    pic->p[2] = (plane_t) { storage + y_size + chroma_size, chroma_height,
+                            chroma_width, 1, chroma_height, chroma_width };
+}
+
+static void fill_checkerboard(uint8_t *pixels, int width, int height)
+{
+    for (int y = 0; y < height; y++)
+        for (int x = 0; x < width; x++)
+            pixels[(size_t)y * (size_t)width + (size_t)x] =
+                ((x + y) & 1) ? 255 : 0;
 }
 
 static void init_filter(filter_t *filter)
@@ -324,11 +397,219 @@ static void test_fatal_failure_falls_back_once(void)
     END();
 }
 
+static void test_open_rejections_and_open_fallback(void)
+{
+    BEGIN("Open rejects ineligible inputs and recovers AUTO open failure");
+    filter_t filter;
+    reset_state();
+    init_filter(&filter);
+    set_config("autoupscale-target", UP_TARGET_AUTO);
+    set_config("autoupscale-skip-above", 180);
+    CHECK(Open((vlc_object_t *)&filter) == VLC_EGENERIC);
+
+    reset_state();
+    init_filter(&filter);
+    filter.fmt_in.video.i_chroma = VLC_FOURCC('V', 'A', 'O', 'P');
+    CHECK(Open((vlc_object_t *)&filter) == VLC_EGENERIC);
+
+    reset_state();
+    init_filter(&filter);
+    g_picker_none = 1;
+    CHECK(Open((vlc_object_t *)&filter) == VLC_EGENERIC);
+
+    reset_state();
+    init_filter(&filter);
+    g_zimg_open_result = -1;
+    CHECK(Open((vlc_object_t *)&filter) == VLC_SUCCESS);
+    CHECK(g_zimg_open_calls == 1 && g_swscale_open_calls == 1);
+    CHECK(filter.p_sys->scaler.backend == &fake_swscale);
+    Close((vlc_object_t *)&filter);
+
+    reset_state();
+    init_filter(&filter);
+    g_zimg_open_result = -1;
+    g_swscale_open_result = -1;
+    CHECK(Open((vlc_object_t *)&filter) == VLC_EGENERIC);
+    END();
+}
+
+static void test_open_usm_and_stats_failure_contracts(void)
+{
+    BEGIN("Open keeps scaling when optional USM or stat export fails");
+    filter_t filter;
+    reset_state();
+    init_filter(&filter);
+    set_config("autoupscale-usm", 20);
+    g_usm_pool_create_result = (usm_pool_t *)&filter;
+    CHECK(Open((vlc_object_t *)&filter) == VLC_SUCCESS);
+    CHECK(filter.p_sys->usm_pool == (usm_pool_t *)&filter);
+    CHECK(filter.p_sys->usm_amount_q8 > 0);
+    Close((vlc_object_t *)&filter);
+    CHECK(g_usm_destroy_calls == 1);
+
+    reset_state();
+    init_filter(&filter);
+    g_var_create_fail_at = 2;
+    CHECK(Open((vlc_object_t *)&filter) == VLC_SUCCESS);
+    CHECK(filter.p_sys->stats_vars_ok == 0);
+    CHECK(g_var_destroy_calls == 1);
+    Close((vlc_object_t *)&filter);
+    CHECK(g_var_destroy_calls == 1);
+    END();
+}
+
+static void init_scaler(scaler_ctx_t *scaler, int width, int height)
+{
+    *scaler = (scaler_ctx_t) {
+        .backend = &fake_zimg,
+        .src_w = width,
+        .src_h = height,
+        .src_coded_w = (unsigned)width,
+        .src_coded_h = (unsigned)height,
+        .dst_w = width,
+        .dst_h = height,
+        .chroma = VLC_CODEC_I420,
+    };
+}
+
+static void test_usm_success_failure_and_uncertain_output(void)
+{
+    BEGIN("USM success, safe failure, and uncertain output ownership");
+    uint8_t pixels[384] = { 0 };
+    filter_t filter;
+    filter_sys_t sys = { 0 };
+    picture_t input;
+    picture_t output;
+    reset_state();
+    init_filter(&filter);
+    init_scaler(&sys.scaler, 16, 16);
+    init_i420_picture(&input, pixels, 16, 16, 7);
+    init_i420_picture(&output, pixels, 16, 16, 0);
+    sys.usm_pool = (usm_pool_t *)&filter;
+    sys.usm_amount_q8 = 20;
+    g_usm_effective_threads = 2;
+    CHECK(ApplyUsmIfEnabled(&filter, &sys, &output) == UP_USM_APPLY_OK);
+    CHECK(g_usm_apply_calls == 1 && sys.usm_workers_logged == 1);
+
+    g_usm_apply_status = UP_USM_APPLY_FAILED_UNCHANGED;
+    CHECK(ApplyUsmIfEnabled(&filter, &sys, &output)
+          == UP_USM_APPLY_FAILED_UNCHANGED);
+    CHECK(sys.usm_pool == NULL && sys.usm_amount_q8 == 0);
+    CHECK(g_usm_destroy_calls == 1);
+
+    sys.usm_pool = (usm_pool_t *)&filter;
+    sys.usm_amount_q8 = 20;
+    g_usm_apply_status = UP_USM_APPLY_OUTPUT_UNCERTAIN;
+    CHECK(FinishScaledFrame(&filter, &sys, &input, &output, 0) == NULL);
+    CHECK(input.releases == 1 && output.releases == 1);
+    CHECK(sys.dropped_count == 1 && g_usm_destroy_calls == 2);
+    END();
+}
+
+static void test_probe_and_stats_lifecycle(void)
+{
+    BEGIN("probe validates views, closes its window, and retires grainy USM");
+    uint8_t pixels[384] = { 0 };
+    filter_t filter;
+    filter_sys_t sys = { 0 };
+    picture_t valid;
+    picture_t invalid;
+    reset_state();
+    init_filter(&filter);
+    init_scaler(&sys.scaler, 16, 16);
+    init_i420_picture(&valid, pixels, 16, 16, 0);
+    init_picture(&invalid, 0);
+    fill_checkerboard(pixels, 16, 16);
+    sys.probe.active = 1;
+    sys.probe.advice = 1;
+    sys.usm_pool = (usm_pool_t *)&filter;
+    sys.usm_amount_q8 = 20;
+    sys.usm_sharp_threshold = 1;
+    RunProbe(&filter, &sys, &invalid);
+    CHECK(sys.probe.accum.frames == 0);
+    RunProbe(&filter, &sys, &valid);
+    CHECK(sys.probe.accum.frames == 1);
+    sys.probe.accum.frames = UP_PROBE_WINDOW_FRAMES - 1;
+    RunProbe(&filter, &sys, &valid);
+    CHECK(sys.probe.active == 0 && sys.usm_skip_sharp == 1);
+    CHECK(sys.usm_pool == NULL && g_usm_destroy_calls == 1);
+
+    sys.probe.accum = (up_probe_accum_t) {
+        .lap_samples = UP_PROBE_MIN_SAMPLES_PER_KIND,
+        .edge_sum = (uint64_t)(UP_PROBE_THRESH_BLOCKY_EDGE_MEAN + 1)
+                    * UP_PROBE_MIN_SAMPLES_PER_KIND,
+        .edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND,
+        .frames = UP_PROBE_MIN_FRAMES,
+    };
+    sys.probe.advice_logged = 0;
+    LogProbeVerdict(&filter, &sys);
+    CHECK(sys.probe.advice_logged == 1);
+    LogProbeVerdict(&filter, &sys);
+
+    reset_state();
+    init_filter(&filter);
+    memset(&sys, 0, sizeof(sys));
+    sys.stats_vars_ok = 1;
+    sys.frame_count = 4;
+    sys.dropped_count = 2;
+    sys.last_stats_ns = 10;
+    MaybeLogStats(&filter, &sys, 10 + OBS_STATS_INTERVAL_NS);
+    CHECK(g_var_set_calls == STAT_VAR_COUNT);
+    RecordDrop(&filter, &sys);
+    CHECK(sys.dropped_count == 3);
+    END();
+}
+
+static void test_runtime_fallback_and_advisory(void)
+{
+    BEGIN("runtime fallback retires failed backends and advisory is safe");
+    filter_t filter;
+    filter_sys_t sys = { 0 };
+    reset_state();
+    init_filter(&filter);
+    init_scaler(&sys.scaler, 16, 16);
+    sys.backend_pref = SCALER_BACKEND_AUTO;
+    TryBackendFallback(&filter, &sys);
+    CHECK(sys.scaler.backend == &fake_swscale);
+    CHECK(g_zimg_close_calls == 1 && g_swscale_open_calls == 1);
+
+    reset_state();
+    init_filter(&filter);
+    memset(&sys, 0, sizeof(sys));
+    init_scaler(&sys.scaler, 16, 16);
+    sys.backend_pref = SCALER_BACKEND_ZIMG;
+    TryBackendFallback(&filter, &sys);
+    CHECK(sys.scaler.backend == NULL && g_zimg_close_calls == 1);
+
+    reset_state();
+    init_filter(&filter);
+    memset(&sys, 0, sizeof(sys));
+    init_scaler(&sys.scaler, 16, 16);
+    sys.backend_pref = SCALER_BACKEND_AUTO;
+    g_swscale_open_result = -1;
+    TryBackendFallback(&filter, &sys);
+    CHECK(sys.scaler.backend == NULL && g_swscale_open_calls == 1);
+
+    memset(&sys, 0, sizeof(sys));
+    init_scaler(&sys.scaler, 16, 16);
+    sys.target_fps = 30;
+    sys.algo = UP_ALGO_SPLINE36;
+    sys.usm_pct = 20;
+    up_perfmon_init(&sys.perfmon, sys.target_fps);
+    EmitPerfAdvisory(&filter, &sys);
+    END();
+}
+
 int main(void)
 {
     test_success_copies_properties_and_tears_down();
     test_output_allocation_failure_releases_input();
     test_transient_failure_keeps_backend();
     test_fatal_failure_falls_back_once();
+    test_open_rejections_and_open_fallback();
+    test_open_usm_and_stats_failure_contracts();
+    test_usm_success_failure_and_uncertain_output();
+    test_probe_and_stats_lifecycle();
+    test_runtime_fallback_and_advisory();
     return test_harness_report();
 }
