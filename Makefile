@@ -71,7 +71,11 @@ ifneq ($(strip $(ZIMG_LIBS)),)
 endif
 
 VLC_PLUGIN_BASE := $(shell pkg-config --variable=pluginsdir vlc-plugin 2>/dev/null)
-VLC_PLUGIN_DIR  := $(VLC_PLUGIN_BASE)/video_filter
+ifneq ($(strip $(VLC_PLUGIN_BASE)),)
+  VLC_PLUGIN_DIR := $(VLC_PLUGIN_BASE)/video_filter
+else
+  VLC_PLUGIN_DIR :=
+endif
 
 # Fail fast, at parse time, when a plugin build is requested without the
 # required SDKs — otherwise the first object compile dies on a cryptic
@@ -517,6 +521,9 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/tes
 	@echo
 	@echo "=== install action ==="
 	@sh tests/test_install_action.sh
+	@echo
+	@echo "=== plugin install paths ==="
+	@sh tests/test_plugin_install.sh
 	@echo
 	@echo "=== safe cleanup roots ==="
 	@sh tests/test_safe_rm_tree.sh
@@ -1250,16 +1257,18 @@ endif
 
 # --------- install ---------
 install: $(BUILD)/$(PLUGIN).so
-	@if [ -z "$(VLC_PLUGIN_DIR)" ]; then \
+	@if [ -z "$(strip $(VLC_PLUGIN_BASE))" ]; then \
 		echo "ERROR: cannot determine VLC plugin directory"; exit 1; fi
-	$(INSTALL) -d $(DESTDIR)$(VLC_PLUGIN_DIR)
-	$(INSTALL) -m 0644 $(BUILD)/$(PLUGIN).so $(DESTDIR)$(VLC_PLUGIN_DIR)/
+	$(INSTALL) -d "$(DESTDIR)$(VLC_PLUGIN_DIR)"
+	$(INSTALL) -m 0644 "$(BUILD)/$(PLUGIN).so" "$(DESTDIR)$(VLC_PLUGIN_DIR)/"
 	@echo "Installed to $(DESTDIR)$(VLC_PLUGIN_DIR)/$(PLUGIN).so"
 	@echo "If VLC doesn't pick it up, run:"
-	@echo "  vlc-cache-gen $(VLC_PLUGIN_BASE)"
+	@echo '  vlc-cache-gen "$(VLC_PLUGIN_BASE)"'
 
 uninstall:
-	rm -f $(DESTDIR)$(VLC_PLUGIN_DIR)/$(PLUGIN).so
+	@if [ -z "$(strip $(VLC_PLUGIN_BASE))" ]; then \
+		echo "ERROR: cannot determine VLC plugin directory"; exit 1; fi
+	rm -f -- "$(DESTDIR)$(VLC_PLUGIN_DIR)/$(PLUGIN).so"
 
 clean:
 	@./scripts/safe-rm-tree.sh remove "$(BUILD)" ".vlc-autoscaler-build-root" "$(CURDIR)"
