@@ -184,6 +184,8 @@ static void chk_dh_oor_matches_auto(const fuzz_inputs_t *fi, int dh)
 static void check_decide_target_height(const fuzz_inputs_t *fi)
 {
     int dh = up_decide_target_height(fi->src_h, fi->preset, fi->cores, fi->mem_mb);
+    if (dh != up_decide_target_height(fi->src_h, fi->preset, fi->cores, 0))
+        abort();
     if (fi->src_h > 0) {
         if (dh < 0) abort();
         if (dh != 0 && dh < fi->src_h) abort();

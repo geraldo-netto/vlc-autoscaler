@@ -34,6 +34,9 @@ the behavior defined here when interacting with this workspace.
 - Default to no comments. Add one only when the WHY is non-obvious (hidden constraint, subtle
   invariant, workaround for a specific bug). Record assumptions/design intent in commit notes
   rather than inline.
+- Runtime policy: do not automatically lower target geometry from detected host RAM. User
+  configuration selects quality; allocation failures must use the established graceful failure
+  path rather than introducing a memory threshold.
 - Prefer explicit, maintainable solutions over clever shortcuts.
 - Propose business/design patterns and DDD only when they improve clarity or structure.
 

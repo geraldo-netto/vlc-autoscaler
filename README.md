@@ -145,9 +145,10 @@ See [usage and troubleshooting](docs/USAGE.md) for practical variants.
 | `--autoupscale-zimg-stripe-lines` | 0–128 | 0 | Advanced minimum zimg output lines per stripe. It can change the row/column grid and output seams; benchmark it with integration quality checks. `0` selects the validated default of 16. |
 | `--autoupscale-usm-sharp-threshold` | 0–20000 | 3500 | Skip USM on grainy sources above this metric. `0` disables skipping. |
 
-AUTO chooses 1080p only with at least four available CPUs, at least 2 GiB RAM
-(or unknown RAM), and an upscale ratio no greater than 4×. Otherwise it chooses
-720p. Explicit targets bypass `skip-above` but never downscale.
+AUTO chooses 1080p only with at least four available CPUs and an upscale ratio
+no greater than 4×. Otherwise it chooses 720p. Explicit targets bypass
+`skip-above` but never downscale. AUTO never gates its choice on detected RAM;
+allocation failures are handled by the normal backend failure path.
 
 ## Build and verify
 

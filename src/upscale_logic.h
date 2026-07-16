@@ -66,18 +66,15 @@ static inline int up__clamp_even(int v)
  * Extracted from up_decide_target_height to keep its cyclomatic
  * complexity within the project ceiling.
  */
-static inline int up__auto_target_height(int src_h, int cores,
-                                         unsigned long mem_mb)
+static inline int up__auto_target_height(int src_h, int cores)
 {
-    /* AUTO: 1080p only if we have >= 4 cores AND (>= 2 GB RAM or unknown)
-     * AND the upscale ratio to 1080p stays within UP_MAX_RATIO.
+    /* AUTO: 1080p only if we have >= 4 cores and the upscale ratio to 1080p
+     * stays within UP_MAX_RATIO.
      * AUTO never picks targets above 1080p — higher targets must be explicit
      * because they substantially increase per-frame work. */
     int ratio_ok_for_1080p = (src_h <= INT_MAX / UP_MAX_RATIO)
                           && (src_h * UP_MAX_RATIO >= 1080);
-    int can_1080p = (cores >= 4)
-                 && (mem_mb == 0 || mem_mb >= 2048)
-                 && ratio_ok_for_1080p;
+    int can_1080p = cores >= 4 && ratio_ok_for_1080p;
     return can_1080p ? 1080 : 720;
 }
 
@@ -114,7 +111,7 @@ static const int UP_PRESET_HEIGHTS[UP_TARGET_MAX + 1] = {
  *   preset  : any UP_TARGET_* value through UP_TARGET_8K
  *             (anything outside that range is treated as AUTO)
  *   cores   : number of CPU cores available (>= 1; 0 treated as 1)
- *   mem_mb  : total RAM in MB; 0 means "unknown -> assume sufficient"
+ *   mem_mb  : retained for source compatibility; it does not affect output
  *
  * Returns:
  *   The desired target height. Will be >= src_h. Will not exceed
@@ -123,6 +120,7 @@ static const int UP_PRESET_HEIGHTS[UP_TARGET_MAX + 1] = {
 static inline int up_decide_target_height(int src_h, int preset,
                                           int cores, unsigned long mem_mb)
 {
+    (void)mem_mb;
     if (src_h <= 0)
         return 0;
     if (cores <= 0)
@@ -130,7 +128,7 @@ static inline int up_decide_target_height(int src_h, int preset,
 
     int target_h = (preset >= UP_TARGET_720P && preset <= UP_TARGET_MAX)
                  ? UP_PRESET_HEIGHTS[preset]
-                 : up__auto_target_height(src_h, cores, mem_mb);
+                 : up__auto_target_height(src_h, cores);
 
     /* Clamp to UP_MAX_RATIO * src_h, watching for overflow. */
     if (src_h <= INT_MAX / UP_MAX_RATIO) {
@@ -245,7 +243,7 @@ static inline int up__plan_result_ok(int src_w, int src_h,
  *   src_w, src_h : source dimensions
  *   skip_above   : in AUTO, if positive and src_h >= it, bypass (typical: 720)
  *   preset       : UP_TARGET_*
- *   cores, mem_mb: hardware capacity (see up_decide_target_height)
+ *   cores, mem_mb: retained argument pair (memory does not affect AUTO)
  *   out          : populated with (width, height) of upscale target,
  *                  or zeroed when the function returns 0
  *

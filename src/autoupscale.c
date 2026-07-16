@@ -22,9 +22,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <unistd.h>
-#ifdef __linux__
-#  include <sys/sysinfo.h>
-#endif
 
 #include "cpu_level.h"
 #include "upscale_logic.h"
@@ -82,7 +79,7 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
 
 #define TARGET_TEXT     N_("Target resolution")
 #define TARGET_LONGTEXT N_( \
-    "0 = auto (decide between 720p and 1080p based on CPU/RAM), " \
+    "0 = auto (decide between 720p and 1080p based on CPU), " \
     "1 = 720p, 2 = 1080p, 3 = 1440p, 4 = 4K (2160p), " \
     "5 = 5K (2880p), 6 = 8K (4320p). " \
     "Targets above 1080p require explicit selection. " \
@@ -357,25 +354,6 @@ struct filter_sys_t
  * Helpers
  *****************************************************************************/
 
-static void DetectHardware( int *cores, unsigned long *mem_mb )
-{
-    *cores = up_detect_cores();
-    *mem_mb = 0;
-#ifdef __linux__
-    struct sysinfo info;
-    if( sysinfo( &info ) == 0 )
-    {
-        /* Compute in 64-bit: on 32-bit hosts `totalram * mem_unit` overflows
-         * `unsigned long` and would yield a bogus (small) mem_mb that skews
-         * the AUTO 720p/1080p decision. Saturate when narrowing back. */
-        uint64_t mb = ( (uint64_t)info.totalram * (uint64_t)info.mem_unit )
-                      >> 20;  /* / (1024*1024) */
-        *mem_mb = ( mb > (uint64_t)ULONG_MAX ) ? ULONG_MAX
-                                               : (unsigned long)mb;
-    }
-#endif
-}
-
 /*****************************************************************************
  * Open: probe input format, decide whether to engage, set up scaler + USM
  *****************************************************************************
@@ -636,11 +614,11 @@ static int CheckCpuLevel( vlc_object_t *p_this )
     return VLC_SUCCESS;
 }
 
-/* CX-1: the one-shot "engaged" diagnostic. Every value but preset/cores/mem_mb
+/* CX-1: the one-shot "engaged" diagnostic. Every value but preset/cores
  * is already on p_sys by the time Open reaches this point, so the banner needs
  * no wide parameter list. Extracted from Open() to cut its physical length. */
 static void LogEngaged( filter_t *p_filter, const filter_sys_t *p_sys,
-                        int preset, int cores, unsigned long mem_mb )
+                        int preset, int cores )
 {
     const scaler_ctx_t *sc = &p_sys->scaler;
     int threads_resolved = up_threads_decide( sc->threads_pref, cores );
@@ -648,11 +626,11 @@ static void LogEngaged( filter_t *p_filter, const filter_sys_t *p_sys,
     msg_Info( p_filter,
               "AutoUpscale engaged: %dx%d -> %dx%d "
               "(backend=%s preset=%d algo=%d "
-              "threads_budget=%d cores=%d mem=%luMB simd=%s)",
+              "threads_budget=%d cores=%d simd=%s)",
               sc->src_w, sc->src_h, sc->dst_w, sc->dst_h,
               sc->backend->name,
               preset, sc->algo,
-              threads_resolved, cores, mem_mb, up_usm_pool_variant_name );
+              threads_resolved, cores, up_usm_pool_variant_name );
 }
 
 static int Open( vlc_object_t *p_this )
@@ -672,13 +650,11 @@ static int Open( vlc_object_t *p_this )
 
     ClampConfig( &preset, &algo, &backend_pref, &usm_pct, &skip_above );
 
-    int cores;
-    unsigned long mem_mb;
-    DetectHardware( &cores, &mem_mb );
+    const int cores = up_detect_cores();
 
     up_dims_t target = { 0, 0 };
     if( !up_plan_upscale( src.dims.width, src.dims.height, skip_above, preset,
-                          cores, mem_mb, &target ) )
+                          cores, 0, &target ) )
     {
         msg_Dbg( p_filter,
                  "AutoUpscale: bypassing %dx%d (skip>=%d, preset=%d)",
@@ -712,7 +688,7 @@ static int Open( vlc_object_t *p_this )
     p_filter->p_sys           = p_sys;
     p_filter->pf_video_filter = Filter;
 
-    LogEngaged( p_filter, p_sys, preset, cores, mem_mb );
+    LogEngaged( p_filter, p_sys, preset, cores );
 
     return VLC_SUCCESS;
 }

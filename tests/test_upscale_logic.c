@@ -57,10 +57,12 @@ static void test_decide_auto_weak_hw(void)
     BEGIN("decide_target_height: auto falls back to 720 on weak hw");
     /* 2 cores -> 720p */
     CHECK_EQ_INT(up_decide_target_height(540, UP_TARGET_AUTO, 2, 8192), 720);
-    /* 1 GB RAM -> 720p */
-    CHECK_EQ_INT(up_decide_target_height(540, UP_TARGET_AUTO, 8, 1024), 720);
-    /* mem=0 (unknown) is treated as sufficient, so this should be 1080 */
+    /* AUTO does not impose a host-memory threshold. */
+    CHECK_EQ_INT(up_decide_target_height(540, UP_TARGET_AUTO, 8, 1024), 1080);
+    /* Every reported RAM value gives the same AUTO result. */
     CHECK_EQ_INT(up_decide_target_height(540, UP_TARGET_AUTO, 8, 0), 1080);
+    CHECK_EQ_INT(up_decide_target_height(540, UP_TARGET_AUTO, 8,
+                                         UINT32_MAX), 1080);
     END();
 }
 
