@@ -486,6 +486,9 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/tes
 	@echo "=== benchmark matrix parser ==="
 	@sh tests/test_bench_matrix.sh
 	@echo
+	@echo "=== USM benchmark scripts ==="
+	@sh tests/test_bench_usm_scripts.sh
+	@echo
 	@echo "=== coverage parsers ==="
 	@sh tests/test_coverage_parsers.sh
 

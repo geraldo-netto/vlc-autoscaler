@@ -12,11 +12,10 @@ b_avx512=$3
 frames=${BENCH_FRAMES:-300}
 amount=${BENCH_AMOUNT:-20}
 
-printf '%s\n' 'isa,threads,width,height,frames,amount,fill,us_per_frame'
+printf '%s\n' 'isa,requested_threads,effective_threads,width,height,frames,amount,fill,us_per_frame'
 for size in '1280 720' '1920 1080' '2560 1440'; do
-    set -- $size
-    width=$1
-    height=$2
+    width=${size% *}
+    height=${size#* }
     for threads in 1 4 8 12; do
         isa=sse2
         for bin in "$b_sse2" "$b_avx2" "$b_avx512"; do
