@@ -60,7 +60,6 @@ backend state and does not rebuild graphs.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| SCAL-7 | open | S | The three-job CI workflow has no superseded-run cancellation (`.github/workflows/ci.yml:3-13`). | Rapid pushes retain stale build, analyzer, and sequential timed-fuzzer runs, consuming runner quota and delaying current feedback. Add ref/PR-scoped `concurrency` with `cancel-in-progress` for non-release runs. |
 
 No additional scalability finding.
 
