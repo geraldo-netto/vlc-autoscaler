@@ -277,7 +277,7 @@ static inline int up_worker_pool_stop(up_worker_pool_t *p)
 
 static inline void up__pool_release_slots(up_worker_pool_t *p, int n)
 {
-    if (p->ops->release == NULL) return;
+    if (p->ops == NULL || p->ops->release == NULL) return;
     for (int i = 0; i < n; i++) p->ops->release(p->owner, i);
 }
 
@@ -419,8 +419,8 @@ static inline int up_worker_pool_dispatch(up_worker_pool_t *p)
 
 /*
  * Stop the threads, release every live slot, and free the pool's own storage.
- * Safe on a pool that was configured but never started, and on one whose start
- * failed part-way. Returns -1 without releasing any storage if a worker could
+ * Safe on a zero-initialized pool, one configured but never started, and one
+ * whose start failed part-way. Returns -1 without releasing any storage if a worker could
  * not be reaped; the owner must quarantine its complete allocation island.
  */
 static inline int up_worker_pool_destroy(up_worker_pool_t *p)

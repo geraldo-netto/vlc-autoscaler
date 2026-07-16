@@ -199,6 +199,9 @@ static int run_lifecycle(fz_pool_t *f, int n_pref, bool strict, int dispatches,
 
 static int run_one(const uint8_t *data, size_t size)
 {
+    up_worker_pool_t unconfigured = { 0 };
+    if (up_worker_pool_destroy(&unconfigured) != 0)
+        FZ_FAIL("unconfigured pool was not destroyable\n");
     if (size < 4) return 0;
 
     const int  n_pref     = 1 + (data[0] % 8);            /* 1..8 workers */

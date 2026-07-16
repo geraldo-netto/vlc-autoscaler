@@ -704,6 +704,17 @@ static void test_all_algos(void)
     END();
 }
 
+static void test_open_close_without_process(void)
+{
+    BEGIN("open then close without a frame is safe");
+    scaler_ctx_t ctx;
+    zt_ctx_init(&ctx, VLC_CODEC_I420, 640, 360, 1280, 720, 4, 1);
+    CHECK(ctx.backend->open(&ctx) == 0);
+    ctx.backend->close(&ctx);
+    CHECK(ctx.priv == NULL);
+    END();
+}
+
 static void offset_picture_storage(picture_t *pic, ptrdiff_t offset)
 {
     for (int i = 0; i < pic->i_planes; i++) pic->p[i].p_pixels += offset;
@@ -1318,6 +1329,7 @@ int main(void)
     test_rows_only_transition_preserves_dst_mode();
     test_supports();
     test_all_algos();
+    test_open_close_without_process();
     test_alignment_drift_escalates_to_fatal();
     test_alternating_alignment_drift_escalates();
     test_transient_preflight_recovers();

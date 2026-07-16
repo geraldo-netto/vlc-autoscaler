@@ -118,7 +118,7 @@ this technical domain; another business/domain pattern would not clarify it.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| REL-13 | open | S | Closing a successfully opened zimg backend before its first frame dereferences the unconfigured worker-pool operations pointer and segfaults. | Reproduced by the supplied VLC 3.0.20 coredump: `zimg_close` → `up_worker_pool_destroy` → `up__pool_release_slots`; make destruction of a zero-initialized/unconfigured pool safe and add an open-without-process regression test. |
+No open finding.
 
 ## portability/standards conformance
 

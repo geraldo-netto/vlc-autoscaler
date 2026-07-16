@@ -708,6 +708,14 @@ static void test_destroy_without_start(void)
     END();
 }
 
+static void test_destroy_without_config(void)
+{
+    BEGIN("destroy on a zero-initialized pool is a no-op");
+    up_worker_pool_t pool = { 0 };
+    CHECK_EQ(up_worker_pool_destroy(&pool), 0);
+    END();
+}
+
 int main(void)
 {
     printf("Running worker-pool lifecycle tests...\n");
@@ -728,6 +736,7 @@ int main(void)
     test_exit_failures_cancel_and_stop();
     test_worker_cancel_state_failures();
     test_destroy_without_start();
+    test_destroy_without_config();
 
     return test_harness_report();
 }
