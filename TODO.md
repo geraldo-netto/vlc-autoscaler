@@ -117,6 +117,7 @@ this technical domain; another business/domain pattern would not clarify it.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | REL-15 | open | M | Stock VLC 3.0.20 direct playback can still exhaust the chroma converter-chain limit while adapting AutoUpscale's changed video dimensions, producing `Too high level of recursion (3)` and converter/decoder failures. | The supplied log confirms the unpatched limit. Apply `patches/vlc-3.0-raise-chain-level.patch` when rebuilding VLC, or use the documented transcode display path generated for the Nemo action; installing the plugin alone cannot change VLC's chain solver. |
+| REL-16 | open | M | VLC 3.0.20's `:display` stream-output path creates a private input resource and audio output, so the VLC GUI, hotkeys, and RC volume controls target the separate playlist-owned audio output and do not change the audible transcoded stream. | Reproduced with the fixed `#transcode{...}:display` profile: logs show the audible audio output created by `main stream out`, while VLC 3.0.x `playlist_VolumeSet` only obtains the playlist input resource's output. System mixer volume remains a workaround; retaining synchronized transcoded audio with VLC-native volume control requires upstream VLC integration or an equivalent local patch. |
 
 ## portability/standards conformance
 
