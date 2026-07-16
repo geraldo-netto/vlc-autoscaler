@@ -42,6 +42,11 @@ scripts/bench_usm_isa.sh build_dev/isa-sse2/bench_usm_pool \
 
 Set `BENCH_FRAMES` or `BENCH_AMOUNT` to override the matrix defaults. Run each
 matrix repeatedly under the same governor and load before changing dispatch.
+The ISA script prepends `isa` to the benchmark's eight fields:
+
+```text
+isa,requested_threads,effective_threads,width,height,frames,amount,fill,us_per_frame
+```
 
 `bench_usm_pool` emits:
 
@@ -92,7 +97,8 @@ Cross-variant production output equivalence is enforced by
 The pinning matrix compares scheduler placement with current first-allowed-CPU
 pinning under all-logical-CPU and one-thread-per-core affinity masks. Its
 default masks fit the 32-thread/16-core reference host; edit them to match the
-measured machine. Repeat the matrix before changing the opt-in pinning default.
+measured machine. Repeat the matrix before changing the default or a
+deployment's pinning setting.
 
 The zimg benchmark also reports first-frame lazy initialization in
 microseconds and process maximum resident set in KiB before steady-state frame
@@ -109,5 +115,8 @@ microbenchmark, not an end-to-end frame latency result.
 `bench-pipeline` runs zimg followed by in-place USM, matching their sequential
 production order while keeping both persistent pools alive. It reports the
 combined first-frame initialization, process RSS, and steady frame time by
-worker count. Optional arguments after frames select pinning, zimg minimum
-stripe lines, and USM minimum stripe rows for same-host default tuning.
+worker count. Its interface is `<threads> [frames] [pin] [zimg-lines]
+[usm-lines]`; zero for either stripe value selects its production default.
+Changing zimg stripe lines can change the row/column grid, including whether
+source-direct and copy-in modes use the same independent graphs. Compare output
+quality as well as timing before changing the validated 16-line default.

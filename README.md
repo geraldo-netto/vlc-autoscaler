@@ -140,10 +140,10 @@ See [usage and troubleshooting](docs/USAGE.md) for practical variants.
 | `--autoupscale-threads` | 0–64 | 0 | Shared zimg/USM worker preference. `0` uses the automatic policy capped at 12 workers. |
 | `--autoupscale-pin-threads` | 0–1 | 1 | Best-effort zimg worker pinning. Disable if it regresses the deployment host. |
 | `--autoupscale-zerocopy-dst` | 0–1 | 1 | Direct zimg writes on compatible row grids. `0` forces copy-out. |
-| `--autoupscale-zerocopy-src` | 0–1 | 1 | Direct zimg reads. `0` forces copy-in and disables column tiling. |
+| `--autoupscale-zerocopy-src` | 0–1 | 1 | Direct zimg reads. `0` forces copy-in and disables column tiling. A resulting grid change can create bounded resampling seams, so copy and direct modes are byte-identical only when their grid is unchanged. |
 | `--autoupscale-content-probe` | 0–1 | 1 | Emit one advisory for soft and blocky sources. It never changes output. |
 | `--autoupscale-usm-stripe-min-rows` | 0–256 | 0 | Minimum USM rows per worker. `0` selects 8. |
-| `--autoupscale-zimg-stripe-lines` | 0–128 | 0 | Minimum zimg output lines per stripe. `0` selects 16. |
+| `--autoupscale-zimg-stripe-lines` | 0–128 | 0 | Advanced minimum zimg output lines per stripe. It can change the row/column grid and output seams; benchmark it with integration quality checks. `0` selects the validated default of 16. |
 | `--autoupscale-usm-sharp-threshold` | 0–20000 | 3500 | Skip USM on grainy sources above this metric. `0` disables skipping. |
 
 AUTO chooses 1080p only with at least four available CPUs, at least 2 GiB RAM
@@ -184,8 +184,10 @@ software. Missing optional tools do not affect a normal plugin build.
 
 ## Compatibility
 
-Supported: Linux x86-64, VLC 3.x, GCC or Clang. VLC 4, other operating systems,
-and other architectures are outside the compatibility contract.
+Supported: Linux x86-64 and VLC 3.x. The feature-level test builds and
+`MULTIVERSION=1` require GCC 11+ or Clang 12+ for `-march=x86-64-v3/v4`.
+VLC 4, other operating systems, and other architectures are outside the
+compatibility contract.
 
 Useful diagnostics:
 

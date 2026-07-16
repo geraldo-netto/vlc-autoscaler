@@ -125,7 +125,7 @@ No open finding.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| PORT-12 | open | S | The compatibility contract says Linux x86-64 with GCC or Clang, but all x86 test builds and `MULTIVERSION=1` require compiler support for `-march=x86-64-v3/v4` (`README.md:84-101,115-118`; `Makefile:216-229,1273-1280`). | Those options begin with GCC 11 and Clang 12; older compilers fail before the runtime CPUID fallback in `src/cpu_level.h` matters. Document and enforce minimum versions or feature-probe the flags and provide an explicit-feature fallback. |
+| PORT-12 | open | S | The compatibility contract now documents that feature-level builds require GCC 11+ or Clang 12+ (`README.md:187-190`), but the Makefile still passes `-march=x86-64-v3/v4` unconditionally and fails only when the compiler rejects them. | Feature-probe the flags or enforce the documented minimum before the first variant/test compile, with an explicit-feature fallback where feasible. |
 
 No other open finding. GNU/Linux-specific CPU affinity, dynamic loading,
 and VLC plugin interfaces are isolated, while the supported compiler/CPU
@@ -164,11 +164,11 @@ local GCC multi-version plus Clang single-version plugin links.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| BUILD-1 | open | S | CI's Clang step builds only `MULTIVERSION=0` and omits Clang visibility verification (`.github/workflows/ci.yml:72-81`), while the compatibility contract supports Clang (`README.md:115-118`). | Build and link both Clang configurations, then run visibility and linked-ISA gates under Clang too. |
-| BUILD-6 | open | S | Empty `VLC_PLUGIN_BASE` becomes non-empty `/video_filter` (`Makefile:55-56`), while install/uninstall validate only the derived value and use unquoted paths (`Makefile:1209-1220`). | Validate a non-empty base in both targets before deriving the subdirectory, and quote every destination. |
+| BUILD-1 | open | S | CI's Clang step builds only `MULTIVERSION=0` and omits Clang visibility verification (`.github/workflows/ci.yml:73-82`), while the compatibility contract supports Clang (`README.md:187-190`). | Build and link both Clang configurations, then run visibility and linked-ISA gates under Clang too. |
+| BUILD-6 | open | S | Empty `VLC_PLUGIN_BASE` becomes non-empty `/video_filter` (`Makefile:55-56`), while install/uninstall validate only the derived value and use unquoted paths (`Makefile:1227-1238`). | Validate a non-empty base in both targets before deriving the subdirectory, and quote every destination. |
 | BUILD-7 | open | S | The Sonar job runs for every pull request but requires `SONAR_TOKEN` (`.github/workflows/ci.yml:3-8,221-290`); fork pull requests do not receive repository secrets. | Gate Sonar to pushes/internal pull requests while retaining token-free build checks for forks. |
-| BUILD-11 | open | S | `PLUGIN_GOALS` omits the standalone `abi-layout-check` and `check-visibility` goals (`Makefile:58-70` versus `:348-405`). | Direct invocation without SDKs bypasses the friendly prerequisite check and fails deep in compilation. Add both goals to `PLUGIN_GOALS`. |
-| BUILD-31 | open | S | The repository has four user/developer Markdown guides, but CI validates only C, shell, and workflow files; no Markdown style or relative-link gate exists (`Makefile:1156-1162`; `.github/workflows/ci.yml:120-131`). | Add a pinned Markdown linter and local-link checker to `semantic-analysis`/CI, with configuration matching the existing tables and long command examples. |
+| BUILD-11 | open | S | `PLUGIN_GOALS` omits the standalone `abi-layout-check` and `check-visibility` goals (`Makefile:58-70` versus `:363-405`). | Direct invocation without SDKs bypasses the friendly prerequisite check and fails deep in compilation. Add both goals to `PLUGIN_GOALS`. |
+| BUILD-31 | open | S | The README plus four user/developer guides are not validated in CI; it checks only C, shell, and workflow files (`Makefile:1174-1180`; `.github/workflows/ci.yml:128-132`). | Add a pinned Markdown linter and local-link checker to `semantic-analysis`/CI, with configuration matching the existing tables and long command examples. |
 | BUILD-32 | open | S | A non-empty, whitespace-free `BUILD` value is accepted (`Makefile:19-30`), but a first `make BUILD=build_audit test` fails because `safe-rm-tree.sh` permits in-repository roots only when Git already ignores them (`scripts/safe-rm-tree.sh:43-50`). | Either document/enforce the accepted ignored build-directory pattern or let the guarded initializer create a new untracked, dedicated root after proving it is not tracked and has no marker/symlink hazards. Add a regression for a fresh custom `BUILD` path. |
 
 ## observability

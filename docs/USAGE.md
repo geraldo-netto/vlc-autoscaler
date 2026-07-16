@@ -84,7 +84,14 @@ When the performance advisory appears, change one setting at a time:
 
 Leave `--autoupscale-threads=0` unless same-host measurements show a better
 value. More workers can increase dispatch, cache, and memory-bandwidth costs.
-Pinning is for measured dedicated-host cases, not ordinary desktop playback.
+Pinning is best-effort and on by default; disable it only when measurements on
+the deployment host show a regression.
+
+Do not change `--autoupscale-zimg-stripe-lines` as a general performance knob.
+It can change the zimg row/column grid; source-direct and copy-in paths can
+then have bounded partition seams rather than byte-identical output. Keep the
+validated automatic value (`0`, selecting 16) unless both output and throughput
+tests support another value on the deployment host.
 
 ## Diagnose output failures
 

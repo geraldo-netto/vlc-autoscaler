@@ -51,7 +51,11 @@ private contexts, workers, graphs, and scratch in `close`.
 The zimg source and destination paths independently choose direct or scratch
 I/O. Direct access requires validated geometry and alignment. Misalignment on
 the first frame selects persistent scratch; unsafe later geometry drift drops
-the frame. Column cells always use private destination tile scratch.
+the frame. Column cells always use private destination tile scratch. Copy and
+direct I/O are byte-identical when they retain the same grid. If source-direct
+access enables column tiling that copy-in disables, independently phased graphs
+can produce bounded seam differences; that topology change is validated with a
+seam criterion rather than byte equality.
 
 ## Worker lifecycle
 
