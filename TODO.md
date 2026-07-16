@@ -168,7 +168,6 @@ local GCC multi-version plus Clang single-version plugin links.
 | BUILD-7 | open | S | The Sonar job runs for every pull request but requires `SONAR_TOKEN` (`.github/workflows/ci.yml:3-8,221-290`); fork pull requests do not receive repository secrets. | Gate Sonar to pushes/internal pull requests while retaining token-free build checks for forks. |
 | BUILD-11 | open | S | `PLUGIN_GOALS` omits the standalone `abi-layout-check` and `check-visibility` goals (`Makefile:58-70` versus `:363-405`). | Direct invocation without SDKs bypasses the friendly prerequisite check and fails deep in compilation. Add both goals to `PLUGIN_GOALS`. |
 | BUILD-31 | open | S | The README plus four user/developer guides are not validated in CI; it checks only C, shell, and workflow files (`Makefile:1174-1180`; `.github/workflows/ci.yml:128-132`). | Add a pinned Markdown linter and local-link checker to `semantic-analysis`/CI, with configuration matching the existing tables and long command examples. |
-| BUILD-32 | open | S | A non-empty, whitespace-free `BUILD` value is accepted (`Makefile:19-30`), but a first `make BUILD=build_audit test` fails because `safe-rm-tree.sh` permits in-repository roots only when Git already ignores them (`scripts/safe-rm-tree.sh:43-50`). | Either document/enforce the accepted ignored build-directory pattern or let the guarded initializer create a new untracked, dedicated root after proving it is not tracked and has no marker/symlink hazards. Add a regression for a fresh custom `BUILD` path. |
 
 ## observability
 

@@ -75,4 +75,36 @@ test -f "$fresh_repo/build/marker"
 "$helper" remove "$fresh_repo/build" marker "$fresh_repo"
 test ! -e "$fresh_repo/build"
 
+custom_build="$repo_root/build_audit_safe_rm_test.$$"
+make -s -C "$repo_root" BUILD="$custom_build" clean
+test ! -e "$custom_build"
+make -s -C "$repo_root" BUILD="$custom_build" "$custom_build/.vlc-autoscaler-build-root"
+test -f "$custom_build/.vlc-autoscaler-build-root"
+make -s -C "$repo_root" BUILD="$custom_build" clean
+test ! -e "$custom_build"
+
+existing_custom="$repo_root/existing_build_safe_rm_test.$$"
+mkdir -p -- "$existing_custom"
+if "$helper" init "$existing_custom" marker "$repo_root" 2>/dev/null; then
+    echo "existing unignored root was armed" >&2
+    exit 1
+fi
+rm -rf -- "$existing_custom"
+
+root_target="$tmp/root-target"
+mkdir -p -- "$root_target"
+ln -s -- "$root_target" "$tmp/root-link"
+if "$helper" init "$tmp/root-link" marker "$repo_root" 2>/dev/null; then
+    echo "symlink root was armed" >&2
+    exit 1
+fi
+
+marker_link_root="$tmp/marker-link-root"
+mkdir -p -- "$marker_link_root"
+ln -s -- "$tmp/marker-target" "$marker_link_root/marker"
+if "$helper" init "$marker_link_root" marker "$repo_root" 2>/dev/null; then
+    echo "symlink marker was followed" >&2
+    exit 1
+fi
+
 echo "safe cleanup root checks OK"

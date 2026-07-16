@@ -39,6 +39,14 @@ if [ "$root_abs" = / ]; then
     echo "refusing filesystem root cleanup" >&2
     exit 2
 fi
+if [ -L "$root" ]; then
+    echo "refusing symlink build root: '$root_abs'" >&2
+    exit 2
+fi
+if [ -L "$root/$marker" ]; then
+    echo "refusing symlink cleanup marker: '$root_abs/$marker'" >&2
+    exit 2
+fi
 
 case "$repository_abs/" in
     "$root_abs/"*)
@@ -54,7 +62,9 @@ case "$root_abs/" in
             echo "refusing tracked cleanup root: '$root_abs'" >&2
             exit 2
         fi
-        if ! git -C "$repository_abs" check-ignore -q -- "$relative/"; then
+        if ! git -C "$repository_abs" check-ignore -q -- "$relative/" &&
+           [ -e "$root" ] &&
+           [ ! -f "$root/$marker" ]; then
             echo "refusing unignored cleanup root: '$root_abs'" >&2
             exit 2
         fi
