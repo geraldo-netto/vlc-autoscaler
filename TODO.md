@@ -118,7 +118,6 @@ this technical domain; another business/domain pattern would not clarify it.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-
 No open finding.
 
 ## portability/standards conformance

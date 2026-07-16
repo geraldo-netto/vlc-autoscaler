@@ -1129,7 +1129,7 @@ static void TryBackendFallback( filter_t *p_filter, filter_sys_t *p_sys )
     const scaler_backend_t *sw = scaler_pick( SCALER_BACKEND_SWSCALE,
                                               ctx->chroma, ctx->algo );
     RetireBackend( ctx );
-    if( !sw || sw->open( ctx ) != 0 )
+    if( !sw )
     {
         msg_Err( p_filter,
                  "AutoUpscale: swscale fallback open failed; "
@@ -1137,6 +1137,14 @@ static void TryBackendFallback( filter_t *p_filter, filter_sys_t *p_sys )
         return;
     }
     ctx->backend = sw;
+    if( sw->open( ctx ) != 0 )
+    {
+        ctx->backend = NULL;
+        msg_Err( p_filter,
+                 "AutoUpscale: swscale fallback open failed; "
+                 "dropping all frames for this playback" );
+        return;
+    }
     msg_Info( p_filter,   /* OBS-2: msg_Warn is suppressed by default */
               "AutoUpscale: zimg failed at runtime; "
               "fell back to swscale for the rest of this playback" );
