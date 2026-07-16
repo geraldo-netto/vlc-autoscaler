@@ -24,7 +24,6 @@ gaps are retained where material. Row format:
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| SEC-2 | open | M | CI installs an unpinned PyPI `lizard` package and downloads a mutable Sonar build-wrapper ZIP without integrity verification (`.github/workflows/ci.yml:37-41,243-252`). | Pin the Python package version and hash; pin the wrapper artifact and verify its published checksum/signature before extraction and execution. |
 
 No additional security issue was found in the production media/configuration
 paths: geometry is validated before pointer formation, user integers are
