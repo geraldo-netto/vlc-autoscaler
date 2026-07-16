@@ -160,7 +160,6 @@ local GCC multi-version plus Clang single-version plugin links.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| BUILD-1 | open | S | CI's Clang step builds only `MULTIVERSION=0` and omits Clang visibility verification (`.github/workflows/ci.yml:73-82`), while the compatibility contract supports Clang (`README.md:187-190`). | Build and link both Clang configurations, then run visibility and linked-ISA gates under Clang too. |
 
 ## observability
 

@@ -89,11 +89,21 @@ jobs:
       # BUILD-4: also compile the shipped plugin under clang so clang-only
       # warnings and codegen don't go untested. -Wno-unreachable-code-generic-
       # assoc suppresses a false positive from VLC's own _Generic macros
-      # (var_GetChecked), not our code.
-      - name: Build the VLC plugin (clang, -Werror)
+      # (var_GetChecked), not our code. Exercise both shipped configurations
+      # and the same ABI/ISA gates used for GCC.
+      - name: Build both VLC plugin configurations (clang, -Werror)
         run: |
           make clean
           make plugin CC=clang \
+            EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
+          make check-visibility CC=clang \
+            EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
+          make clean
+          make plugin CC=clang MULTIVERSION=1 \
+            EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
+          make check-visibility CC=clang MULTIVERSION=1 \
+            EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
+          make check-multiversion-isa CC=clang MULTIVERSION=1 \
             EXTRA_CFLAGS="-Werror -Wno-unreachable-code-generic-assoc"
           make clean
 
