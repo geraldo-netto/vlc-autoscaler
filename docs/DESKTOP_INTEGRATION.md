@@ -13,8 +13,8 @@ Build and install the VLC plugin first, then run:
 scripts/install-vlc-autoupscale-action.sh
 ```
 
-The script locates VLC with `whereis`, validates the plugin when possible, and
-installs:
+The script locates VLC with `whereis`, validates the AutoUpscale, x264, and
+FFmpeg encoder modules when possible, and installs:
 
 | Path | Purpose |
 |---|---|
@@ -38,7 +38,7 @@ VLC_AUTOUPSCALE_ARGS='--video-filter=autoupscale --autoupscale-target=1 --autoup
 ```
 
 The replacement must include `--video-filter=autoupscale`. An empty value
-launches plain VLC.
+launches plain VLC. This environment override applies only to direct mode.
 
 ## Nemo profile
 
@@ -49,6 +49,20 @@ The **Play with VLC (AutoUpscale 1080p)** action has a fixed profile:
 - a separate VLC instance so another player cannot absorb the action options;
 - real-time x264 and AAC transcoding to preserve the enlarged dimensions at
   the display.
+
+The installed wrapper owns this profile. Run it independently with:
+
+```sh
+vlc-autoupscale --transcode-display clip.mkv
+```
+
+`--transcode-display` ignores `VLC_AUTOUPSCALE_ARGS` so desktop environment
+settings cannot weaken the action's fixed profile. Check its VLC module
+requirements without starting playback:
+
+```sh
+vlc-autoupscale --check-transcode-display
+```
 
 The transcode path costs more CPU than direct playback. The target also keeps
 the plugin's 4x linear scaling cap: a 640x360 source reaches 1920x1080, while a
@@ -70,15 +84,15 @@ nemo --quit
 NEMO_DEBUG=Actions nemo --debug
 ```
 
-Confirm the wrapper and plugin independently:
+Confirm the direct wrapper and plugin independently:
 
 ```sh
 ~/.local/bin/vlc-autoupscale path/to/video.mp4
 vlc --list | grep autoupscale
 ```
 
-The wrapper check exercises the direct path only. To verify the Nemo profile,
-launch a video through the action and inspect VLC's messages for
+To verify the Nemo profile, run `vlc-autoupscale --check-transcode-display`,
+then launch a video through the action and inspect VLC's messages for
 `AutoUpscale engaged` and `destination (after video filters)`.
 
 Only install or edit action files you trust. Selected filenames are untrusted

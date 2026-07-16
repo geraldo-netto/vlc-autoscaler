@@ -16,7 +16,14 @@ mkdir -p "$home" "$bin_dir"
 cat > "${bin_dir}/vlc" <<'EOF'
 #!/bin/sh
 if [ "${1:-}" = "--list" ]; then
-    echo autoupscale
+    modules=${FAKE_VLC_MODULES-"autoupscale x264 avcodec"}
+    for module in $modules; do
+        printf '  %s fake module\n' "$module"
+    done
+    exit 0
+fi
+if [ -n "${FAKE_VLC_ARGS_FILE:-}" ]; then
+    printf '%s\n' "$@" > "$FAKE_VLC_ARGS_FILE"
 fi
 EOF
 chmod 0755 "${bin_dir}/vlc"
@@ -122,21 +129,10 @@ if desktop_tail != "%U":
     raise AssertionError((desktop, desktop_tail, "%U"))
 
 action_program, action_tail = parse_first_quoted_arg(exec_value(action))
-if action_program != vlc:
-    raise AssertionError((action, action_program, vlc))
-
-sout = (
-    "#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,"
-    "venc=x264{preset=ultrafast,tune=zerolatency},"
-    "vfilter=autoupscale}:display"
-)
-expected_action_tail = (
-    "--no-one-instance --no-one-instance-when-started-from-file "
-    "--avcodec-hw=none --autoupscale-target=2 --autoupscale-algo=3 "
-    f'--autoupscale-usm=20 "--sout={sout}" -- %F'
-)
-if action_tail != expected_action_tail:
-    raise AssertionError((action, action_tail, expected_action_tail))
+if action_program != wrapper:
+    raise AssertionError((action, action_program, wrapper))
+if action_tail != "--transcode-display %F":
+    raise AssertionError((action, action_tail, "--transcode-display %F"))
 
 with open(wrapper, encoding="utf-8") as fh:
     wrapper_text = fh.read()
@@ -146,3 +142,45 @@ if expected_vlc_assignment not in wrapper_text:
 
 print("install action command and Exec escaping OK")
 PY
+
+wrapper="${home}/.local/bin/vlc-autoupscale"
+args_file="${tmp}/transcode-args"
+VLC_AUTOUPSCALE_ARGS='' FAKE_VLC_ARGS_FILE="$args_file" \
+    "$wrapper" --transcode-display "clip one.mkv" "--clip-two.mkv"
+
+python3 - "$args_file" <<'PY'
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    actual = fh.read().splitlines()
+
+sout = (
+    "--sout=#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,"
+    "venc=x264{preset=ultrafast,tune=zerolatency},"
+    "vfilter=autoupscale}:display"
+)
+expected = [
+    "--no-one-instance",
+    "--no-one-instance-when-started-from-file",
+    "--avcodec-hw=none",
+    "--autoupscale-target=2",
+    "--autoupscale-algo=3",
+    "--autoupscale-usm=20",
+    sout,
+    "--",
+    "clip one.mkv",
+    "--clip-two.mkv",
+]
+if actual != expected:
+    raise AssertionError((actual, expected))
+PY
+
+warning_log="${tmp}/missing-modules.log"
+FAKE_VLC_MODULES='' PATH="${bin_dir}:$PATH" HOME="$home" \
+    sh "${repo_root}/scripts/install-vlc-autoupscale-action.sh" \
+    >/dev/null 2>"$warning_log"
+grep -q "Missing VLC module 'autoupscale'" "$warning_log"
+grep -q "Missing VLC module 'x264'" "$warning_log"
+grep -q "Missing VLC module 'avcodec'" "$warning_log"
+grep -q "action requirements are incomplete" "$warning_log"
+echo "transcode profile and module checks OK"

@@ -24,7 +24,9 @@ Use this when direct playback reports `Too high level of recursion (3)` or when
 the enlarged dimensions must reach the display. It adds a real-time encode and
 decode, so it costs more CPU. Keep audio in the same transcode pipeline to avoid
 parallel-path drift. The installed Nemo action uses this exact fixed profile
-and starts a separate VLC instance.
+through `vlc-autoupscale --transcode-display` and starts a separate VLC
+instance. Run `vlc-autoupscale --check-transcode-display` to verify the
+AutoUpscale, x264, and FFmpeg encoder modules without starting playback.
 
 For damaged legacy video, test deblocking before scaling:
 

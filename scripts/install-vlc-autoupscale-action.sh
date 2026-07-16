@@ -61,8 +61,6 @@ desktop_exec_quote() {
 # expansion inside the literal wrapper path.
 WRAPPER_EXEC_PATH=$(desktop_exec_quote "$WRAPPER")
 
-NEMO_SOUT="#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=autoupscale}:display"
-
 VIDEO_MIMES="video/mp4;video/x-matroska;video/x-msvideo;video/quicktime;video/webm;video/mpeg;video/x-ms-wmv;video/x-flv;video/mp2t;"
 VIDEO_EXTS="mp4;mkv;avi;mov;webm;m4v;ts;mpg;mpeg;wmv;flv;"
 
@@ -109,7 +107,7 @@ install_action() {
 [Nemo Action]
 Name=Play with VLC (AutoUpscale 1080p)
 Comment=Upscale through VLC's compatible transcode display path to preserve the larger frame size
-Exec=${VLC_EXEC_PATH} --no-one-instance --no-one-instance-when-started-from-file --avcodec-hw=none --autoupscale-target=2 --autoupscale-algo=3 --autoupscale-usm=20 "--sout=${NEMO_SOUT}" -- %F
+Exec=${WRAPPER_EXEC_PATH} --transcode-display %F
 Icon-Name=vlc
 Selection=notnone
 Extensions=${VIDEO_EXTS}
@@ -118,10 +116,10 @@ Dependencies=vlc;
 EOF
 }
 
-check_plugin() {
-    if ! "$VLC_BIN" --list 2>/dev/null | grep -q autoupscale; then
-        echo "Warning: VLC does not list the 'autoupscale' module." >&2
-        echo "         Build and install the plugin first (see README.md)." >&2
+check_action_profile() {
+    if ! "$WRAPPER" --check-transcode-display; then
+        echo "Warning: VLC AutoUpscale action requirements are incomplete." >&2
+        echo "         Install the modules listed above, then rerun this installer." >&2
     fi
 }
 
@@ -141,12 +139,11 @@ VLC_BIN=$(find_vlc_binary) || {
     echo "error: whereis did not find an executable VLC binary" >&2
     exit 1
 }
-VLC_EXEC_PATH=$(desktop_exec_quote "$VLC_BIN")
 
 install_wrapper
 install_desktop
 install_action
-check_plugin
+check_action_profile
 
 echo "Installed:"
 echo "  ${WRAPPER}"
