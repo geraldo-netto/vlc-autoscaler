@@ -162,7 +162,6 @@ local GCC multi-version plus Clang single-version plugin links.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | BUILD-1 | open | S | CI's Clang step builds only `MULTIVERSION=0` and omits Clang visibility verification (`.github/workflows/ci.yml:73-82`), while the compatibility contract supports Clang (`README.md:187-190`). | Build and link both Clang configurations, then run visibility and linked-ISA gates under Clang too. |
-| BUILD-7 | open | S | The Sonar job runs for every pull request but requires `SONAR_TOKEN` (`.github/workflows/ci.yml:3-8,221-290`); fork pull requests do not receive repository secrets. | Gate Sonar to pushes/internal pull requests while retaining token-free build checks for forks. |
 | BUILD-31 | open | S | The README plus four user/developer guides are not validated in CI; it checks only C, shell, and workflow files (`Makefile:1174-1180`; `.github/workflows/ci.yml:128-132`). | Add a pinned Markdown linter and local-link checker to `semantic-analysis`/CI, with configuration matching the existing tables and long command examples. |
 
 ## observability
