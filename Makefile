@@ -38,6 +38,24 @@ BUILD_MARKER := $(BUILD)/.vlc-autoscaler-build-root
 # this. Empty string on non-x86.
 IS_X86 := $(findstring x86_64,$(shell $(CC) -dumpmachine 2>/dev/null))
 
+define compiler_supports_flag
+$(shell printf 'int vlc_autoscaler_flag_probe;\n' | \
+	$(1) $(2) -Werror -x c -c -o /dev/null - >/dev/null 2>&1 && printf 1)
+endef
+
+CC_SUPPORTS_X86_64_LEVELS = $(and \
+    $(call compiler_supports_flag,$(CC),-march=x86-64-v3), \
+    $(call compiler_supports_flag,$(CC),-march=x86-64-v4))
+CLANG_SUPPORTS_X86_64_LEVELS = $(and \
+    $(call compiler_supports_flag,$(CLANG),-march=x86-64-v3), \
+    $(call compiler_supports_flag,$(CLANG),-march=x86-64-v4))
+
+REQUESTED_GOALS := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)
+CC_LEVEL_GOALS := test check fuzz-smoke
+NEED_CC_X86_64_LEVELS = $(or $(filter 1,$(MULTIVERSION)), \
+    $(filter $(CC_LEVEL_GOALS),$(REQUESTED_GOALS)))
+NEED_CLANG_X86_64_LEVELS := $(filter fuzz,$(REQUESTED_GOALS))
+
 # --------- pkg-config (only needed for the plugin itself) ---------
 VLC_CFLAGS := $(shell pkg-config --cflags vlc-plugin 2>/dev/null)
 VLC_LIBS   := $(shell pkg-config --libs   vlc-plugin 2>/dev/null)
@@ -216,11 +234,11 @@ USM_POOL_CFLAGS := $(subst -O2,-O3,$(PLUGIN_CFLAGS))
 # Each variant is the SAME usm_pool.c compiled at its own -march level
 # with USM_VARIANT macro renaming the public symbols. We pass the level
 # AFTER USM_POOL_CFLAGS so it overrides any earlier -march from MARCH_FLAG.
-$(BUILD)/usm_pool_sse2.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/usm_pool_sse2.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD) check-cc-x86-level-flags
 	$(CC) $(USM_POOL_CFLAGS) -march=x86-64    -DUSM_VARIANT=sse2   -c -o $@ $<
-$(BUILD)/usm_pool_avx2.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/usm_pool_avx2.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD) check-cc-x86-level-flags
 	$(CC) $(USM_POOL_CFLAGS) -march=x86-64-v3 -DUSM_VARIANT=avx2   -c -o $@ $<
-$(BUILD)/usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD) check-cc-x86-level-flags
 	$(CC) $(USM_POOL_CFLAGS) -march=x86-64-v4 -DUSM_VARIANT=avx512 -c -o $@ $<
 
 # Dispatcher must be at the lowest baseline so it runs on ANY CPU. It just
@@ -295,6 +313,26 @@ $(BUILD_CONFIG): FORCE | $(BUILD_MARKER)
 	else \
 	    mv -f "$$tmp" "$@"; \
 	fi
+
+.PHONY: check-cc-x86-level-flags check-clang-x86-level-flags
+check-cc-x86-level-flags:
+	@if [ "$(CC_SUPPORTS_X86_64_LEVELS)" != "1" ]; then \
+	    echo "$(CC) must support -march=x86-64-v3 and -march=x86-64-v4 (GCC 11+, Clang 12+, or equivalent)" >&2; \
+	    exit 2; \
+	fi
+
+check-clang-x86-level-flags:
+	@if [ "$(CLANG_SUPPORTS_X86_64_LEVELS)" != "1" ]; then \
+	    echo "$(CLANG) must support -march=x86-64-v3 and -march=x86-64-v4 (Clang 12+ or equivalent)" >&2; \
+	    exit 2; \
+	fi
+
+ifneq ($(NEED_CC_X86_64_LEVELS),)
+$(BUILD_CONFIG): | check-cc-x86-level-flags
+endif
+ifneq ($(NEED_CLANG_X86_64_LEVELS),)
+$(BUILD_CONFIG): | check-clang-x86-level-flags
+endif
 
 # ABI-1: prove each SIMD variant in the shipped LTO-linked plugin actually
 # emits its target ISA. The cross-variant test asserts byte-identical *output*;
@@ -572,11 +610,11 @@ $(BUILD)/fuzz_picture_view: tests/fuzz_picture_view.c tests/cli_parse.h src/pict
 # libFuzzer variant fuzzer: needs the three SIMD .o files compiled with the
 # same FUZZ_CFLAGS (libFuzzer + ASan + UBSan). Each variant TU is at its
 # own -march level via -DUSM_VARIANT=<name>.
-$(BUILD)/fuzz_lf_usm_pool_sse2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_lf_usm_pool_sse2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD) check-clang-x86-level-flags
 	$(CLANG) $(FUZZ_CFLAGS) -march=x86-64    -DUSM_VARIANT=sse2   -c -o $@ $<
-$(BUILD)/fuzz_lf_usm_pool_avx2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_lf_usm_pool_avx2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD) check-clang-x86-level-flags
 	$(CLANG) $(FUZZ_CFLAGS) -march=x86-64-v3 -DUSM_VARIANT=avx2   -c -o $@ $<
-$(BUILD)/fuzz_lf_usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_lf_usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD) check-clang-x86-level-flags
 	$(CLANG) $(FUZZ_CFLAGS) -march=x86-64-v4 -DUSM_VARIANT=avx512 -c -o $@ $<
 
 $(BUILD)/fuzz_usm_variants: tests/fuzz_usm_variants.c \
@@ -670,11 +708,11 @@ $(BUILD)/fuzz_picture_view_smoke: tests/fuzz_picture_view.c tests/cli_parse.h sr
 # Cross-variant smoke fuzzer: needs the same three SIMD .o files as the
 # variant-equivalence test and uses the selected compiler like the rest of
 # the deterministic verification suite.
-$(BUILD)/fuzz_usm_pool_sse2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_usm_pool_sse2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD) check-cc-x86-level-flags
 	$(CC) $(SMOKE_CFLAGS) -march=x86-64    -DUSM_VARIANT=sse2   -c -o $@ $<
-$(BUILD)/fuzz_usm_pool_avx2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_usm_pool_avx2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD) check-cc-x86-level-flags
 	$(CC) $(SMOKE_CFLAGS) -march=x86-64-v3 -DUSM_VARIANT=avx2   -c -o $@ $<
-$(BUILD)/fuzz_usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD) check-cc-x86-level-flags
 	$(CC) $(SMOKE_CFLAGS) -march=x86-64-v4 -DUSM_VARIANT=avx512 -c -o $@ $<
 
 $(BUILD)/fuzz_usm_variants_smoke: tests/fuzz_usm_variants.c \
@@ -1275,11 +1313,11 @@ $(BUILD)/test_usm_pool: tests/test_usm_pool.c $(BUILD)/usm_pool_test.o $(BUILD_C
 # dispatcher's variant_name symbol. Each variant .o is the same usm_pool.c
 # compiled at a different -march level. CPU feature gating in the test
 # itself skips the AVX2/AVX-512 variants when not supported by the runner.
-$(BUILD)/test_usm_pool_sse2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/test_usm_pool_sse2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD) check-cc-x86-level-flags
 	$(CC) $(TEST_CFLAGS) -march=x86-64    -DUSM_VARIANT=sse2   -c -o $@ $<
-$(BUILD)/test_usm_pool_avx2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/test_usm_pool_avx2.o:   src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD) check-cc-x86-level-flags
 	$(CC) $(TEST_CFLAGS) -march=x86-64-v3 -DUSM_VARIANT=avx2   -c -o $@ $<
-$(BUILD)/test_usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/test_usm_pool_avx512.o: src/usm_pool.c src/usm.h src/usm_pool.h src/usm_pool_variants.h $(BUILD_CONFIG) | $(BUILD) check-cc-x86-level-flags
 	$(CC) $(TEST_CFLAGS) -march=x86-64-v4 -DUSM_VARIANT=avx512 -c -o $@ $<
 $(BUILD)/test_usm_pool_dispatch.o: src/usm_pool_dispatch.c src/usm_pool.h src/usm_pool_variants.h src/cpu_level.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -march=x86-64 -c -o $@ $<

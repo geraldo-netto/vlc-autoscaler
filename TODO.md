@@ -124,7 +124,6 @@ this technical domain; another business/domain pattern would not clarify it.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| PORT-12 | open | S | The compatibility contract now documents that feature-level builds require GCC 11+ or Clang 12+ (`README.md:187-190`), but the Makefile still passes `-march=x86-64-v3/v4` unconditionally and fails only when the compiler rejects them. | Feature-probe the flags or enforce the documented minimum before the first variant/test compile, with an explicit-feature fallback where feasible. |
 
 No other open finding. GNU/Linux-specific CPU affinity, dynamic loading,
 and VLC plugin interfaces are isolated, while the supported compiler/CPU
