@@ -255,9 +255,14 @@ non-findings:
   without adding another failure-sensitive synchronization topology.
 - Integrating an alternate wake strategy: no prototype beat broadcast, so
   there is no winning strategy to place behind the shared pool gate.
-- Changing the zimg automatic stripe minimum from 16 to the faster 24-line
-  candidate: integration regression found 20,515 differing visible bytes for
-  64x64-to-128x128 source-zero-copy versus copy paths, so quality wins.
+- Changing the zimg automatic stripe minimum from 16 to 24: on the tiny
+  64x64-to-128x128, eight-worker I420 case, 16 keeps copy and source-direct
+  paths at an 8x1 grid, while 24 changes them to 5x1 and 4x2 respectively.
+  Their independent graph phases differ in 20,515 visible bytes (maximum delta
+  255 on noise); source-direct and full-zero-copy remain byte-identical. A
+  current five-pair, interleaved 600-frame pipeline sample also made 24 slower
+  (median 150.44 versus 141.39 us/frame), so neither quality nor performance
+  supports changing the default.
 - Unifying `worker_copy_in_stripe` / `worker_copy_out_stripe` /
   `worker_copy_out_tile`: their direction and offset invariants differ; a generic
   helper would require a wide parameter surface.
