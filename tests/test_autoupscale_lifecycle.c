@@ -21,7 +21,6 @@ static lifecycle_config_t lifecycle_config[] = {
     { "autoupscale-algo", UP_ALGO_SPLINE36 },
     { "autoupscale-backend", SCALER_BACKEND_AUTO },
     { "autoupscale-usm", 0 },
-    { "autoupscale-target-fps", 0 },
     { "autoupscale-threads", 1 },
     { "autoupscale-pin-threads", 0 },
     { "autoupscale-zerocopy-dst", 1 },
@@ -33,7 +32,7 @@ static lifecycle_config_t lifecycle_config[] = {
 };
 
 static const int lifecycle_config_defaults[] = {
-    720, 1, UP_ALGO_SPLINE36, SCALER_BACKEND_AUTO, 0, 0, 1, 0,
+    720, 1, UP_ALGO_SPLINE36, SCALER_BACKEND_AUTO, 0, 1, 0,
     1, 1, 0, 0, 0, 0,
 };
 
@@ -46,10 +45,6 @@ static int g_zimg_process_calls;
 static int g_swscale_process_calls;
 static int g_zimg_close_calls;
 static int g_swscale_close_calls;
-static int g_var_create_calls;
-static int g_var_destroy_calls;
-static int g_var_set_calls;
-static int g_var_create_fail_at;
 static int g_picker_none;
 static int g_zimg_open_result;
 static int g_swscale_open_result;
@@ -65,27 +60,6 @@ int64_t lifecycle_var_inherit(const char *name)
         if (strcmp(name, lifecycle_config[i].name) == 0)
             return lifecycle_config[i].value;
     return 0;
-}
-
-int lifecycle_var_create(const char *name)
-{
-    (void)name;
-    g_var_create_calls++;
-    return g_var_create_calls == g_var_create_fail_at
-        ? VLC_EGENERIC : VLC_SUCCESS;
-}
-
-void lifecycle_var_destroy(const char *name)
-{
-    (void)name;
-    g_var_destroy_calls++;
-}
-
-void lifecycle_var_set_integer(const char *name, int64_t value)
-{
-    (void)name;
-    (void)value;
-    g_var_set_calls++;
 }
 
 void picture_Release(picture_t *pic)
@@ -226,10 +200,6 @@ static void reset_state(void)
     g_swscale_process_calls = 0;
     g_zimg_close_calls = 0;
     g_swscale_close_calls = 0;
-    g_var_create_calls = 0;
-    g_var_destroy_calls = 0;
-    g_var_set_calls = 0;
-    g_var_create_fail_at = 0;
     g_picker_none = 0;
     g_zimg_open_result = 0;
     g_swscale_open_result = 0;
@@ -298,7 +268,7 @@ static void init_filter(filter_t *filter)
 
 static void test_success_copies_properties_and_tears_down(void)
 {
-    BEGIN("Open/Filter/Close success copies properties and tears down stats");
+    BEGIN("Open/Filter/Close success copies properties and tears down");
     filter_t filter;
     picture_t input;
     picture_t output;
@@ -317,7 +287,6 @@ static void test_success_copies_properties_and_tears_down(void)
     CHECK(g_zimg_open_calls == 1 && g_zimg_process_calls == 1);
     Close((vlc_object_t *)&filter);
     CHECK(g_zimg_close_calls == 1);
-    CHECK(g_var_create_calls == 3 && g_var_destroy_calls == 3);
     END();
 }
 
@@ -433,9 +402,9 @@ static void test_open_rejections_and_open_fallback(void)
     END();
 }
 
-static void test_open_usm_and_stats_failure_contracts(void)
+static void test_open_usm_contract(void)
 {
-    BEGIN("Open keeps scaling when optional USM or stat export fails");
+    BEGIN("Open keeps scaling when optional USM is available");
     filter_t filter;
     reset_state();
     init_filter(&filter);
@@ -447,14 +416,6 @@ static void test_open_usm_and_stats_failure_contracts(void)
     Close((vlc_object_t *)&filter);
     CHECK(g_usm_destroy_calls == 1);
 
-    reset_state();
-    init_filter(&filter);
-    g_var_create_fail_at = 2;
-    CHECK(Open((vlc_object_t *)&filter) == VLC_SUCCESS);
-    CHECK(filter.p_sys->stats_vars_ok == 0);
-    CHECK(g_var_destroy_calls == 1);
-    Close((vlc_object_t *)&filter);
-    CHECK(g_var_destroy_calls == 1);
     END();
 }
 
@@ -500,13 +461,13 @@ static void test_usm_success_failure_and_uncertain_output(void)
     sys.usm_pool = (usm_pool_t *)&filter;
     sys.usm_amount_q8 = 20;
     g_usm_apply_status = UP_USM_APPLY_OUTPUT_UNCERTAIN;
-    CHECK(FinishScaledFrame(&filter, &sys, &input, &output, 0) == NULL);
+    CHECK(FinishScaledFrame(&filter, &sys, &input, &output) == NULL);
     CHECK(input.releases == 1 && output.releases == 1);
-    CHECK(sys.dropped_count == 1 && g_usm_destroy_calls == 2);
+    CHECK(g_usm_destroy_calls == 2);
     END();
 }
 
-static void test_probe_and_stats_lifecycle(void)
+static void test_probe_lifecycle(void)
 {
     BEGIN("probe validates views, closes its window, and retires grainy USM");
     uint8_t pixels[384] = { 0 };
@@ -546,23 +507,12 @@ static void test_probe_and_stats_lifecycle(void)
     CHECK(sys.probe.advice_logged == 1);
     LogProbeVerdict(&filter, &sys);
 
-    reset_state();
-    init_filter(&filter);
-    memset(&sys, 0, sizeof(sys));
-    sys.stats_vars_ok = 1;
-    sys.frame_count = 4;
-    sys.dropped_count = 2;
-    sys.last_stats_ns = 10;
-    MaybeLogStats(&filter, &sys, 10 + OBS_STATS_INTERVAL_NS);
-    CHECK(g_var_set_calls == STAT_VAR_COUNT);
-    RecordDrop(&filter, &sys);
-    CHECK(sys.dropped_count == 3);
     END();
 }
 
-static void test_runtime_fallback_and_advisory(void)
+static void test_runtime_fallback(void)
 {
-    BEGIN("runtime fallback retires failed backends and advisory is safe");
+    BEGIN("runtime fallback retires failed backends");
     filter_t filter;
     filter_sys_t sys = { 0 };
     reset_state();
@@ -590,13 +540,6 @@ static void test_runtime_fallback_and_advisory(void)
     TryBackendFallback(&filter, &sys);
     CHECK(sys.scaler.backend == NULL && g_swscale_open_calls == 1);
 
-    memset(&sys, 0, sizeof(sys));
-    init_scaler(&sys.scaler, 16, 16);
-    sys.target_fps = 30;
-    sys.algo = UP_ALGO_SPLINE36;
-    sys.usm_pct = 20;
-    up_perfmon_init(&sys.perfmon, sys.target_fps);
-    EmitPerfAdvisory(&filter, &sys);
     END();
 }
 
@@ -607,9 +550,9 @@ int main(void)
     test_transient_failure_keeps_backend();
     test_fatal_failure_falls_back_once();
     test_open_rejections_and_open_fallback();
-    test_open_usm_and_stats_failure_contracts();
+    test_open_usm_contract();
     test_usm_success_failure_and_uncertain_output();
-    test_probe_and_stats_lifecycle();
-    test_runtime_fallback_and_advisory();
+    test_probe_lifecycle();
+    test_runtime_fallback();
     return test_harness_report();
 }

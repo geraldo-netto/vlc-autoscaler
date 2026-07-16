@@ -118,7 +118,7 @@ this technical domain; another business/domain pattern would not clarify it.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-No open finding.
+| REL-13 | open | S | Closing a successfully opened zimg backend before its first frame dereferences the unconfigured worker-pool operations pointer and segfaults. | Reproduced by the supplied VLC 3.0.20 coredump: `zimg_close` → `up_worker_pool_destroy` → `up__pool_release_slots`; make destruction of a zero-initialized/unconfigured pool safe and add an open-without-process regression test. |
 
 ## portability/standards conformance
 
@@ -176,17 +176,16 @@ local GCC multi-version plus Clang single-version plugin links.
 |---|---|---|---|---|
 
 No additional production finding. Actionable degradation reasons and pinning outcomes are
-visible without verbose logging, and advisory-disable wording preserves the
-distinction from active EWMA/stat telemetry.
+visible without verbose logging.
 
 ## wiring gaps
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No additional production wiring finding. All 14 module options have consumers; both scaler
-backends, runtime fallback, stats lifecycle, USM pool, and multiversion
-dispatcher have real production call sites.
+No additional production wiring finding. All module options have consumers; both scaler
+backends, runtime fallback, USM pool, and multiversion dispatcher have real
+production call sites.
 
 ## unused functions/methods
 
@@ -276,10 +275,6 @@ non-findings:
 - Adding alignment assumptions to USM vector loops: valid row alignment depends
   on width/stride, and prior measurements found no actionable gain over
   unaligned moves.
-- Extending the performance timer over `RunProbe()`: the first 60-frame probe is
-  temporary diagnostic work, while the advisory deliberately measures the
-  steady scaler + USM settings it recommends changing. Including the probe in
-  the EWMA could produce a permanent warning for an overhead that has ended.
 - Treating zimg temporary-buffer alignment as an overflow seam: zimg 3.0.5 uses
   checked internal size arithmetic, graph dimensions are capped at 32768, and
   returned x86 temporary sizes are already 64-byte aligned; the value cannot

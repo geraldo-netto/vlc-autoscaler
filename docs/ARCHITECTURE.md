@@ -89,20 +89,6 @@ USM is disabled for RGB and chromas without a readable luma plane. After the
 initial content window, a high Laplacian metric can disable USM for grainy
 content. The separate soft-and-blocky content advisory is diagnostic only.
 
-## Observability
-
-The engagement log reports source/target geometry, backend, algorithm, worker
-count, I/O mode, and SIMD variant. A periodic debug record reports frames,
-drops, and EWMA processing time. The filter also publishes:
-
-| Variable | Value |
-|---|---|
-| `autoupscale-ewma-us` | Current processing EWMA in microseconds |
-| `autoupscale-frames` | Frames processed |
-| `autoupscale-dropped` | Frames dropped |
-
-These object variables exist only while the filter instance is open.
-
 ## Source map
 
 | Area | Files |
@@ -116,7 +102,7 @@ These object variables exist only while the filter instance is open.
 | Worker lifecycle | `src/worker_pool.h`, `src/threading.h` |
 | USM | `src/usm.h`, `src/usm_pool.c`, `src/usm_pool.h` |
 | SIMD dispatch | `src/usm_pool_dispatch.c`, `src/cpu_level.h` |
-| Metrics | `src/content_probe.h`, `src/perfmon.h` |
+| Content analysis | `src/content_probe.h` |
 
 ## Verification model
 

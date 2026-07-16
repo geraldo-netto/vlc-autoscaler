@@ -21,7 +21,6 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <time.h>
 #include <unistd.h>
 #ifdef __linux__
 #  include <sys/sysinfo.h>
@@ -33,7 +32,6 @@
 #include "usm_pool.h"
 #include "scaler.h"
 #include "scaler_pick_logic.h"
-#include "perfmon.h"
 #include "threading.h"
 #include "chroma_classify.h"
 #include "content_probe.h"
@@ -119,13 +117,6 @@ static bool ChromaHasYPlane( vlc_fourcc_t c )
     "switch once after a fatal zimg processing failure. Transient frame " \
     "failures do not switch. 1 = strict zimg (fail if unavailable), " \
     "2 = strict swscale.")
-
-#define TARGET_FPS_TEXT N_("Target frames per second for performance warning")
-#define TARGET_FPS_LONGTEXT N_( \
-    "If the average per-frame processing time exceeds 1/target_fps, the " \
-    "plugin emits a one-time warning suggesting how to tune down. Set to " \
-    "0 to disable only that advisory; EWMA telemetry remains active. " \
-    "Default 60.")
 
 #define THREADS_TEXT    N_("Worker preference for zimg and USM")
 #define THREADS_LONGTEXT N_( \
@@ -256,8 +247,6 @@ vlc_module_begin()
     add_integer_with_range( CFG_PREFIX "backend", SCALER_BACKEND_AUTO,
                             SCALER_BACKEND_AUTO, SCALER_BACKEND_MAX,
                             BACKEND_TEXT, BACKEND_LONGTEXT, false )
-    add_integer_with_range( CFG_PREFIX "target-fps", 60, 0, 240,
-                            TARGET_FPS_TEXT, TARGET_FPS_LONGTEXT, false )
     add_integer_with_range( CFG_PREFIX "threads", UP_THREADS_AUTO,
                             0, UP_THREADS_MAX,
                             THREADS_TEXT, THREADS_LONGTEXT, false )
@@ -300,12 +289,6 @@ struct filter_sys_t
      * USM. A nonzero pool lazily owns its workers and private row scratch. */
     int           usm_amount_q8;
     usm_pool_t   *usm_pool;
-
-    /* Performance telemetry. target_fps <= 0 disables only the advisory. */
-    up_perfmon_t  perfmon;
-    int           target_fps;     /* kept around so we can include it in warn msg */
-    int           algo;           /* kept around for warn message */
-    int           usm_pct;        /* kept around for warn message */
 
     /* Content-aware advisory. The probe runs over the first
      * UP_PROBE_WINDOW_FRAMES valid views, accumulating squared Laplacian energy
@@ -364,16 +347,6 @@ struct filter_sys_t
     int                backend_pref;
     int                fallback_tried;
 
-    uint64_t           frame_count;
-
-    /* OBS-3: periodic long-run visibility (frames processed/dropped + EWMA). */
-    uint64_t           dropped_count;
-    int64_t            last_stats_ns;
-
-    /* ERR-1: both OBS-5 stat variables were created; gates the periodic
-     * var_SetInteger export and the paired var_Destroy at Close(). */
-    int                stats_vars_ok;
-
     /* One-shot log of the USM pool's real worker count, deferred to after
      * the first apply() because lazy init may shrink it (the engagement
      * log's threads= reflects neither pool). */
@@ -411,7 +384,7 @@ static void DetectHardware( int *cores, unsigned long *mem_mb )
  *   PickBackendOrReject   — opaque-chroma + null-backend gate
  *   ConfigureScaler       — fills scaler_ctx_t from VLC vars
  *   InitUsmPool           — optional USM post-pass setup
- *   InitProbeAndPerfmon   — perfmon + content-probe bookkeeping
+ *   InitProbe             — content-probe bookkeeping
  *   SetOutputFormat       — fmt_out wiring
  * Open() itself is a linear orchestrator.
  *****************************************************************************/
@@ -593,17 +566,10 @@ static void InitUsmPool( filter_sys_t *p_sys, filter_t *p_filter,
                   target.width, target.height, n_threads );
 }
 
-/* Initialize the perfmon and the content probe bookkeeping fields. */
-static void InitProbeAndPerfmon( filter_sys_t *p_sys, filter_t *p_filter,
-                                 vlc_fourcc_t chroma, int algo, int usm_pct )
+/* Initialize the content-probe bookkeeping fields. */
+static void InitProbe( filter_sys_t *p_sys, filter_t *p_filter,
+                       vlc_fourcc_t chroma, int usm_pct )
 {
-    const int target_fps = InheritIntSat( p_filter,
-                                               CFG_PREFIX "target-fps" );
-    up_perfmon_init( &p_sys->perfmon, target_fps );
-    p_sys->target_fps = target_fps;
-    p_sys->algo       = algo;
-    p_sys->usm_pct    = usm_pct;
-
     /* Content-aware metric probe. Runs only when the source exposes a
      * readable luma plane. For opaque and packed RGB chromas the probe stays
      * disabled because they are GPU-managed or have no discrete luma plane.
@@ -645,44 +611,6 @@ static void ClampConfig( int *preset, int *algo, int *backend, int *usm, int *sk
     if( *skip < 0 ) *skip = 0;
 }
 
-/* OBS-5: the exported stat variables, in creation order. Kept as one table so
- * CreateStatsVars / the MaybeLogStats export / the Close teardown all agree on
- * the set; the names are documented in README under "Exported VLC variables". */
-enum stats_var_id {
-    STAT_VAR_EWMA_US,
-    STAT_VAR_FRAMES,
-    STAT_VAR_DROPPED,
-    STAT_VAR_COUNT,
-};
-
-static const char *const k_stats_vars[STAT_VAR_COUNT] = {
-    [STAT_VAR_EWMA_US] = "autoupscale-ewma-us",
-    [STAT_VAR_FRAMES] = "autoupscale-frames",
-    [STAT_VAR_DROPPED] = "autoupscale-dropped",
-};
-
-/* OBS-5: expose performance and frame stats via VLC variables.
- * ERR-1: on failure the export is disabled rather than var_SetInteger
- * silently operating on a nonexistent variable; any variables already created
- * are rolled back so Close() can gate every var_Destroy on the same flag.
- * Returns 1 only when the whole set exists. */
-static int CreateStatsVars( filter_t *p_filter )
-{
-    for( size_t i = 0; i < STAT_VAR_COUNT; i++ )
-    {
-        if( var_Create( p_filter, k_stats_vars[i],
-                        VLC_VAR_INTEGER ) == VLC_SUCCESS )
-            continue;
-        for( size_t j = 0; j < i; j++ )
-            var_Destroy( p_filter, k_stats_vars[j] );
-        msg_Info( p_filter,
-                  "AutoUpscale: stat variable creation failed; "
-                  "autoupscale-ewma-us/-frames/-dropped export disabled" );
-        return 0;
-    }
-    return 1;
-}
-
 /* CX-1: reject CPUs below the build's -march LEVEL. This whole object is
  * compiled at that level, so the headline feature alone does not cover
  * BMI2/FMA/... (v3) or AVX512VL/... (v4) instructions the compiler is free
@@ -719,11 +647,11 @@ static void LogEngaged( filter_t *p_filter, const filter_sys_t *p_sys,
 
     msg_Info( p_filter,
               "AutoUpscale engaged: %dx%d -> %dx%d "
-              "(backend=%s preset=%d algo=%d usm=%d fps_target=%d "
+              "(backend=%s preset=%d algo=%d "
               "threads_budget=%d cores=%d mem=%luMB simd=%s)",
               sc->src_w, sc->src_h, sc->dst_w, sc->dst_h,
               sc->backend->name,
-              preset, p_sys->algo, p_sys->usm_pct, p_sys->target_fps,
+              preset, sc->algo,
               threads_resolved, cores, mem_mb, up_usm_pool_variant_name );
 }
 
@@ -778,10 +706,8 @@ static int Open( vlc_object_t *p_this )
     }
 
     InitUsmPool( p_sys, p_filter, chroma, target, cores, usm_pct );
-    InitProbeAndPerfmon( p_sys, p_filter, chroma, algo, usm_pct );
+    InitProbe( p_sys, p_filter, chroma, usm_pct );
     SetOutputFormat( p_filter, chroma, target );
-
-    p_sys->stats_vars_ok = CreateStatsVars( p_filter );
 
     p_filter->p_sys           = p_sys;
     p_filter->pf_video_filter = Filter;
@@ -791,72 +717,7 @@ static int Open( vlc_object_t *p_this )
     return VLC_SUCCESS;
 }
 
-/* Read CLOCK_MONOTONIC in nanoseconds. Falls back to 0 on failure (perfmon
- * ignores non-positive samples). */
-static inline int64_t monotonic_ns(void)
-{
-    struct timespec ts;
-    if( clock_gettime( CLOCK_MONOTONIC, &ts ) != 0 ) return 0;
-    if( ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000L )
-        return 0;
-
-    const uintmax_t seconds = (uintmax_t)ts.tv_sec;
-    const uintmax_t nanoseconds = (uintmax_t)ts.tv_nsec;
-    const uintmax_t scale = UINTMAX_C( 1000000000 );
-    if( seconds > ( (uintmax_t)INT64_MAX - nanoseconds ) / scale )
-        return 0;
-    return (int64_t)( seconds * scale + nanoseconds );
-}
-
-/*****************************************************************************
- * Filter: scale one picture, then USM, then performance accounting
- *****************************************************************************/
-/*
- * Emit the one-time performance-tuning advisory, with concrete
- * suggestions tailored to the current configuration. Triggered when
- * up_perfmon_record_ns() returns 1 (meaning EWMA exceeded the budget
- * for the first time after warmup). Only fires once per filter
- * lifetime — the perfmon's internal state ensures that.
- *
- * Emitted as msg_Info (not msg_Warn) because VLC 3.x's default
- * verbosity suppresses level-2 warnings; we want the advisory visible
- * without users having to pass --verbose=1.
- */
-static void EmitPerfAdvisory( filter_t *p_filter, const filter_sys_t *p_sys )
-{
-    long ewma_us   = (long)up_perfmon_ewma_us( &p_sys->perfmon );
-    long budget_us = (long)up_perfmon_budget_us( &p_sys->perfmon );
-    msg_Info( p_filter,
-              "Performance warning: avg frame work is %ld us, "
-              "exceeding the %d FPS budget of %ld us "
-              "(backend=%s algo=%d usm=%d).",
-              ewma_us, p_sys->target_fps, budget_us,
-              p_sys->scaler.backend->name,
-              p_sys->algo, p_sys->usm_pct );
-    msg_Info( p_filter,
-              "  To tune down, try (in order of decreasing quality cost):" );
-    if( p_sys->algo == UP_ALGO_SPLINE36 )
-        msg_Info( p_filter,
-                  "    --autoupscale-algo=2   "
-                  "(lanczos: similar quality, faster)" );
-    if( p_sys->algo > UP_ALGO_BICUBIC )
-        msg_Info( p_filter,
-                  "    --autoupscale-algo=1   "
-                  "(bicubic: noticeably faster, slight quality drop)" );
-    if( p_sys->usm_pct > 0 )
-        msg_Info( p_filter,
-                  "    --autoupscale-usm=0    "
-                  "(disable post-sharpening)" );
-    if( p_sys->scaler.backend->id != SCALER_BACKEND_SWSCALE )
-        msg_Info( p_filter,
-                  "    --autoupscale-backend=2 "
-                  "(force swscale: faster scaler)" );
-    msg_Info( p_filter,
-              "    --autoupscale-target=1 "
-              "(force 720p instead of 1080p: 2.25x less work)" );
-    msg_Info( p_filter,
-              "  Or set --autoupscale-target-fps=0 to silence this warning." );
-}
+/* Filter: scale one picture, then apply USM when enabled. */
 
 /*
  * Run one iteration of the content probe on the source frame, and
@@ -1001,84 +862,17 @@ static int ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
     return UP_USM_APPLY_OK;
 }
 
-/* OBS-3: every OBS_STATS_INTERVAL_NS, log a one-line long-run summary so
- * sustained behavior is observable beyond the one-shot perf advisory. */
-#define OBS_STATS_INTERVAL_NS (5 * 1000000000LL)
-static void MaybeLogStats( filter_t *p_filter, filter_sys_t *p_sys,
-                           int64_t now_ns )
-{
-    if( now_ns <= 0 )
-        return;
-    if( p_sys->last_stats_ns <= 0 || now_ns < p_sys->last_stats_ns )
-    {
-        p_sys->last_stats_ns = now_ns;
-        return;
-    }
-    const uint64_t elapsed_ns = (uint64_t)now_ns
-                              - (uint64_t)p_sys->last_stats_ns;
-    if( elapsed_ns < (uint64_t)OBS_STATS_INTERVAL_NS )
-        return;
-    p_sys->last_stats_ns = now_ns;
-    msg_Dbg( p_filter,
-             "AutoUpscale: frames=%llu dropped=%llu ewma=%ldus%s",
-             (unsigned long long)p_sys->frame_count,
-             (unsigned long long)p_sys->dropped_count,
-             (long)up_perfmon_ewma_us( &p_sys->perfmon ),
-             p_sys->usm_skip_sharp ? " usm=skipped(sharp)" : "" );
-
-    /* OBS-5: exported stat variables ride the same tick — string-keyed
-     * var_SetInteger takes the object var lock, too heavy per frame. */
-    if( p_sys->stats_vars_ok )
-    {
-        var_SetInteger( p_filter, k_stats_vars[STAT_VAR_EWMA_US],
-                        (int64_t)up_perfmon_ewma_us( &p_sys->perfmon ) );
-        var_SetInteger( p_filter, k_stats_vars[STAT_VAR_FRAMES],
-                        p_sys->frame_count );
-        var_SetInteger( p_filter, k_stats_vars[STAT_VAR_DROPPED],
-                        p_sys->dropped_count );
-    }
-}
-
-/* Record one frame's elapsed work into the perfmon and emit the one-time
- * advisory if perfmon decides the budget has been blown. */
-static void RecordPerf( filter_t *p_filter, filter_sys_t *p_sys,
-                        int64_t t_start, int64_t t_end )
-{
-    int64_t elapsed_ns = (t_start > 0 && t_end > t_start) ? t_end - t_start : 0;
-    if( up_perfmon_record_ns( &p_sys->perfmon, elapsed_ns ) )
-        EmitPerfAdvisory( p_filter, p_sys );
-
-    p_sys->frame_count++;
-    MaybeLogStats( p_filter, p_sys, t_end );
-}
-
-/* OBS-1: count a dropped frame AND drive the stats tick. MaybeLogStats used to
- * hang off RecordPerf, which only runs on the success path — so once a fatal
- * backend failure started dropping every frame, the periodic "frames=…
- * dropped=…" line stopped and var_SetInteger("autoupscale-dropped", …) was
- * never called again. An embedder polling that variable read 0 while 100% of
- * frames were being dropped: the counter went blind in exactly the scenario it
- * exists for. */
-static void RecordDrop( filter_t *p_filter, filter_sys_t *p_sys )
-{
-    p_sys->dropped_count++;
-    MaybeLogStats( p_filter, p_sys, monotonic_ns() );
-}
-
 static picture_t *FinishScaledFrame( filter_t *p_filter, filter_sys_t *p_sys,
-                                     picture_t *p_in, picture_t *p_out,
-                                     int64_t t_start )
+                                     picture_t *p_in, picture_t *p_out )
 {
     if( ApplyUsmIfEnabled( p_filter, p_sys, p_out )
         == UP_USM_APPLY_OUTPUT_UNCERTAIN )
     {
-        RecordDrop( p_filter, p_sys );
         picture_Release( p_out );
         picture_Release( p_in );
         return NULL;
     }
 
-    RecordPerf( p_filter, p_sys, t_start, monotonic_ns() );
     picture_CopyProperties( p_out, p_in );
     picture_Release( p_in );
     return p_out;
@@ -1154,7 +948,6 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
     /* SYS-2: a failed backend fallback leaves no live backend. */
     if( !p_sys->scaler.backend )
     {
-        RecordDrop( p_filter, p_sys );
         picture_Release( p_in );
         return NULL;
     }
@@ -1176,12 +969,9 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
                       "AutoUpscale: output picture pool exhausted; "
                       "dropping frame(s) (this is logged only once)" );
         }
-        RecordDrop( p_filter, p_sys );
         picture_Release( p_in );
         return NULL;
     }
-
-    int64_t t_start = monotonic_ns();
 
     scaler_process_status_t status = p_sys->scaler.backend->process(
         &p_sys->scaler, p_in, p_out );
@@ -1197,13 +987,12 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
         }
         if( scaler_process_needs_fallback( status ) )
             TryBackendFallback( p_filter, p_sys );
-        RecordDrop( p_filter, p_sys );
         picture_Release( p_out );
         picture_Release( p_in );
         return NULL;
     }
 
-    return FinishScaledFrame( p_filter, p_sys, p_in, p_out, t_start );
+    return FinishScaledFrame( p_filter, p_sys, p_in, p_out );
 }
 
 /*****************************************************************************
@@ -1220,13 +1009,6 @@ static void Close( vlc_object_t *p_this )
             p_sys->scaler.backend->close( &p_sys->scaler );
         up_usm_pool_destroy( p_sys->usm_pool );
 
-        /* OBS-5: pair the var_Create in Open(); ERR-1 gates both on the
-         * pair having been created successfully. */
-        if( p_sys->stats_vars_ok )
-        {
-            for( size_t i = 0; i < STAT_VAR_COUNT; i++ )
-                var_Destroy( p_filter, k_stats_vars[i] );
-        }
         free( p_sys );
     }
 }

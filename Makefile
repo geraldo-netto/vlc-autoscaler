@@ -417,7 +417,7 @@ check-hardening: $(BUILD)/$(PLUGIN).so
 # works on machines without lizard installed.
 check: complexity test
 
-test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_perfmon $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_threading_noaffinity $(BUILD)/test_worker_pool $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_autoupscale_lifecycle $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants $(if $(IS_X86),$(BUILD)/test_usm_pool_dispatch $(BUILD)/test_usm_pool_dispatch_fallback)
+test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_threading_noaffinity $(BUILD)/test_worker_pool $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_autoupscale_lifecycle $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants $(if $(IS_X86),$(BUILD)/test_usm_pool_dispatch $(BUILD)/test_usm_pool_dispatch_fallback)
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/test_upscale_logic
@@ -427,9 +427,6 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/tes
 	@echo
 	@echo "=== geometry_edge_cases ==="
 	@$(BUILD)/test_geometry_edge_cases
-	@echo
-	@echo "=== perfmon ==="
-	@$(BUILD)/test_perfmon
 	@echo
 	@echo "=== cli_parse ==="
 	@$(BUILD)/test_cli_parse
@@ -511,17 +508,14 @@ $(BUILD)/test_geometry_edge_cases: tests/test_geometry_edge_cases.c src/upscale_
 $(BUILD)/test_autoupscale_lifecycle: tests/test_autoupscale_lifecycle.c src/autoupscale.c src/scaler.h src/usm_pool.h tests/test_harness.h tests/lifecycle_stubs/vlc_common.h tests/lifecycle_stubs/vlc_filter.h tests/lifecycle_stubs/vlc_picture.h tests/lifecycle_stubs/vlc_plugin.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -march=x86-64 -Itests/lifecycle_stubs -Itests/stubs -o $@ $< $(TEST_LDFLAGS)
 
-$(BUILD)/test_usm: tests/test_usm.c tests/usm_test_util.h src/usm.h src/perfmon.h src/threading.h $(BUILD_CONFIG) | $(BUILD)
-	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
-
-$(BUILD)/test_perfmon: tests/test_perfmon.c src/perfmon.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/test_usm: tests/test_usm.c tests/usm_test_util.h src/usm.h src/threading.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
 $(BUILD)/test_cli_parse: tests/test_cli_parse.c tests/cli_parse.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
 # --------- libFuzzer (clang) ---------
-FUZZ_TARGET_NAMES := upscale_logic usm perfmon threading worker_pool copy_plane \
+FUZZ_TARGET_NAMES := upscale_logic usm threading worker_pool copy_plane \
                      stripe_bounds decide_tile_grid frame_shape scaler_chroma \
                      scaler_open content_probe picture_view usm_variants \
                      $(if $(HAVE_ZIMG),scaler_seam)
@@ -542,10 +536,7 @@ fuzz: $(FUZZ_TARGETS)
 $(BUILD)/fuzz_upscale_logic: tests/fuzz_upscale_logic.c src/upscale_logic.h $(BUILD_CONFIG) | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
-$(BUILD)/fuzz_usm: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h src/perfmon.h src/threading.h $(BUILD_CONFIG) | $(BUILD)
-	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
-
-$(BUILD)/fuzz_perfmon: tests/fuzz_perfmon.c tests/cli_parse.h src/perfmon.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_usm: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h src/threading.h $(BUILD_CONFIG) | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
 $(BUILD)/fuzz_threading: tests/fuzz_threading.c tests/cli_parse.h src/threading.h $(BUILD_CONFIG) | $(BUILD)
@@ -598,16 +589,13 @@ $(BUILD)/fuzz_usm_variants: tests/fuzz_usm_variants.c \
 	    -lpthread
 
 # --------- smoke fuzz (no libFuzzer needed) ---------
-fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_perfmon_smoke $(BUILD)/fuzz_threading_smoke $(BUILD)/fuzz_worker_pool_smoke $(BUILD)/fuzz_copy_plane_smoke $(BUILD)/fuzz_stripe_bounds_smoke $(BUILD)/fuzz_decide_tile_grid_smoke $(BUILD)/fuzz_frame_shape_smoke $(BUILD)/fuzz_scaler_chroma_smoke $(BUILD)/fuzz_scaler_open_smoke $(BUILD)/fuzz_content_probe_smoke $(BUILD)/fuzz_picture_view_smoke $(BUILD)/fuzz_usm_variants_smoke
+fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_threading_smoke $(BUILD)/fuzz_worker_pool_smoke $(BUILD)/fuzz_copy_plane_smoke $(BUILD)/fuzz_stripe_bounds_smoke $(BUILD)/fuzz_decide_tile_grid_smoke $(BUILD)/fuzz_frame_shape_smoke $(BUILD)/fuzz_scaler_chroma_smoke $(BUILD)/fuzz_scaler_open_smoke $(BUILD)/fuzz_content_probe_smoke $(BUILD)/fuzz_picture_view_smoke $(BUILD)/fuzz_usm_variants_smoke
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/fuzz_smoke
 	@echo
 	@echo "=== usm ==="
 	@$(BUILD)/fuzz_usm_smoke
-	@echo
-	@echo "=== perfmon ==="
-	@$(BUILD)/fuzz_perfmon_smoke
 	@echo
 	@echo "=== threading ==="
 	@$(BUILD)/fuzz_threading_smoke
@@ -645,10 +633,7 @@ fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_perfmon_sm
 $(BUILD)/fuzz_smoke: tests/fuzz_upscale_logic.c src/upscale_logic.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
-$(BUILD)/fuzz_usm_smoke: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h src/perfmon.h src/threading.h $(BUILD_CONFIG) | $(BUILD)
-	$(CC) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
-
-$(BUILD)/fuzz_perfmon_smoke: tests/fuzz_perfmon.c tests/cli_parse.h src/perfmon.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_usm_smoke: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h src/threading.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
 $(BUILD)/fuzz_threading_smoke: tests/fuzz_threading.c tests/cli_parse.h src/threading.h $(BUILD_CONFIG) | $(BUILD)
@@ -1018,7 +1003,6 @@ COV_LDFLAGS := --coverage
 COV_TESTS := \
     $(COV_BUILD)/test_upscale_logic \
     $(COV_BUILD)/test_usm \
-    $(COV_BUILD)/test_perfmon \
     $(COV_BUILD)/test_cli_parse \
     $(COV_BUILD)/test_threading \
     $(COV_BUILD)/test_worker_pool \
@@ -1037,7 +1021,6 @@ COV_TESTS := \
 COV_FUZZERS := \
     $(COV_BUILD)/fuzz_upscale_logic \
     $(COV_BUILD)/fuzz_usm \
-    $(COV_BUILD)/fuzz_perfmon \
     $(COV_BUILD)/fuzz_threading \
     $(COV_BUILD)/fuzz_worker_pool \
     $(COV_BUILD)/fuzz_copy_plane \
@@ -1057,8 +1040,6 @@ $(COV_BUILD): | $(BUILD_MARKER)
 $(COV_BUILD)/test_upscale_logic: tests/test_upscale_logic.c src/upscale_logic.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_usm: tests/test_usm.c tests/usm_test_util.h src/usm.h $(BUILD_CONFIG) | $(COV_BUILD)
-	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/test_perfmon: tests/test_perfmon.c src/perfmon.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_cli_parse: tests/test_cli_parse.c tests/cli_parse.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
@@ -1101,8 +1082,6 @@ $(COV_BUILD)/test_lifetime: tests/test_lifetime.c tests/prng.h $(COV_BUILD)/usm_
 $(COV_BUILD)/fuzz_upscale_logic: tests/fuzz_upscale_logic.c src/upscale_logic.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/fuzz_usm: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h $(BUILD_CONFIG) | $(COV_BUILD)
-	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/fuzz_perfmon: tests/fuzz_perfmon.c tests/cli_parse.h src/perfmon.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/fuzz_threading: tests/fuzz_threading.c tests/cli_parse.h src/threading.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
@@ -1198,7 +1177,7 @@ analyze: complexity semantic-analysis
 		--inline-suppr --std=c11 --error-exitcode=2 \
 		--suppress=missingIncludeSystem \
 		-I src -I tests/stubs $(ZIMG_CFLAGS) \
-		src/upscale_logic.h src/usm.h src/perfmon.h src/threading.h src/zimg_helpers.h src/chroma_classify.h src/scaler_zimg_chroma.h src/content_probe.h src/scaler_pick_logic.h src/usm_pool.h src/usm_pool.c $(if $(HAVE_ZIMG),src/scaler_zimg.c) tests/
+		src/upscale_logic.h src/usm.h src/threading.h src/zimg_helpers.h src/chroma_classify.h src/scaler_zimg_chroma.h src/content_probe.h src/scaler_pick_logic.h src/usm_pool.h src/usm_pool.c $(if $(HAVE_ZIMG),src/scaler_zimg.c) tests/
 
 SCAN_BUILD ?= scan-build
 SCAN_CC ?= clang

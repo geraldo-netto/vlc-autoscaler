@@ -7,7 +7,6 @@
 src/upscale_logic.h
 src/autoupscale.c
 src/usm.h
-src/perfmon.h
 src/threading.h
 src/worker_pool.h
 src/plane_utils.h
