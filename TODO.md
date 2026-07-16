@@ -116,7 +116,7 @@ this technical domain; another business/domain pattern would not clarify it.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| REL-15 | open | M | Stock VLC 3.0.20 direct playback can still exhaust the chroma converter-chain limit while adapting AutoUpscale's changed video dimensions, producing `Too high level of recursion (3)` and converter/decoder failures. | The supplied log confirms the unpatched limit. Apply `patches/vlc-3.0-raise-chain-level.patch` when rebuilding VLC, or use the documented transcode display path; installing the plugin alone cannot change VLC's chain solver. |
+| REL-15 | open | M | Stock VLC 3.0.20 direct playback can still exhaust the chroma converter-chain limit while adapting AutoUpscale's changed video dimensions, producing `Too high level of recursion (3)` and converter/decoder failures. | The supplied log confirms the unpatched limit. Apply `patches/vlc-3.0-raise-chain-level.patch` when rebuilding VLC, or use the documented transcode display path generated for the Nemo action; installing the plugin alone cannot change VLC's chain solver. |
 
 ## portability/standards conformance
 

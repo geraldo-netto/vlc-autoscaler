@@ -17,13 +17,14 @@ frame dimensions.
 Transcode display path:
 
 ```sh
-vlc --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=autoupscale}:display' path/to/video.mp4
+vlc --avcodec-hw=none --autoupscale-target=2 --autoupscale-algo=3 --autoupscale-usm=20 --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=autoupscale}:display' path/to/video.mp4
 ```
 
 Use this when direct playback reports `Too high level of recursion (3)` or when
 the enlarged dimensions must reach the display. It adds a real-time encode and
 decode, so it costs more CPU. Keep audio in the same transcode pipeline to avoid
-parallel-path drift.
+parallel-path drift. The installed Nemo action uses this exact fixed profile
+and starts a separate VLC instance.
 
 For damaged legacy video, test deblocking before scaling:
 
@@ -36,11 +37,14 @@ it ineffective or unstable, and clean sources do not benefit.
 
 ## Common profiles
 
-Force 1080p:
+Force a 1080p display path:
 
 ```sh
-vlc --video-filter=autoupscale --autoupscale-target=2 path/to/video.mp4
+vlc --avcodec-hw=none --autoupscale-target=2 --autoupscale-algo=3 --autoupscale-usm=20 --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=autoupscale}:display' path/to/video.mp4
 ```
+
+All targets retain the 4x linear scaling cap. For example, 640x360 reaches
+1920x1080, while 320x240 is capped at 1280x960.
 
 Reduce work when playback misses its frame budget:
 

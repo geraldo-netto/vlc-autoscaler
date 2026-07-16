@@ -118,12 +118,15 @@ AutoUpscale under **Tools → Preferences → All → Video → Filters**, or ad
 
 VLC's direct display chain can resize the filter output back to the decoded
 size or hit `Too high level of recursion (3)`, especially with hardware decode.
-Use the transcode display path when you need the upscaled frame dimensions to
-reach the renderer:
+Use the transcode display path when you need a forced-1080p result to reach the
+renderer:
 
 ```sh
-vlc --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=autoupscale}:display' path/to/video.mp4
+vlc --avcodec-hw=none --autoupscale-target=2 --autoupscale-algo=3 --autoupscale-usm=20 --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=autoupscale}:display' path/to/video.mp4
 ```
+
+The Nemo installer generates this compatibility profile. It trades additional
+real-time encode/decode work for reliable enlarged display dimensions.
 
 See [usage and troubleshooting](docs/USAGE.md) for practical variants.
 

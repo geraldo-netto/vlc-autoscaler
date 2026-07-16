@@ -115,12 +115,28 @@ def parse_first_quoted_arg(value):
     raise AssertionError(f"unterminated quoted Exec value: {value!r}")
 
 
-for path, field_code in ((desktop, "%U"), (action, "%F")):
-    program, tail = parse_first_quoted_arg(exec_value(path))
-    if program != wrapper:
-        raise AssertionError((path, program, wrapper))
-    if tail != field_code:
-        raise AssertionError((path, tail, field_code))
+desktop_program, desktop_tail = parse_first_quoted_arg(exec_value(desktop))
+if desktop_program != wrapper:
+    raise AssertionError((desktop, desktop_program, wrapper))
+if desktop_tail != "%U":
+    raise AssertionError((desktop, desktop_tail, "%U"))
+
+action_program, action_tail = parse_first_quoted_arg(exec_value(action))
+if action_program != vlc:
+    raise AssertionError((action, action_program, vlc))
+
+sout = (
+    "#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,"
+    "venc=x264{preset=ultrafast,tune=zerolatency},"
+    "vfilter=autoupscale}:display"
+)
+expected_action_tail = (
+    "--no-one-instance --no-one-instance-when-started-from-file "
+    "--avcodec-hw=none --autoupscale-target=2 --autoupscale-algo=3 "
+    f'--autoupscale-usm=20 "--sout={sout}" -- %F'
+)
+if action_tail != expected_action_tail:
+    raise AssertionError((action, action_tail, expected_action_tail))
 
 with open(wrapper, encoding="utf-8") as fh:
     wrapper_text = fh.read()
@@ -128,5 +144,5 @@ expected_vlc_assignment = f'VLC_BIN="{vlc}"'
 if expected_vlc_assignment not in wrapper_text:
     raise AssertionError((expected_vlc_assignment, wrapper_text))
 
-print("install action Exec escaping OK")
+print("install action command and Exec escaping OK")
 PY

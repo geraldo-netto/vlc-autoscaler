@@ -59,7 +59,9 @@ desktop_exec_quote() {
 # both layers: doubled backslashes survive the general-string pass, backslash
 # escapes protect the command parser inside quotes, and %% prevents field-code
 # expansion inside the literal wrapper path.
-EXEC_PATH=$(desktop_exec_quote "$WRAPPER")
+WRAPPER_EXEC_PATH=$(desktop_exec_quote "$WRAPPER")
+
+NEMO_SOUT="#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=autoupscale}:display"
 
 VIDEO_MIMES="video/mp4;video/x-matroska;video/x-msvideo;video/quicktime;video/webm;video/mpeg;video/x-ms-wmv;video/x-flv;video/mp2t;"
 VIDEO_EXTS="mp4;mkv;avi;mov;webm;m4v;ts;mpg;mpeg;wmv;flv;"
@@ -89,7 +91,7 @@ Version=1.0
 Name=VLC (AutoUpscale)
 GenericName=Media Player
 Comment=Play media in VLC with the autoupscale video filter enabled
-Exec=${EXEC_PATH} %U
+Exec=${WRAPPER_EXEC_PATH} %U
 Icon=vlc
 Terminal=false
 Categories=AudioVideo;Player;Video;
@@ -105,9 +107,9 @@ install_action() {
     mkdir -p "$ACTION_DIR"
     cat > "$ACTION" <<EOF
 [Nemo Action]
-Name=Play with VLC (AutoUpscale)
-Comment=Play the selected media with the autoupscale video filter enabled
-Exec=${EXEC_PATH} %F
+Name=Play with VLC (AutoUpscale 1080p)
+Comment=Upscale through VLC's compatible transcode display path to preserve the larger frame size
+Exec=${VLC_EXEC_PATH} --no-one-instance --no-one-instance-when-started-from-file --avcodec-hw=none --autoupscale-target=2 --autoupscale-algo=3 --autoupscale-usm=20 "--sout=${NEMO_SOUT}" -- %F
 Icon-Name=vlc
 Selection=notnone
 Extensions=${VIDEO_EXTS}
@@ -139,6 +141,7 @@ VLC_BIN=$(find_vlc_binary) || {
     echo "error: whereis did not find an executable VLC binary" >&2
     exit 1
 }
+VLC_EXEC_PATH=$(desktop_exec_quote "$VLC_BIN")
 
 install_wrapper
 install_desktop
