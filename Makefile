@@ -1202,13 +1202,22 @@ complexity:
 		echo "lizard not installed. pip: lizard"; exit 1; }
 	lizard -C 10 src/ tests/
 
+MARKDOWN_FILES := README.md docs/ARCHITECTURE.md docs/BENCHMARKS.md \
+                  docs/DESKTOP_INTEGRATION.md docs/USAGE.md
+
 semantic-analysis:
 	@command -v shellcheck >/dev/null 2>&1 || { \
 		echo "shellcheck not installed"; exit 1; }
 	@command -v actionlint >/dev/null 2>&1 || { \
 		echo "actionlint not installed"; exit 1; }
+	@command -v rumdl >/dev/null 2>&1 || { \
+		echo "rumdl not installed"; exit 1; }
+	@command -v lychee >/dev/null 2>&1 || { \
+		echo "lychee not installed"; exit 1; }
 	shellcheck scripts/*.sh tests/*.sh
 	actionlint .github/workflows/*.yml
+	rumdl check $(MARKDOWN_FILES)
+	lychee --offline --include-fragments $(MARKDOWN_FILES)
 
 analyze: complexity semantic-analysis
 	@command -v cppcheck >/dev/null 2>&1 || { \

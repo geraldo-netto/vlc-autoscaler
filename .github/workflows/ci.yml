@@ -57,6 +57,17 @@ jobs:
           echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  actionlint.tar.gz" \
             | sha256sum -c -
           tar -xzf actionlint.tar.gz -C "$HOME/.local/bin" actionlint
+          curl -sSLo rumdl.tar.gz \
+            https://github.com/rvben/rumdl/releases/download/v0.2.34/rumdl-v0.2.34-x86_64-unknown-linux-gnu.tar.gz
+          echo "5fc1844544609504a5a8e9d37e1ef628a4a5938028dceda2b9c799173bf47739  rumdl.tar.gz" \
+            | sha256sum -c -
+          tar -xzf rumdl.tar.gz -C "$HOME/.local/bin" rumdl
+          curl -sSLo lychee.tar.gz \
+            https://github.com/lycheeverse/lychee/releases/download/lychee-v0.24.2/lychee-x86_64-unknown-linux-gnu.tar.gz
+          echo "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a  lychee.tar.gz" \
+            | sha256sum -c -
+          tar -xzf lychee.tar.gz -C "$HOME/.local/bin" \
+            --strip-components=1 lychee-x86_64-unknown-linux-gnu/lychee
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Show toolchain info
