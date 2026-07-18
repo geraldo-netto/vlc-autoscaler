@@ -163,7 +163,6 @@ local GCC and Clang single- and multi-version plugin links.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| BUILD-35 | open | S | The zimg libFuzzer object and seam target bypass `EXTRA_CFLAGS` (`Makefile:830-837`), so `make fuzz EXTRA_CFLAGS=-Werror` emits VLC-header warnings and still succeeds while every other fuzzer honors the requested warning policy. | Thread `EXTRA_CFLAGS` through both rules (or derive them from a shared fuzz flag set) and apply the existing targeted VLC `_Generic` warning suppression. Keep the CI `-Werror` invocation as a regression gate for every built fuzzer. |
 
 ## observability
 

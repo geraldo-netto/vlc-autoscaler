@@ -322,6 +322,7 @@ $(BUILD_CONFIG): FORCE | $(BUILD_MARKER)
 	        "STRESS_LDFLAGS_ASAN=$(STRESS_LDFLAGS_ASAN)" \
 	        "STRESS_LDFLAGS_TSAN=$(STRESS_LDFLAGS_TSAN)" \
 	        "ZIMG_H_CFLAGS=$(ZIMG_H_CFLAGS)" \
+	        "ZIMG_FUZZ_CFLAGS=$(ZIMG_FUZZ_CFLAGS)" \
 	        "ZIMG_H_LIBS=$(ZIMG_H_LIBS)" \
 	        "ZIMG_TEST_WRAP_LDFLAGS=$(ZIMG_TEST_WRAP_LDFLAGS)" \
 	        "BENCH_CFLAGS=$(BENCH_CFLAGS)" \
@@ -846,6 +847,8 @@ require-zimg:
 
 ifdef HAVE_ZIMG
 ZIMG_H_CFLAGS  := -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS) $(EXTRA_CFLAGS)
+ZIMG_FUZZ_CFLAGS := $(FUZZ_CFLAGS) $(VLC_CFLAGS) $(ZIMG_CFLAGS) \
+                    -Wno-unreachable-code-generic-assoc
 ZIMG_H_LIBS    := $(VLC_LIBS) $(ZIMG_LIBS) -lpthread
 # test_scaler_zimg defines these wrappers; only links of that file may use
 # them. The TSan harness deliberately links without any --wrap shims: TSan
@@ -893,12 +896,11 @@ $(BUILD)/fuzz_scaler_seam_smoke: tests/fuzz_scaler_seam.c $(BUILD)/scaler_zimg_a
 	    $< $(BUILD)/scaler_zimg_asan.o -fsanitize=address,undefined $(ZIMG_H_LIBS)
 
 $(BUILD)/scaler_zimg_fuzz.o: src/scaler_zimg.c $(BUILD_CONFIG) | $(BUILD)
-	$(CLANG) -O1 -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS) $(FUZZ_SAN) \
-	    -MMD -MP -c -o $@ $<
+	$(CLANG) $(ZIMG_FUZZ_CFLAGS) -c -o $@ $<
 
 $(BUILD)/fuzz_scaler_seam: tests/fuzz_scaler_seam.c $(BUILD)/scaler_zimg_fuzz.o $(BUILD_CONFIG) | $(BUILD)
-	$(CLANG) -O1 -g $(MARCH_FLAG) $(WARN) $(VLC_CFLAGS) $(ZIMG_CFLAGS) $(FUZZ_SAN) \
-	    -MMD -MP -o $@ $< $(BUILD)/scaler_zimg_fuzz.o $(FUZZ_SAN) $(ZIMG_H_LIBS)
+	$(CLANG) $(ZIMG_FUZZ_CFLAGS) -o $@ $< \
+	    $(BUILD)/scaler_zimg_fuzz.o $(ZIMG_H_LIBS)
 
 fuzz-seam: $(BUILD)/fuzz_scaler_seam_smoke
 	@echo
