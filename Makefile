@@ -165,6 +165,7 @@ LOAD_SAFE_CFLAGS := $(filter-out $(MARCH_FLAG) -flto,$(PLUGIN_CFLAGS)) \
 # link too, so a prototype/type mismatch between TUs is a build failure.
 PLUGIN_LDFLAGS := -shared -Wl,-z,defs,-z,relro,-z,now -flto $(WARN) $(EXTRA_CFLAGS) $(EXTRA_LDFLAGS)
 PLUGIN_LIBS    := $(VLC_LIBS) $(SWS_LIBS) -lpthread
+HARDENING_FORTIFY_PROBE := $(BUILD)/hardening_fortify_probe.so
 
 ifdef HAVE_ZIMG
   PLUGIN_CFLAGS += -DHAVE_ZIMG $(ZIMG_CFLAGS)
@@ -512,12 +513,24 @@ check-visibility: $(BUILD)/$(PLUGIN).so
 	 fi; \
 	 echo "check-visibility OK: $$entries vlc_entry* symbol(s) exported, nothing else"
 
-check-hardening: $(BUILD)/$(PLUGIN).so
+$(BUILD)/hardening_fortify_probe.o: tests/hardening_fortify_probe.c $(BUILD_CONFIG) | $(BUILD)
+	$(CC) $(PLUGIN_CFLAGS) -c -o $@ $<
+
+$(HARDENING_FORTIFY_PROBE): $(BUILD)/hardening_fortify_probe.o
+	$(CC) $(PLUGIN_LDFLAGS) -o $@ $<
+
+check-hardening: $(BUILD)/$(PLUGIN).so $(HARDENING_FORTIFY_PROBE)
 	@readelf -lW $< | grep -q 'GNU_RELRO' || { \
 	    echo "check-hardening FAILED: GNU_RELRO segment missing"; exit 1; }
 	@readelf -dW $< | grep -q 'BIND_NOW' || { \
 	    echo "check-hardening FAILED: BIND_NOW dynamic flag missing"; exit 1; }
-	@echo "check-hardening OK: RELRO + immediate binding enabled"
+	@readelf -Ws $< | grep -Eq \
+	    'UND[[:space:]]+__stack_chk_fail(@|$$)' || { \
+	    echo "check-hardening FAILED: stack protector not detected"; exit 1; }
+	@readelf -Ws $(HARDENING_FORTIFY_PROBE) | grep -Eq \
+	    'UND[[:space:]]+__memcpy_chk(@|$$)' || { \
+	    echo "check-hardening FAILED: FORTIFY level 2+ not detected"; exit 1; }
+	@echo "check-hardening OK: RELRO + immediate binding + stack protector + FORTIFY"
 
 # --------- unit tests ---------
 # `test` runs the suites only; `check` adds the lizard complexity gate.

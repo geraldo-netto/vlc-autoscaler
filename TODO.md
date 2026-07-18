@@ -88,7 +88,7 @@ also passed locally under ThreadSanitizer with ASLR disabled.
 |---|---|---|---|---|
 
 No open finding. The current full `src/` + `tests/` Lizard analysis reports
-970 functions, zero CCN violations, and a maximum CCN of 10.
+971 functions, zero CCN violations, and a maximum CCN of 10.
 
 ## code duplication
 
