@@ -1310,10 +1310,13 @@ analyze: complexity semantic-analysis
 	# The interesting logic is all in *_logic.h / usm.h, exercised via tests.
 	# scaler_zimg.c IS analyzed, against the test VLC stubs (cppcheck chokes
 	# on the real vlc_variables.h); needs libzimg headers, skipped otherwise.
+	# hardening_fortify_probe.c is compiler-only: it requires the production
+	# FORTIFY flags and forces a checked memcpy symbol for binary inspection.
 	cppcheck --enable=warning,style,performance,portability \
 		--inline-suppr --std=c11 --error-exitcode=2 \
 		--suppress=missingIncludeSystem \
 		-i tests/test_autoupscale_lifecycle.c \
+		-i tests/hardening_fortify_probe.c \
 		-I src -I tests/stubs $(ZIMG_CFLAGS) \
 		src/upscale_logic.h src/usm.h src/threading.h src/zimg_helpers.h src/chroma_classify.h src/scaler_zimg_chroma.h src/content_probe.h src/scaler_pick_logic.h src/usm_pool.h src/usm_pool.c $(if $(HAVE_ZIMG),src/scaler_zimg.c) tests/
 
