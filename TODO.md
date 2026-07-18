@@ -169,7 +169,8 @@ local GCC and Clang single- and multi-version plugin links.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| BUILD-37 | open | S | Without zimg, `make fuzz-seam` succeeds with “Nothing to be done” instead of reporting the unavailable required backend like the other zimg-only targets. | Add `fuzz-seam` to the no-zimg fallback rule so it reports the missing dependency consistently. |
+
+No open finding.
 
 ## observability
 

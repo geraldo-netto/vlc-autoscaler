@@ -1039,7 +1039,7 @@ bench-zimg: $(BUILD)/bench_scaler_zimg
 	@$(BUILD)/bench_scaler_zimg 8  i420 640 360 1280 720  200 1
 	@$(BUILD)/bench_scaler_zimg 8  i420 854 480 1920 1080 200 0
 else
-test-zimg stress-zimg bench-zimg coverage-zimg:
+fuzz-seam test-zimg stress-zimg bench-zimg coverage-zimg:
 	@echo "libzimg not detected (pkg-config zimg); zimg harness unavailable."
 endif
 
