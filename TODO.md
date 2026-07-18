@@ -116,8 +116,7 @@ this technical domain; another business/domain pattern would not clarify it.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| REL-15 | open | M | Stock VLC 3.0.20 direct playback can still exhaust the chroma converter-chain limit while adapting AutoUpscale's changed video dimensions, producing `Too high level of recursion (3)` and converter/decoder failures. | The supplied log confirms the unpatched limit. Apply `patches/vlc-3.0-raise-chain-level.patch` when rebuilding VLC, or use the documented transcode display path generated for the Nemo action; installing the plugin alone cannot change VLC's chain solver. |
-| REL-16 | open | M | VLC 3.0.20's `:display` stream-output path creates a private input resource and audio output, so the VLC GUI, hotkeys, and RC volume controls target the separate playlist-owned audio output and do not change the audible transcoded stream. | Reproduced with the fixed `#transcode{...}:display` profile: logs show the audible audio output created by `main stream out`, while VLC 3.0.x `playlist_VolumeSet` only obtains the playlist input resource's output. System mixer volume remains a workaround; retaining synchronized transcoded audio with VLC-native volume control requires upstream VLC integration or an equivalent local patch. |
+| REL-16 | open | M | VLC 3.0.20's `:display` stream-output path creates a private input resource and audio output, so the VLC GUI, hotkeys, and RC volume controls target the separate playlist-owned audio output and do not change the audible transcoded stream. | 2026-07-18 CLI matrix confirmed that RC `volume`/`voldown`, `--volume-step`, `--aout`, and `--sout-display-audio` do not repair routing; `--volume` is obsolete, and `--no-sout-display-audio` removes audio. `--gain=0.25` and `--audio-filter=gain --gain-value=0.25` each attenuated the audible stream by the expected 12 dB, while replay-gain also applied, so `--gain` is documented as a fixed startup-level workaround. Live control still requires the system mixer, upstream VLC integration, or an equivalent local patch. |
 
 ## portability/standards conformance
 
@@ -207,6 +206,11 @@ non-findings:
   no partitioned work, identifying scheduler wake delay rather than unequal
   tile cost; a queue would add synchronization and failure paths without a
   measured problem it can solve.
+- **REL-17, distinct AutoUpscale launcher icon:** rejected. The entry is
+  intentionally a visibly named VLC launch profile, keeps VLC's icon to identify
+  the actual player, and uses a separate desktop ID without changing stock VLC
+  or MIME defaults. A custom icon would add packaging and maintenance for a
+  cosmetic ambiguity that the `VLC (AutoUpscale)` name already distinguishes.
 
 - Adding a CI threshold for in-place USM halo snapshots: the paired alias-mode
   benchmark found no consistent in-place regression on the measured host, and

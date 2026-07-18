@@ -118,8 +118,9 @@ AutoUpscale under **Tools → Preferences → All → Video → Filters**, or ad
 
 VLC's direct display chain can resize the filter output back to the decoded
 size or hit `Too high level of recursion (3)`, especially with hardware decode.
-Use the transcode display path when you need a forced-1080p result to reach the
-renderer:
+The recursion error is a stock VLC 3.0 converter-chain limit and cannot be
+raised by an installed filter plugin. Use the transcode display path when you
+need a forced-1080p result to reach the renderer:
 
 ```sh
 vlc --avcodec-hw=none --autoupscale-target=2 --autoupscale-algo=3 --autoupscale-usm=20 --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=autoupscale}:display' path/to/video.mp4

@@ -151,14 +151,42 @@ paths, URLs, and credentials before sharing the log.
 
 ## Known VLC interactions
 
-### Hardware decode
+### Converter-chain limit and hardware decode
 
 The plugin cannot read opaque GPU surfaces. It declines them so VLC can insert
-a CPU-readable conversion and retry. If chain construction fails, use the
-transcode display path or `--avcodec-hw=none`. The optional
-`patches/vlc-3.0-raise-chain-level.patch` raises VLC 3.0's converter-chain limit
-for users who build VLC themselves; it does not prevent the direct display
-chain from resizing output again.
+a CPU-readable conversion and retry. Stock VLC 3.0 can then exhaust its own
+converter-chain depth while adapting AutoUpscale's changed dimensions and
+report `Too high level of recursion (3)`. This is a VLC host limitation; the
+installed plugin cannot raise the host's chain limit.
+
+Try `--avcodec-hw=none` first. If direct playback still fails, use the transcode
+display path described above. Users who build VLC themselves can instead apply
+`patches/vlc-3.0-raise-chain-level.patch`; it raises the VLC 3.0 chain limit but
+does not prevent the direct display chain from resizing output again.
+
+### Transcode display volume on VLC 3.0
+
+VLC 3.0's `:display` stream output owns a private audio output. The GUI, hotkeys,
+and RC `volume` commands can report a changed value while controlling the
+playlist's different audio output, leaving the audible transcoded stream
+unchanged. Use the system mixer for live volume control.
+
+For a fixed startup level, add the core `--gain` option before `--sout`:
+
+```sh
+vlc --gain=0.50 --avcodec-hw=none --autoupscale-target=2 --autoupscale-algo=3 --autoupscale-usm=20 --sout='#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=autoupscale}:display' path/to/video.mp4
+```
+
+The value is a linear multiplier: `1.0` is unchanged, `0.5` is about -6 dB,
+and `0` is silent. Values above `1.0` can clip. This setting is inherited by
+the private output but remains fixed for the process.
+
+Tests on VLC 3.0.20 also found that
+`--audio-filter=gain --gain-value=<multiplier>` and replay-gain settings alter
+the audible samples, but neither restores live VLC controls. `--volume` is
+obsolete, `--volume-step` only changes the step of the misrouted controls,
+choosing another `--aout` does not change ownership, and
+`--no-sout-display-audio` removes audio rather than rerouting it.
 
 ### Audio drift and late frames
 

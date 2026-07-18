@@ -69,6 +69,11 @@ the plugin's 4x linear scaling cap: a 640x360 source reaches 1920x1080, while a
 320x240 source reaches 1280x960. Re-running the installer restores this fixed
 profile and overwrites local edits to the action file.
 
+On VLC 3.0, the GUI and VLC hotkeys do not control the private audio output
+created by this profile. Use the system mixer for live volume changes. For a
+fixed startup gain with a direct VLC command, see
+[Transcode display volume on VLC 3.0](USAGE.md#transcode-display-volume-on-vlc-30).
+
 ## Troubleshoot
 
 If the action does not appear, restart Nemo:
