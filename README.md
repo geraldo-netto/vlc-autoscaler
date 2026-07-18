@@ -68,7 +68,7 @@ the verification targets you intend to run:
 | `make scan-build` | Clang and `scan-build` (`clang-tools`) |
 | `make coverage` | GCC, gcov, Python 3, gzip, and standard POSIX shell tools |
 | `make test-zimg`, `make stress-zimg`, `make bench-zimg`, `make coverage-zimg` | Mandatory plugin dependencies plus zimg development files |
-| `make check-hardening`, `make check-visibility`, `make check-multiversion-isa` | GNU binutils (`readelf`, `nm`, and `objdump`) |
+| `make check-hardening`, `make check-visibility`, `make check-load-safe-isa`, `make check-multiversion-isa` | GNU binutils (`readelf`, `nm`, and `objdump`) |
 
 On Debian or Ubuntu, prepare the complete local verification environment with:
 

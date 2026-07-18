@@ -81,7 +81,8 @@ endif
 # required SDKs — otherwise the first object compile dies on a cryptic
 # "vlc_common.h: No such file" long before any friendly message.
 PLUGIN_GOALS := all plugin install scan-build abi-layout-check \
-                check-visibility check-multiversion-isa check-hardening \
+                check-visibility check-load-safe-isa check-multiversion-isa \
+                check-hardening \
                 $(BUILD)/$(PLUGIN).so
 ifneq ($(filter $(PLUGIN_GOALS),$(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)),)
   ifeq ($(strip $(VLC_LIBS)),)
@@ -133,6 +134,18 @@ ifneq ($(MARCH),)
   MARCH_FLAG := -march=$(MARCH)
 endif
 
+ifneq ($(IS_X86),)
+UP_REQUIRED_CPU_LEVEL := $(shell \
+	macros="$$($(CC) $(MARCH_FLAG) -dM -E -x c /dev/null 2>/dev/null)"; \
+	if printf '%s\n' "$$macros" | grep -q '__AVX512F__'; then printf 4; \
+	elif printf '%s\n' "$$macros" | grep -q '__AVX2__'; then printf 3; \
+	else printf 0; fi)
+LOAD_SAFE_MARCH_FLAG := -march=x86-64
+else
+UP_REQUIRED_CPU_LEVEL := 0
+LOAD_SAFE_MARCH_FLAG :=
+endif
+
 COMMON_CFLAGS := -O2 $(MARCH_FLAG) -fPIC -DPIC $(WARN) -MMD -MP -fstack-protector-strong -D_FORTIFY_SOURCE=2 -flto $(EXTRA_CFLAGS)
 # ABI-1: hide internal symbols (up_*, scaler_*) so generic names cannot
 # collide in embedders loading plugins with RTLD_GLOBAL. VLC's plugin
@@ -141,6 +154,9 @@ COMMON_CFLAGS := -O2 $(MARCH_FLAG) -fPIC -DPIC $(WARN) -MMD -MP -fstack-protecto
 PLUGIN_CFLAGS := $(COMMON_CFLAGS) -fvisibility=hidden \
                  -DMODULE_STRING=\"autoupscale\" \
                  -D__PLUGIN__ $(VLC_CFLAGS) $(SWS_CFLAGS)
+LOAD_SAFE_CFLAGS := $(filter-out $(MARCH_FLAG) -flto,$(PLUGIN_CFLAGS)) \
+                    -fno-lto $(LOAD_SAFE_MARCH_FLAG) \
+                    -DUP_REQUIRED_CPU_LEVEL=$(UP_REQUIRED_CPU_LEVEL)
 # ABI-2: the LTO link is where cross-TU diagnostics are raised
 # (-Wlto-type-mismatch, and -Wstringop-overflow / -Warray-bounds arising from
 # cross-TU inlining). gcc reports them and still exits 0, so a link that
@@ -184,7 +200,8 @@ FUZZ_CFLAGS  := -O1 -g $(MARCH_FLAG) $(WARN) -MMD -MP $(FUZZ_SAN) $(EXTRA_CFLAGS
 SMOKE_CFLAGS := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefined -DFUZZ_MAIN $(EXTRA_CFLAGS)
 SMOKE_LDFLAGS := -fsanitize=address,undefined
 
-PLUGIN_SRCS := src/autoupscale.c src/scaler.c src/scaler_swscale.c
+PLUGIN_SRCS := src/autoupscale_module.c src/autoupscale.c src/scaler.c \
+               src/scaler_swscale.c
 ifdef HAVE_ZIMG
   PLUGIN_SRCS += src/scaler_zimg.c
 endif
@@ -284,6 +301,8 @@ $(BUILD_CONFIG): FORCE | $(BUILD_MARKER)
 	        "ZIMG_LIBS=$(ZIMG_LIBS)" \
 	        "COMMON_CFLAGS=$(COMMON_CFLAGS)" \
 	        "PLUGIN_CFLAGS=$(PLUGIN_CFLAGS)" \
+	        "LOAD_SAFE_CFLAGS=$(LOAD_SAFE_CFLAGS)" \
+	        "UP_REQUIRED_CPU_LEVEL=$(UP_REQUIRED_CPU_LEVEL)" \
 	        "PLUGIN_LDFLAGS=$(PLUGIN_LDFLAGS)" \
 	        "PLUGIN_LIBS=$(PLUGIN_LIBS)" \
 	        "TEST_CFLAGS=$(TEST_CFLAGS)" \
@@ -387,12 +406,12 @@ check-multiversion-isa:
 	@exit 2
 endif
 
-.PHONY: all plugin abi-layout-check check-hardening check-multiversion-isa test check check-visibility fuzz fuzz-smoke fuzz-seam analyze semantic-analysis scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
+.PHONY: all plugin abi-layout-check check-hardening check-load-safe-isa check-multiversion-isa test check check-visibility fuzz fuzz-smoke fuzz-seam analyze semantic-analysis scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
 
 all: plugin
 
 # --------- plugin ---------
-plugin: $(BUILD)/$(PLUGIN).so abi-layout-check
+plugin: $(BUILD)/$(PLUGIN).so abi-layout-check check-load-safe-isa
 	@chmod 0644 $<
 
 # ABI-1: the unit/coverage tests compile production sources (scaler_swscale.c,
@@ -422,6 +441,52 @@ $(BUILD)/$(PLUGIN).so: $(PLUGIN_OBJS) $(BUILD_CONFIG) | $(BUILD)
 
 $(BUILD)/%.o: src/%.c $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(PLUGIN_CFLAGS) -c -o $@ $<
+
+$(BUILD)/autoupscale_module.o: src/autoupscale_module.c \
+		src/autoupscale_module.h src/cpu_level.h $(BUILD_CONFIG) | $(BUILD)
+	$(CC) $(LOAD_SAFE_CFLAGS) -c -o $@ $<
+
+# The VLC descriptor and guarded Open callback are a non-LTO baseline object.
+# This post-link gate catches build-rule regressions that could put selected-ISA
+# instructions on the path VLC executes before the runtime CPU check.
+check-load-safe-isa: $(BUILD)/$(PLUGIN).so
+ifneq ($(IS_X86),)
+	@set -e; so=$<; \
+	 symbols=$$(nm -S -P --defined-only "$$so"); \
+	 entry_names=$$(printf '%s\n' "$$symbols" \
+	     | awk '$$1 ~ /^vlc_entry/ { print $$1 }'); \
+	 if [ -z "$$entry_names" ]; then \
+	     echo "check-load-safe-isa FAILED: no vlc_entry symbols"; exit 1; \
+	 fi; \
+	 for sym in up_autoupscale_open_checked $$entry_names; do \
+	     count=$$(printf '%s\n' "$$symbols" \
+	         | awk -v name="$$sym" '$$1 == name { n++ } END { print n + 0 }'); \
+	     if [ "$$count" -ne 1 ]; then \
+	         echo "check-load-safe-isa FAILED: $$sym occurs $$count times"; \
+	         exit 1; \
+	     fi; \
+	     body=$$(objdump -d --disassemble="$$sym" "$$so"); \
+	     if printf '%s\n' "$$body" | grep -Eq '(%?ymm|%?zmm)'; then \
+	         echo "check-load-safe-isa FAILED: $$sym uses wide vectors"; \
+	         exit 1; \
+	     fi; \
+	     if printf '%s\n' "$$body" \
+	         | awk '$$2 == "c4" || $$2 == "c5" || $$2 == "62" { found=1 } \
+	                END { exit !found }'; then \
+	         echo "check-load-safe-isa FAILED: $$sym uses VEX/EVEX"; exit 1; \
+	     fi; \
+	 done; \
+	 open_body=$$(objdump -d \
+	     --disassemble=up_autoupscale_open_checked "$$so"); \
+	 if ! printf '%s\n' "$$open_body" \
+	     | grep -Eq '(call|j[a-z]+).*<up_autoupscale_open'; then \
+	     echo "check-load-safe-isa FAILED: guarded callback does not enter implementation"; \
+	     exit 1; \
+	 fi; \
+	 echo "check-load-safe-isa OK: VLC entry and CPU gate use x86-64 baseline"
+else
+	@echo "check-load-safe-isa: non-x86 target, no selected x86 ISA to gate"
+endif
 
 # ABI-1 regression gate: the .so must export VLC's vlc_entry* plugin entry
 # points — and nothing else. Any other defined dynamic symbol is a leak of an

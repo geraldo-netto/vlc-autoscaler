@@ -278,14 +278,14 @@ static void test_success_copies_properties_and_tears_down(void)
     init_picture(&output, 0);
     g_next_output = &output;
 
-    CHECK(Open((vlc_object_t *)&filter) == VLC_SUCCESS);
+    CHECK(up_autoupscale_open((vlc_object_t *)&filter) == VLC_SUCCESS);
     CHECK(filter.pf_video_filter == Filter);
     CHECK(Filter(&filter, &input) == &output);
     CHECK(input.releases == 1);
     CHECK(output.releases == 0);
     CHECK(output.properties_tag == 42);
     CHECK(g_zimg_open_calls == 1 && g_zimg_process_calls == 1);
-    Close((vlc_object_t *)&filter);
+    up_autoupscale_close((vlc_object_t *)&filter);
     CHECK(g_zimg_close_calls == 1);
     END();
 }
@@ -299,11 +299,11 @@ static void test_output_allocation_failure_releases_input(void)
     init_filter(&filter);
     init_picture(&input, 1);
 
-    CHECK(Open((vlc_object_t *)&filter) == VLC_SUCCESS);
+    CHECK(up_autoupscale_open((vlc_object_t *)&filter) == VLC_SUCCESS);
     CHECK(Filter(&filter, &input) == NULL);
     CHECK(input.releases == 1);
     CHECK(g_zimg_process_calls == 0);
-    Close((vlc_object_t *)&filter);
+    up_autoupscale_close((vlc_object_t *)&filter);
     END();
 }
 
@@ -324,7 +324,7 @@ static void test_transient_failure_keeps_backend(void)
     g_zimg_status = SCALER_PROCESS_TRANSIENT;
     g_next_output = &failed_output;
 
-    CHECK(Open((vlc_object_t *)&filter) == VLC_SUCCESS);
+    CHECK(up_autoupscale_open((vlc_object_t *)&filter) == VLC_SUCCESS);
     CHECK(Filter(&filter, &failed_input) == NULL);
     CHECK(failed_input.releases == 1 && failed_output.releases == 1);
     CHECK(filter.p_sys->scaler.backend == &fake_zimg);
@@ -332,7 +332,7 @@ static void test_transient_failure_keeps_backend(void)
     g_next_output = &retry_output;
     CHECK(Filter(&filter, &retry_input) == &retry_output);
     CHECK(g_zimg_process_calls == 2 && g_swscale_process_calls == 0);
-    Close((vlc_object_t *)&filter);
+    up_autoupscale_close((vlc_object_t *)&filter);
     END();
 }
 
@@ -353,7 +353,7 @@ static void test_fatal_failure_falls_back_once(void)
     g_zimg_status = SCALER_PROCESS_FATAL;
     g_next_output = &failed_output;
 
-    CHECK(Open((vlc_object_t *)&filter) == VLC_SUCCESS);
+    CHECK(up_autoupscale_open((vlc_object_t *)&filter) == VLC_SUCCESS);
     CHECK(Filter(&filter, &failed_input) == NULL);
     CHECK(failed_input.releases == 1 && failed_output.releases == 1);
     CHECK(g_zimg_close_calls == 1 && g_swscale_open_calls == 1);
@@ -361,7 +361,7 @@ static void test_fatal_failure_falls_back_once(void)
     g_next_output = &retry_output;
     CHECK(Filter(&filter, &retry_input) == &retry_output);
     CHECK(g_swscale_process_calls == 1);
-    Close((vlc_object_t *)&filter);
+    up_autoupscale_close((vlc_object_t *)&filter);
     CHECK(g_swscale_close_calls == 1);
     END();
 }
@@ -374,31 +374,31 @@ static void test_open_rejections_and_open_fallback(void)
     init_filter(&filter);
     set_config("autoupscale-target", UP_TARGET_AUTO);
     set_config("autoupscale-skip-above", 180);
-    CHECK(Open((vlc_object_t *)&filter) == VLC_EGENERIC);
+    CHECK(up_autoupscale_open((vlc_object_t *)&filter) == VLC_EGENERIC);
 
     reset_state();
     init_filter(&filter);
     filter.fmt_in.video.i_chroma = VLC_FOURCC('V', 'A', 'O', 'P');
-    CHECK(Open((vlc_object_t *)&filter) == VLC_EGENERIC);
+    CHECK(up_autoupscale_open((vlc_object_t *)&filter) == VLC_EGENERIC);
 
     reset_state();
     init_filter(&filter);
     g_picker_none = 1;
-    CHECK(Open((vlc_object_t *)&filter) == VLC_EGENERIC);
+    CHECK(up_autoupscale_open((vlc_object_t *)&filter) == VLC_EGENERIC);
 
     reset_state();
     init_filter(&filter);
     g_zimg_open_result = -1;
-    CHECK(Open((vlc_object_t *)&filter) == VLC_SUCCESS);
+    CHECK(up_autoupscale_open((vlc_object_t *)&filter) == VLC_SUCCESS);
     CHECK(g_zimg_open_calls == 1 && g_swscale_open_calls == 1);
     CHECK(filter.p_sys->scaler.backend == &fake_swscale);
-    Close((vlc_object_t *)&filter);
+    up_autoupscale_close((vlc_object_t *)&filter);
 
     reset_state();
     init_filter(&filter);
     g_zimg_open_result = -1;
     g_swscale_open_result = -1;
-    CHECK(Open((vlc_object_t *)&filter) == VLC_EGENERIC);
+    CHECK(up_autoupscale_open((vlc_object_t *)&filter) == VLC_EGENERIC);
     END();
 }
 
@@ -410,10 +410,10 @@ static void test_open_usm_contract(void)
     init_filter(&filter);
     set_config("autoupscale-usm", 20);
     g_usm_pool_create_result = (usm_pool_t *)&filter;
-    CHECK(Open((vlc_object_t *)&filter) == VLC_SUCCESS);
+    CHECK(up_autoupscale_open((vlc_object_t *)&filter) == VLC_SUCCESS);
     CHECK(filter.p_sys->usm_pool == (usm_pool_t *)&filter);
     CHECK(filter.p_sys->usm_amount_q8 > 0);
-    Close((vlc_object_t *)&filter);
+    up_autoupscale_close((vlc_object_t *)&filter);
     CHECK(g_usm_destroy_calls == 1);
 
     END();

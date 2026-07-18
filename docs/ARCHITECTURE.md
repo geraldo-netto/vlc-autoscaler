@@ -93,7 +93,8 @@ content. The separate soft-and-blocky content advisory is diagnostic only.
 
 | Area | Files |
 |---|---|
-| VLC lifecycle | `src/autoupscale.c` |
+| VLC descriptor and CPU gate | `src/autoupscale_module.c`, `src/autoupscale_module.h` |
+| VLC lifecycle implementation | `src/autoupscale.c` |
 | Planning | `src/upscale_logic.h` |
 | Backend selection | `src/scaler.c`, `src/scaler.h`, `src/scaler_status.h` |
 | zimg | `src/scaler_zimg.c`, `src/scaler_zimg_chroma.h` |
