@@ -615,7 +615,7 @@ $(BUILD)/test_upscale_logic: tests/test_upscale_logic.c src/upscale_logic.h $(BU
 $(BUILD)/test_geometry_edge_cases: tests/test_geometry_edge_cases.c src/upscale_logic.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
-$(BUILD)/test_autoupscale_lifecycle: tests/test_autoupscale_lifecycle.c src/autoupscale.c src/scaler.h src/usm_pool.h tests/test_harness.h tests/lifecycle_stubs/vlc_common.h tests/lifecycle_stubs/vlc_filter.h tests/lifecycle_stubs/vlc_picture.h tests/lifecycle_stubs/vlc_plugin.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/test_autoupscale_lifecycle: tests/test_autoupscale_lifecycle.c src/autoupscale.c src/autoupscale_module.c src/autoupscale_module.h src/cpu_level.h src/scaler.h src/usm_pool.h tests/test_harness.h tests/lifecycle_stubs/vlc_common.h tests/lifecycle_stubs/vlc_filter.h tests/lifecycle_stubs/vlc_picture.h tests/lifecycle_stubs/vlc_plugin.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -march=x86-64 -Itests/lifecycle_stubs -Itests/stubs -o $@ $< $(TEST_LDFLAGS)
 
 $(BUILD)/test_usm: tests/test_usm.c tests/usm_test_util.h src/usm.h src/threading.h $(BUILD_CONFIG) | $(BUILD)
@@ -1182,7 +1182,7 @@ $(COV_BUILD)/test_scaler_pick: tests/test_scaler_pick.c src/scaler_pick_logic.h 
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_scaler_swscale: tests/test_scaler_swscale.c src/scaler_swscale.c src/scaler.h src/scaler_status.h src/picture_view.h src/chroma_classify.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h tests/stubs/libswscale/swscale.h tests/stubs/libavutil/pixfmt.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -Itests/stubs -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/test_autoupscale_lifecycle: tests/test_autoupscale_lifecycle.c src/autoupscale.c src/scaler.h src/usm_pool.h tests/test_harness.h tests/lifecycle_stubs/vlc_common.h tests/lifecycle_stubs/vlc_filter.h tests/lifecycle_stubs/vlc_picture.h tests/lifecycle_stubs/vlc_plugin.h $(BUILD_CONFIG) | $(COV_BUILD)
+$(COV_BUILD)/test_autoupscale_lifecycle: tests/test_autoupscale_lifecycle.c src/autoupscale.c src/autoupscale_module.c src/autoupscale_module.h src/cpu_level.h src/scaler.h src/usm_pool.h tests/test_harness.h tests/lifecycle_stubs/vlc_common.h tests/lifecycle_stubs/vlc_filter.h tests/lifecycle_stubs/vlc_picture.h tests/lifecycle_stubs/vlc_plugin.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -march=x86-64 -Itests/lifecycle_stubs -Itests/stubs -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_picture_view: tests/test_picture_view.c src/picture_view.h src/chroma_classify.h tests/stubs/vlc_common.h tests/stubs/vlc_picture.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -Itests/stubs -o $@ $< $(COV_LDFLAGS)

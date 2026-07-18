@@ -5,6 +5,7 @@
 # - src/usm_pool.h and src/usm_pool_variants.h contain declarations only.
 # - tests/ helpers are test infrastructure, not production coverage targets.
 src/upscale_logic.h
+src/autoupscale_module.c
 src/autoupscale.c
 src/usm.h
 src/threading.h

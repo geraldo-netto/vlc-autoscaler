@@ -24,6 +24,14 @@
 # error "UP_REQUIRED_CPU_LEVEL must be 0, 3, or 4"
 #endif
 
+#ifndef UP_CPU_SUPPORTS_V3
+# define UP_CPU_SUPPORTS_V3() up_cpu_supports_v3()
+#endif
+
+#ifndef UP_CPU_SUPPORTS_V4
+# define UP_CPU_SUPPORTS_V4() up_cpu_supports_v4()
+#endif
+
 #define TARGET_TEXT     N_("Target resolution")
 #define TARGET_LONGTEXT N_( \
     "0 = auto (decide between 720p and 1080p based on CPU), " \
@@ -156,14 +164,14 @@ static int CheckCpuLevel( vlc_object_t *p_this )
 {
     (void)p_this;
 #if defined(__x86_64__) && UP_REQUIRED_CPU_LEVEL == 4
-    if( !up_cpu_supports_v4() )
+    if( !UP_CPU_SUPPORTS_V4() )
     {
         msg_Err( p_this,
                  "AutoUpscale: CPU below x86-64-v4 required by this build" );
         return VLC_EGENERIC;
     }
 #elif defined(__x86_64__) && UP_REQUIRED_CPU_LEVEL == 3
-    if( !up_cpu_supports_v3() )
+    if( !UP_CPU_SUPPORTS_V3() )
     {
         msg_Err( p_this,
                  "AutoUpscale: CPU below x86-64-v3 required by this build" );
