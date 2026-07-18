@@ -64,7 +64,7 @@ the verification targets you intend to run:
 | `make test`, `make fuzz-smoke`, `make stress` | GCC or Clang with ASan, UBSan, and TSan runtime support |
 | `make fuzz` | Clang with libFuzzer support |
 | `make check`, `make complexity` | Python 3 and Lizard |
-| `make analyze` | Lizard, cppcheck, ShellCheck, and actionlint |
+| `make analyze` | Lizard, cppcheck, ShellCheck, actionlint, rumdl, and lychee |
 | `make scan-build` | Clang and `scan-build` (`clang-tools`) |
 | `make coverage` | GCC, gcov, Python 3, gzip, and standard POSIX shell tools |
 | `make test-zimg`, `make stress-zimg`, `make bench-zimg`, `make coverage-zimg` | Mandatory plugin dependencies plus zimg development files |
@@ -76,10 +76,13 @@ On Debian or Ubuntu, prepare the complete local verification environment with:
 sudo apt install ca-certificates curl tar clang clang-tools cppcheck shellcheck python3 python3-venv binutils gzip
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install lizard==1.17.31
+python -m pip install --only-binary=:all: --require-hashes \
+  -r .github/requirements-ci.txt
 ```
 
-Install the same checksum-verified actionlint binary used by CI:
+The requirements file keeps the local Lizard version synchronized with CI.
+Install the same checksum-verified actionlint, rumdl, and lychee binaries used
+by CI:
 
 ```sh
 mkdir -p "$HOME/.local/bin"
@@ -88,21 +91,33 @@ curl -sSLo actionlint.tar.gz \
 echo '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  actionlint.tar.gz' \
   | sha256sum -c -
 tar -xzf actionlint.tar.gz -C "$HOME/.local/bin" actionlint
+curl -sSLo rumdl.tar.gz \
+  https://github.com/rvben/rumdl/releases/download/v0.2.34/rumdl-v0.2.34-x86_64-unknown-linux-gnu.tar.gz
+echo '5fc1844544609504a5a8e9d37e1ef628a4a5938028dceda2b9c799173bf47739  rumdl.tar.gz' \
+  | sha256sum -c -
+tar -xzf rumdl.tar.gz -C "$HOME/.local/bin" rumdl
+curl -sSLo lychee.tar.gz \
+  https://github.com/lycheeverse/lychee/releases/download/lychee-v0.24.2/lychee-x86_64-unknown-linux-gnu.tar.gz
+echo '1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a  lychee.tar.gz' \
+  | sha256sum -c -
+tar -xzf lychee.tar.gz -C "$HOME/.local/bin" \
+  --strip-components=1 lychee-x86_64-unknown-linux-gnu/lychee
 export PATH="$HOME/.local/bin:$PATH"
-rm actionlint.tar.gz
+rm actionlint.tar.gz rumdl.tar.gz lychee.tar.gz
 ```
 
-The archive above is for Linux x86-64, matching this project's compatibility
+The archives above are for Linux x86-64, matching this project's compatibility
 contract. Keep the virtual environment active and verify the toolchain with:
 
 ```sh
-command -v lizard cppcheck shellcheck actionlint scan-build gcov python3
+command -v lizard cppcheck shellcheck actionlint rumdl lychee \
+  scan-build gcov python3
 ```
 
 Fedora users can install the packaged tools with `clang`, `clang-tools-extra`,
 `cppcheck`, `ShellCheck`, `python3`, `python3-pip`, `binutils`, and `gzip`;
 install Lizard in a virtual environment and actionlint from its verified
-upstream release.
+upstream release. Use the verified rumdl and lychee releases above as well.
 
 ## Use
 
