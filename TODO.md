@@ -1,34 +1,36 @@
 # TODO — full-project audit findings
 
-Full-project rescan of HEAD `6062482` and its clean working tree on 2026-07-16.
-Scope: all 251 tracked project files: production source/public headers, tests,
+Full-project rescan of HEAD `9069eef` and its clean starting tree on 2026-07-18.
+Scope: all 259 tracked project files: production source/public headers, tests,
 fuzzers, 148 corpus seeds, build/release files, workflows, scripts, documents,
 and patches. Excluded `.git`, ignored/generated build outputs, and cache
 directories/files.
 
 Validation: manual review across every category, every production source/header,
-test/fuzzer, build/workflow/script/doc/patch, and every change since `1be0717`;
-GCC C11 unit/contract tests with `-Werror`, ASan, and UBSan; every deterministic
-fuzz-smoke target; zimg integration plus seam fuzz-smoke with ASan/UBSan; GCC
-multi-version plugin/ABI/visibility/hardening/linked-ISA checks; Clang plugin
-and ABI/visibility checks; Cppcheck over source and test translation units
-(its only diagnostic is the expected unexpanded VLC module macro); Lizard 1.17.31
-over 965 functions (zero CCN > 10, maximum 10); declared-interpreter shell
-syntax; relative Markdown-link, corpus, unsafe-API, ownership, return-value,
-symbol, and configuration-consumer searches. `scan-build`, ShellCheck,
-actionlint, clang-tidy, markdownlint, and local TSan were unavailable, so their
-gaps are retained where material. Row format:
+test/fuzzer, build/workflow/script/doc/patch, and every change since `6062482`;
+GCC C11 unit/contract and deterministic fuzz-smoke suites with `-Werror`, ASan,
+and UBSan; zimg integration and seam fuzz-smoke with ASan/UBSan; USM and zimg
+ThreadSanitizer stress under disabled ASLR; all 148 curated seeds replayed under
+Clang libFuzzer; GCC and Clang single-/multi-version plugin, ABI, visibility,
+hardening, and linked-ISA checks; 98.8% gated production line coverage with all
+177 tracked functions above 80%, plus 95.0% informational zimg coverage;
+clean Cppcheck and ShellCheck runs; Lizard 1.23.0 over 966 functions (zero CCN
+above 10, maximum 10); declared-interpreter shell syntax and workflow YAML
+parsing; relative Markdown-link/fragment, corpus size/hash, unsafe-API,
+ownership, return-value, symbol, and configuration-consumer searches.
+`scan-build`, actionlint, rumdl, lychee, and clang-tidy were unavailable;
+their gaps are retained where material. Row format:
 `id | status | effort | description | notes`.
 
 ## security
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| SEC-5 | open | S | `tests/test_install_action.sh:5-14` creates the predictable `${TMPDIR:-/tmp}/vlc-autoscaler-install-test.$$` tree, recursively removes it, writes executable `PATH` stubs there, and invokes the installer. | This finding was removed from the tracker without an implementation. In a shared temporary directory, another user can pre-create or race components to redirect writes or replace an executed stub. Use `mktemp -d`, arm cleanup only after successful creation, and make signal traps clean up and exit. |
 
-No additional security issue was found in the production media/configuration
-paths: geometry is validated before pointer formation, user integers are
-normalized or clamped, format strings are literals, and allocation dimensions
-are bounded.
+No additional production-path security issue was found: geometry is validated
+before pointer formation, user integers are normalized or clamped, format
+strings are literals, and allocation dimensions are bounded.
 
 ## undefined behavior
 
@@ -71,7 +73,8 @@ No open finding. Gate publication, the completion release sequence,
 cancellation cleanup while blocked, partial spawn, and normal teardown showed
 no data race or valid-state deadlock. The completion deadline is explicitly
 not an end-to-end callback bound; recovery joins active callbacks before
-releasing their storage.
+releasing their storage. USM's 27 configurations and the zimg invariant harness
+also passed locally under ThreadSanitizer with ASLR disabled.
 
 ## code complexity
 
@@ -79,7 +82,7 @@ releasing their storage.
 |---|---|---|---|---|
 
 No open finding. The current full `src/` + `tests/` Lizard analysis reports
-965 functions, zero CCN violations, and a maximum CCN of 10.
+966 functions, zero CCN violations, and a maximum CCN of 10.
 
 ## code duplication
 
@@ -117,6 +120,7 @@ this technical domain; another business/domain pattern would not clarify it.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | REL-16 | open | M | VLC 3.0.20's `:display` stream-output path creates a private input resource and audio output, so the VLC GUI, hotkeys, and RC volume controls target the separate playlist-owned audio output and do not change the audible transcoded stream. | 2026-07-18 CLI matrix confirmed that RC `volume`/`voldown`, `--volume-step`, `--aout`, and `--sout-display-audio` do not repair routing; `--volume` is obsolete, and `--no-sout-display-audio` removes audio. `--gain=0.25` and `--audio-filter=gain --gain-value=0.25` each attenuated the audible stream by the expected 12 dB, while replay-gain also applied, so `--gain` is documented as a fixed startup-level workaround. Live control still requires the system mixer, upstream VLC integration, or an equivalent local patch. |
+| REL-18 | open | M | The single-baseline runtime CPU rejection is not structurally load-safe: VLC calls `vlc_entry*` before `Open()`, while the entry point, `Open()`, and `CheckCpuLevel()` all live in `autoupscale.c` compiled at the selected `-march` (`Makefile:136-145,187-191,421-424`; `src/autoupscale.c:592-613,636-642`). | A compiler may emit the very v3/v4 instruction being guarded anywhere before or inside the check, causing `SIGILL` instead of the intended diagnostic on an incompatible CPU. The audited GCC v4 artifact happened to use baseline instructions on the observed entry-to-check path, but no build invariant guarantees that. Compile the VLC descriptor and CPU gate in an x86-64-baseline translation unit, then enter the high-ISA implementation only after the check; add a post-link regression for the pre-check path. |
 
 ## portability/standards conformance
 
@@ -154,29 +158,33 @@ instead of releasing worker-accessible state.
 
 No open finding. Shared variant declarations, the zimg ABI-major guard, and the
 visibility/final-link ISA gates remain coherent by inspection and by successful
-local GCC multi-version plus Clang single-version plugin links.
+local GCC and Clang single- and multi-version plugin links.
 
 ## build/toolchain hygiene
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| BUILD-33 | open | S | README's “complete local verification environment” does not install or even list `rumdl` and `lychee`, although `make analyze` hard-requires both; it also pins Lizard 1.17.31 while CI pins 1.23.0 (`README.md:57-103`; `Makefile:1208-1225`; `.github/requirements-ci.txt:1-2`). | Following the documented setup still makes `make analyze` stop before analysis. Document checksum-verified installs for all required tools, include them in `command -v`, and keep the local Lizard pin synchronized with CI. |
+| BUILD-34 | open | S | Sonar still excludes `src/autoupscale.c` from coverage and says its VLC lifecycle needs a full runtime mock, although `tests/test_autoupscale_lifecycle.c` now drives the real callbacks and the gated report measured 96.1% line coverage (`sonar-project.properties:25-36`; `Makefile:1033-1040,1119-1122`; `scripts/coverage_scope.txt:1-8`). | Remove `src/autoupscale.c` from `sonar.coverage.exclusions` and refresh the stale comments so Sonar exposes lifecycle coverage regressions instead of discarding the generated data. Keep the justified six-line `src/scaler.c` exclusion separate. |
+| BUILD-35 | open | S | The zimg libFuzzer object and seam target bypass `EXTRA_CFLAGS` (`Makefile:830-837`), so `make fuzz EXTRA_CFLAGS=-Werror` emits VLC-header warnings and still succeeds while every other fuzzer honors the requested warning policy. | Thread `EXTRA_CFLAGS` through both rules (or derive them from a shared fuzz flag set) and apply the existing targeted VLC `_Generic` warning suppression. Keep the CI `-Werror` invocation as a regression gate for every built fuzzer. |
 
 ## observability
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| OBS-12 | open | XS | README tells users that `make info` reports CPU configuration and zimg detection, but the target prints only plugin/library flags and compiler names (`README.md:40-41`; `Makefile:1286-1293`). | Print `MARCH`, `MULTIVERSION`, and resolved zimg state so the advertised pre-build diagnostic identifies artifact compatibility and backend selection. |
 
-No additional production finding. Actionable degradation reasons and pinning outcomes are
-visible without verbose logging.
+No additional production finding. Actionable degradation reasons and pinning
+outcomes are visible without verbose logging.
 
 ## wiring gaps
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No additional production wiring finding. All module options have consumers; both scaler
-backends, runtime fallback, USM pool, and multiversion dispatcher have real
-production call sites.
+No additional production wiring finding. All module options have consumers;
+both scaler backends, runtime fallback, USM pool, and multiversion dispatcher
+have real production call sites.
 
 ## unused functions/methods
 
