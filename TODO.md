@@ -32,7 +32,8 @@ and validation above remain the provenance for the open findings.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| SEC-5 | open | S | `tests/test_install_action.sh:5-14` creates the predictable `${TMPDIR:-/tmp}/vlc-autoscaler-install-test.$$` tree, recursively removes it, writes executable `PATH` stubs there, and invokes the installer. | This finding was removed from the tracker without an implementation. In a shared temporary directory, another user can pre-create or race components to redirect writes or replace an executed stub. Use `mktemp -d`, arm cleanup only after successful creation, and make signal traps clean up and exit. |
+
+No open finding.
 
 No additional production-path security issue was found: geometry is validated
 before pointer formation, user integers are normalized or clamped, format

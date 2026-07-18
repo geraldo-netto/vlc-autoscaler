@@ -2,15 +2,31 @@
 set -eu
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-tmp=${TMPDIR:-/tmp}/vlc-autoscaler-install-test.$$
-home="${tmp}/home % dollar\$ back\\slash tick\` quote\" space"
-bin_dir="${tmp}/bin"
 
 cleanup() {
-    rm -rf "$tmp"
+    if [ -n "${tmp:-}" ]; then
+        rm -rf -- "$tmp"
+        tmp=
+    fi
 }
-trap cleanup EXIT HUP INT TERM
 
+on_signal() {
+    signal=$1
+    trap '' HUP INT TERM
+    cleanup
+    trap - "$signal"
+    kill -s "$signal" "$$"
+    exit 1
+}
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/vlc-autoscaler-install-test.XXXXXXXXXX")
+trap cleanup EXIT
+trap 'on_signal HUP' HUP
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
+
+home="${tmp}/home % dollar\$ back\\slash tick\` quote\" space"
+bin_dir="${tmp}/bin"
 mkdir -p "$home" "$bin_dir"
 
 cat > "${bin_dir}/vlc" <<'EOF'
