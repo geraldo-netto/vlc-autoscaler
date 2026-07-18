@@ -168,7 +168,6 @@ local GCC and Clang single- and multi-version plugin links.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| OBS-12 | open | XS | README tells users that `make info` reports CPU configuration and zimg detection, but the target prints only plugin/library flags and compiler names (`README.md:40-41`; `Makefile:1286-1293`). | Print `MARCH`, `MULTIVERSION`, and resolved zimg state so the advertised pre-build diagnostic identifies artifact compatibility and backend selection. |
 
 No additional production finding. Actionable degradation reasons and pinning
 outcomes are visible without verbose logging.

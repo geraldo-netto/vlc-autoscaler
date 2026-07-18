@@ -11,7 +11,7 @@
 #   make install     — install the built plugin into VLC's plugins dir
 #   make uninstall
 #   make clean
-#   make info        — print discovered toolchain paths
+#   make info        — print the resolved build configuration
 
 .DEFAULT_GOAL := all
 
@@ -593,6 +593,9 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/tes
 	@echo
 	@echo "=== safe cleanup roots ==="
 	@sh tests/test_safe_rm_tree.sh
+	@echo
+	@echo "=== build configuration info ==="
+	@sh tests/test_info.sh
 	@echo
 	@echo "=== benchmark matrix parser ==="
 	@sh tests/test_bench_matrix.sh
@@ -1356,6 +1359,11 @@ info:
 	@echo "VLC libs       : $(VLC_LIBS)"
 	@echo "swscale cflags : $(SWS_CFLAGS)"
 	@echo "swscale libs   : $(SWS_LIBS)"
+	@echo "zimg cflags    : $(ZIMG_CFLAGS)"
+	@echo "zimg libs      : $(ZIMG_LIBS)"
+	@echo "zimg backend   : $(if $(strip $(HAVE_ZIMG)),ENABLED,disabled)"
+	@echo "MARCH          : $(MARCH)"
+	@echo "MULTIVERSION   : $(MULTIVERSION)"
 	@echo "CC             : $(CC)"
 	@echo "CLANG          : $(CLANG)"
 
