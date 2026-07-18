@@ -1030,7 +1030,7 @@ coverage-zimg: | $(BUILD_MARKER)
 	exit "$$report_status"
 
 bench-zimg: $(BUILD)/bench_scaler_zimg
-	@echo "threads,chroma,src,dst,frames,zc,us_per_frame"
+	@echo "threads,chroma,src,dst,frames,zc,pin,lazy_us,max_rss_kb,us_per_frame"
 	@$(BUILD)/bench_scaler_zimg 1  i420 854 480 1920 1080 200 1
 	@$(BUILD)/bench_scaler_zimg 2  i420 854 480 1920 1080 200 1
 	@$(BUILD)/bench_scaler_zimg 4  i420 854 480 1920 1080 200 1

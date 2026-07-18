@@ -37,8 +37,8 @@ Confirm that the mandatory pkg-config modules are visible before building:
 pkg-config --exists vlc-plugin libswscale libavutil
 ```
 
-`make info` reports the detected compiler, plugin directory, CPU configuration,
-and whether zimg is enabled.
+`make info` reports the resolved compiler and library flags, install directory,
+CPU configuration, and whether the zimg backend is enabled.
 
 ## Build and install
 
@@ -47,11 +47,16 @@ make
 sudo make install
 ```
 
-If VLC does not find the installed plugin, rebuild the plugin cache at the path
-shown by `make info`:
+`make` builds the plugin and runs the ABI-layout and load-safe-ISA checks.
+`make install` copies that artifact into the `video_filter` directory below
+VLC's plugin root.
+
+If VLC does not find the installed plugin, regenerate the cache from the plugin
+root. Do not pass the `video_filter` install directory printed by `make info`:
 
 ```sh
-sudo vlc-cache-gen <vlc-plugins-directory>
+plugin_root=$(pkg-config --variable=pluginsdir vlc-plugin)
+sudo vlc-cache-gen "$plugin_root"
 ```
 
 ### Optional verification environment
@@ -61,13 +66,14 @@ the verification targets you intend to run:
 
 | Targets | Additional software |
 |---|---|
-| `make test`, `make fuzz-smoke`, `make stress` | GCC or Clang with ASan, UBSan, and TSan runtime support |
+| `make test`, `make fuzz-smoke` | GCC or Clang with ASan and UBSan runtime support |
+| `make stress` | GCC or Clang with ASan, UBSan, and TSan runtime support |
 | `make fuzz` | Clang with libFuzzer support |
 | `make check`, `make complexity` | Python 3 and Lizard |
 | `make analyze` | Lizard, cppcheck, ShellCheck, actionlint, rumdl, and lychee |
 | `make scan-build` | Clang and `scan-build` (`clang-tools`) |
 | `make coverage` | GCC, gcov, Python 3, gzip, and standard POSIX shell tools |
-| `make test-zimg`, `make stress-zimg`, `make bench-zimg`, `make coverage-zimg` | Mandatory plugin dependencies plus zimg development files |
+| `make test-zimg`, `make fuzz-seam`, `make stress-zimg`, `make bench-zimg`, `make bench-pipeline`, `make coverage-zimg` | Mandatory plugin dependencies plus zimg development files |
 | `make check-hardening`, `make check-visibility`, `make check-load-safe-isa`, `make check-multiversion-isa` | GNU binutils (`readelf`, `nm`, and `objdump`) |
 
 On Debian or Ubuntu, prepare the complete local verification environment with:
@@ -153,7 +159,7 @@ See [usage and troubleshooting](docs/USAGE.md) for practical variants.
 | Option | Range | Default | Effect |
 |---|---:|---:|---|
 | `--autoupscale-target` | 0–6 | 0 | `0` AUTO; `1` 720p; `2` 1080p; `3` 1440p; `4` 4K; `5` 5K; `6` 8K. All targets have a 4× linear ratio cap. |
-| `--autoupscale-algo` | 0–3 | 3 | Bilinear, bicubic, Lanczos, or Spline36. swscale maps Spline36 to Lanczos. |
+| `--autoupscale-algo` | 0–3 | 3 | `0` fast bilinear; `1` bicubic; `2` Lanczos; `3` Spline36. swscale maps Spline36 to Lanczos. |
 | `--autoupscale-skip-above` | 0–8192 | 720 | In AUTO, skip sources at or above this height. `0` disables the gate. |
 | `--autoupscale-usm` | 0–200 | 20 | Luma sharpening percentage. `0` disables USM. |
 | `--autoupscale-backend` | 0–2 | 0 | `0` prefer zimg with swscale fallback; `1` zimg only; `2` swscale only. |
@@ -187,11 +193,21 @@ make stress                  # USM concurrency stress
 make stress-zimg             # zimg concurrency stress
 make check-hardening         # linked-plugin hardening checks
 make check-visibility        # exported-symbol check
+sudo make uninstall          # remove the installed plugin
 ```
 
 The default `MARCH=native MULTIVERSION=0` build is for the build host. Use
 `MARCH=x86-64 MULTIVERSION=1` when distributing to other Linux x86-64 systems.
-The runtime dispatcher selects SSE2, AVX2, or AVX-512 USM code after loading.
+`MARCH` controls the baseline of the plugin implementation; `MULTIVERSION=1`
+only adds runtime-selected SSE2, AVX2, and AVX-512 variants for the USM kernel.
+It does not lower the baseline of the scaler or VLC-facing implementation.
+
+The VLC descriptor and guarded open callback are always built at the x86-64
+baseline without LTO. For a v3 or v4 implementation, that callback verifies the
+required CPU level before entering higher-ISA code. The default `make` and
+explicit `make plugin` targets run `check-load-safe-isa` automatically. A
+`MARCH=native` artifact is still host-specific; use the explicit `x86-64`
+baseline for distribution.
 
 The environment-preparation section above maps every target to its required
 software. Missing optional tools do not affect a normal plugin build.
@@ -205,10 +221,10 @@ software. Missing optional tools do not affect a normal plugin build.
 
 ## Compatibility
 
-Supported: Linux x86-64 and VLC 3.x. The feature-level test builds and
-`MULTIVERSION=1` require GCC 11+ or Clang 12+ for `-march=x86-64-v3/v4`.
-VLC 4, other operating systems, and other architectures are outside the
-compatibility contract.
+Supported: Linux x86-64 and VLC 3.x. `make test`, `make check`,
+`make fuzz-smoke`, `make fuzz`, and `MULTIVERSION=1` require GCC 11+ or
+Clang 12+ for `-march=x86-64-v3/v4`. VLC 4, other operating systems, and other
+architectures are outside the compatibility contract.
 
 Useful diagnostics:
 

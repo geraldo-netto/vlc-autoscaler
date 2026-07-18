@@ -8,7 +8,7 @@ fixed throughput claims.
 ## Run
 
 ```sh
-make build-bench
+make build-bench                 # compile every available benchmark
 make bench
 make bench-usm-halo
 make bench-worker-pool
@@ -19,9 +19,15 @@ scripts/bench_matrix.sh build/bench_usm_pool
 scripts/bench_zimg_pinning.sh build/bench_scaler_zimg
 ```
 
-Run the benchmark binary without arguments for its current interface. The USM
-benchmark supports `rand`, `flat`, and `mixed` input fills. The matrix script
-accepts optional frame-count, amount, and fill arguments.
+`bench`, `bench-usm-halo`, `bench-worker-pool`, and `bench-flatskip` need only
+the normal compiler toolchain. `bench-zimg`, `bench-pipeline`, and the zimg
+pinning script require the zimg and VLC development files. The pinning script
+also requires `taskset`; review its built-in affinity masks before running it.
+
+Run a benchmark binary without arguments to print its current interface (and
+exit with status 2). The USM benchmark supports `rand`, `flat`, and `mixed`
+input fills. The matrix script accepts optional frame-count, amount, and fill
+arguments.
 
 `bench-usm-halo` compares out-of-place (`out`) against in-place (`in`) runs at
 the same shapes. Their delta includes the serial halo-row snapshots required by
@@ -106,6 +112,16 @@ time. Compare separate process runs by geometry, chroma, zero-copy mode, and
 worker count; `ru_maxrss` includes the harness and libraries, so compare deltas
 rather than treating it as backend-only allocation.
 
+`bench-zimg` emits:
+
+```text
+threads,chroma,src,dst,frames,zc,pin,lazy_us,max_rss_kb,us_per_frame
+```
+
+`src` and `dst` are `WIDTHxHEIGHT`. `zc` controls direct destination writes;
+the harness always reads the source directly. `pin` controls best-effort zimg
+worker pinning.
+
 `bench-worker-pool` times the shared dispatch gate with deliberately tiny
 callbacks, exposing the upper bound of wake/barrier overhead by worker count
 without mixing in scaler work. Its benchmark-only completion hook also reports
@@ -117,6 +133,12 @@ production order while keeping both persistent pools alive. It reports the
 combined first-frame initialization, process RSS, and steady frame time by
 worker count. Its interface is `<threads> [frames] [pin] [zimg-lines]
 [usm-lines]`; zero for either stripe value selects its production default.
+It emits:
+
+```text
+threads,frames,pin,zimg_lines,usm_lines,lazy_us,max_rss_kb,us_per_frame
+```
+
 Changing zimg stripe lines can change the row/column grid, including whether
 source-direct and copy-in modes use the same independent graphs. Compare output
 quality as well as timing before changing the validated 16-line default.

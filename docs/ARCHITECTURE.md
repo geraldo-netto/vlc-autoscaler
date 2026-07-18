@@ -5,10 +5,12 @@ For commands and user settings, see [Usage](USAGE.md).
 
 ## Frame path
 
-1. VLC calls `Open()` with negotiated input geometry and chroma.
-2. `up_plan_upscale()` selects a target or declines the stream.
-3. `scaler_pick()` selects zimg or swscale.
-4. `Filter()` validates the current picture, allocates output, and invokes the
+1. VLC enters the baseline-compiled `up_autoupscale_open_checked()` callback.
+   It verifies the configured CPU level before calling the implementation.
+2. `up_autoupscale_open()` receives negotiated input geometry and chroma;
+   `up_plan_upscale()` selects a target or declines the stream.
+3. `scaler_pick()` selects zimg or swscale, with open-time fallback in AUTO.
+4. `Filter()` validates each picture, allocates output, and invokes the
    active backend.
 5. Eligible YUV output optionally receives the luma-only USM pass.
 6. Metadata is copied and ownership returns to VLC.
@@ -20,6 +22,24 @@ ratio, produces even dimensions, and caps linear enlargement at 4×.
 Opaque VA-API, VDPAU, Direct3D, MMAL, and CoreVideo chromas are rejected before
 pixel access. VLC may insert a hardware-to-software converter and retry with a
 readable format.
+
+## CPU and load contract
+
+`autoupscale_module.c` owns the VLC descriptor and guarded open callback. It is
+compiled without LTO at the x86-64 baseline, independently of `MARCH`, so VLC
+can enter it safely. Builds whose implementation requires the x86-64-v3 or
+x86-64-v4 feature level reject an older CPU before calling
+`up_autoupscale_open()`.
+
+All implementation translation units otherwise follow `MARCH`.
+`MULTIVERSION=1` changes only the USM pool: it links SSE2, AVX2, and AVX-512
+variants plus a baseline dispatcher. It does not make the scaler backends or
+the rest of the plugin independent of `MARCH`.
+
+The `plugin` target automatically runs `check-load-safe-isa`, which
+disassembles the linked VLC entry points and guarded callback to reject
+wide-vector instructions before the CPU check. `check-multiversion-isa`
+separately verifies the linked USM variants and dispatcher.
 
 ## Backend contract
 
@@ -110,6 +130,7 @@ content. The separate soft-and-blocky content advisory is diagnostic only.
 Pure logic is tested without VLC. Contract tests use boundary stubs for VLC,
 FFmpeg, allocation, and pthread failures. Cross-variant tests require identical
 SSE2/AVX2/AVX-512 output. Deterministic fuzz-smoke, libFuzzer, sanitizer stress,
-coverage gates, static analysis, linked-ISA checks, symbol visibility, and
-hardening checks cover their respective contracts. The Makefile target output
-is authoritative for current scope and thresholds.
+coverage gates, static analysis, lifecycle tests through the real guarded
+callback, linked-ISA checks, symbol visibility, and hardening checks cover their
+respective contracts. The Makefile target output is authoritative for current
+scope and thresholds.

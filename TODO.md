@@ -22,6 +22,12 @@ ownership, return-value, symbol, and configuration-consumer searches.
 their gaps are retained where material. Row format:
 `id | status | effort | description | notes`.
 
+Post-audit implementation through `11da8c6` added three tracked files. Its
+integrated verification reported 98.9% gated production line coverage
+(1417/1433) with all 179 tracked functions above 80%, and Lizard covered 970
+functions with zero CCN above 10 and a maximum of 10. The original rescan scope
+and validation above remain the provenance for the open findings.
+
 ## security
 
 | id | status | effort | description | notes |
@@ -82,7 +88,7 @@ also passed locally under ThreadSanitizer with ASLR disabled.
 |---|---|---|---|---|
 
 No open finding. The current full `src/` + `tests/` Lizard analysis reports
-966 functions, zero CCN violations, and a maximum CCN of 10.
+970 functions, zero CCN violations, and a maximum CCN of 10.
 
 ## code duplication
 
@@ -163,6 +169,7 @@ local GCC and Clang single- and multi-version plugin links.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| BUILD-37 | open | S | Without zimg, `make fuzz-seam` succeeds with “Nothing to be done” instead of reporting the unavailable required backend like the other zimg-only targets. | Add `fuzz-seam` to the no-zimg fallback rule so it reports the missing dependency consistently. |
 
 ## observability
 
@@ -198,9 +205,10 @@ non-findings:
   handle the supported desktop workload; robust v1/v2/hybrid cgroup discovery
   would add proc/sysfs parsing and failure policy with no measured need.
 - **SCAL-2a--SCAL-2d, cgroup memory-aware AUTO target selection:** rejected.
-  The current host-RAM heuristic remains intentionally simple, while the
-  necessary cgroup discovery/parsing stack is rejected above and no memory
-  pressure regression was reproduced within the tested bounded worker setup.
+  AUTO deliberately does not inspect host or cgroup RAM: user configuration
+  selects quality, and allocation failures follow the established graceful
+  failure path. A memory-derived target would violate that runtime policy; no
+  memory-pressure regression was reproduced within the bounded worker setup.
 - **SCAL-3b--SCAL-3d, topology-aware pin ordering:** rejected. Pinning the
   existing allowed-CPU order is byte-equivalent and improved the measured host;
   sibling/NUMA discovery would be Linux-specific policy without a demonstrated
@@ -214,7 +222,6 @@ non-findings:
   the actual player, and uses a separate desktop ID without changing stock VLC
   or MIME defaults. A custom icon would add packaging and maintenance for a
   cosmetic ambiguity that the `VLC (AutoUpscale)` name already distinguishes.
-
 - Adding a CI threshold for in-place USM halo snapshots: the paired alias-mode
   benchmark found no consistent in-place regression on the measured host, and
   cache/write differences prevent the comparison from isolating copy cost.

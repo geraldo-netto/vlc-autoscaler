@@ -38,7 +38,10 @@ VLC_AUTOUPSCALE_ARGS='--video-filter=autoupscale --autoupscale-target=1 --autoup
 ```
 
 The replacement must include `--video-filter=autoupscale`. An empty value
-launches plain VLC. This environment override applies only to direct mode.
+launches plain VLC. The value is a whitespace-separated option list; the
+wrapper deliberately does not evaluate shell quoting or wildcard expansion.
+Pass media filenames as normal wrapper arguments, not through this variable.
+This environment override applies only to direct mode.
 
 ## Nemo profile
 
@@ -67,7 +70,8 @@ vlc-autoupscale --check-transcode-display
 The transcode path costs more CPU than direct playback. The target also keeps
 the plugin's 4x linear scaling cap: a 640x360 source reaches 1920x1080, while a
 320x240 source reaches 1280x960. Re-running the installer restores this fixed
-profile and overwrites local edits to the action file.
+profile and overwrites local edits to the installed wrapper, desktop entry, and
+action file.
 
 On VLC 3.0, the GUI and VLC hotkeys do not control the private audio output
 created by this profile. Use the system mixer for live volume changes. For a
