@@ -522,7 +522,14 @@ static inline int up__pool_gate_wait_done_locked(
             return 0;
         const int rc = pthread_cond_timedwait(&g->done_cv, &g->done_lock,
                                               deadline);
-        if (rc != 0 && rc != EINTR) return rc;
+        if (rc == 0 || rc == EINTR) continue;
+        /* CONC-3: POSIX lets a completion signal race the deadline and
+         * still report ETIMEDOUT; one final predicate check keeps a
+         * finished dispatch from poisoning a healthy pool. */
+        if (rc == ETIMEDOUT
+            && atomic_load_explicit(&g->pending, memory_order_acquire) == 0)
+            return 0;
+        return rc;
     }
 }
 

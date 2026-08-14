@@ -28,6 +28,16 @@ integrated verification reported 98.9% gated production line coverage
 functions with zero CCN above 10 and a maximum of 10. The original rescan scope
 and validation above remain the provenance for the open findings.
 
+A second full rescan on 2026-08-14 at HEAD `f7f806b` covered all production
+source/headers, Makefile, scripts, workflows, docs, and patches (excluding
+tests, build outputs, and caches), with explicit passes for architecture and
+code-to-merge/code-to-split seams. Method: five parallel adversarial
+code-trace reviews across all categories, plus a fresh Lizard run over `src/`
+(229 functions, zero CCN above 10, average 3.8) and a local ShellCheck pass
+(clean). Findings dated 2026-08-14 below are its output: CONC-3, DUP-9,
+DUP-10, ARCH-3, ARCH-4, REL-18, REL-19, REL-20, PORT-2, BUILD-10, OBS-3.
+All other categories re-verified clean.
+
 ## security
 
 | id | status | effort | description | notes |
@@ -95,6 +105,8 @@ No open finding. The current full `src/` + `tests/` Lizard analysis reports
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| DUP-9 | open | S | `scaler_zimg.c` builds the 9-field `up_zimg_io_req_t` twice (`zimg_open` ~963-973 and `zimg_prepare_first_frame_io` ~1149-1161); a new field must be added at both sites or the open-time and first-frame plans silently diverge. Extract one `zimg_build_io_req()` helper taking the two alignment-permitted flags. | 2026-08-14 audit. The resolver's fixed-point property depends on both requests being built identically. |
+| DUP-10 | open | S | `up_pool_gate_request_exit` (threading.h ~499-503) re-implements the broadcast+unlock+sync_failed tail of `up_pool_gate_unlock_broadcast` (~397-404) verbatim; a fix to the failure path must land twice in a concurrency-critical file. Replace the tail with `return up_pool_gate_unlock_broadcast(g);` after setting `exit_requested`. | 2026-08-14 audit. Same both-rc/latch-on-failure semantics; behavior-preserving. |
 
 No additional duplication finding.
 
@@ -102,9 +114,11 @@ No additional duplication finding.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| ARCH-3 | open | M | `threading.h` (553 lines) carries two independent concerns: CPU-topology/thread-count policy (lines ~39-225) and the pthread pool gate (lines ~227-553). `autoupscale.c` and `autoupscale_module.c` consume only the policy half yet pull in the whole synchronization layer; the gate half is consumed only via `worker_pool.h`. Split at the existing section boundary: `up_detect_cpu_topology*`, `up_threads_decide`, `up_detect_cores`, `UP_THREADS_*`/`UP_CPU_*` constants → `src/thread_policy.h`; `up_pool_gate_*`, `up__deadline_after_ms`, `UP_POOL_BARRIER_TIMEOUT_MS` → `src/pool_gate.h` (included by `worker_pool.h`). | 2026-08-14 audit. Mechanical move + include updates in src and tests; no behavior change. |
+| ARCH-4 | open | M | `scaler_zimg.c` (1279 lines) embeds a self-contained, zimg-API-free plane-buffer subsystem: `plane_view_t`/`plane_layout_t`/`plane_buffer_t` (~136-152) plus `plane_alloc_bytes`, `plane_buffer_view`, `free_plane_buffer`, `init_plane_layout`, `plane_buffer_bytes`, `alloc_plane_buffer` (~612-675). Move them to a new `src/plane_buffer.h` (depends only on `zimg_helpers.h` sizing helpers), matching the project's pure-logic-in-headers testability layout and cutting ~120 lines from the backend TU. The rest of the file is coherent backend logic; no further split recommended. | 2026-08-14 audit. Enables direct unit/fuzz coverage of the overflow-checked alloc seam without libzimg. |
 
-No open finding. Backend strategy, shared worker lifecycle, chroma descriptor,
-and SIMD dispatch boundaries remain coherent.
+Backend strategy, shared worker lifecycle, chroma descriptor,
+and SIMD dispatch boundaries otherwise remain coherent.
 
 ## decoupling
 
@@ -127,11 +141,15 @@ this technical domain; another business/domain pattern would not clarify it.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | REL-16 | open | M | VLC 3.0.20's `:display` stream-output path creates a private input resource and audio output, so the VLC GUI, hotkeys, and RC volume controls target the separate playlist-owned audio output and do not change the audible transcoded stream. | 2026-07-18 CLI matrix confirmed that RC `volume`/`voldown`, `--volume-step`, `--aout`, and `--sout-display-audio` do not repair routing; `--volume` is obsolete, and `--no-sout-display-audio` removes audio. `--gain=0.25` and `--audio-filter=gain --gain-value=0.25` each attenuated the audible stream by the expected 12 dB, while replay-gain also applied, so `--gain` is documented as a fixed startup-level workaround. Live control still requires the system mixer, upstream VLC integration, or an equivalent local patch. |
+| REL-18 | open | S | README.md:150 claims "The wrapper validates its required VLC modules" for the `--transcode-display` profile, but the launch path performs no module validation — the check exists only behind the separate `--check-transcode-display` flag, run once by the installer. | 2026-08-14 audit. `--transcode-display)` in scripts/vlc-autoupscale.sh:56-62 execs VLC directly without calling `check_transcode_display`; if x264/avcodec are removed after install, the action fails with only VLC's own errors. USAGE.md:28-29 and DESKTOP_INTEGRATION.md:62-68 describe the check as a separate command, so README's sentence is the outlier. Fix the README sentence or run the check (or a cheap subset) on launch. |
+| REL-19 | open | S | The direct-mode wrapper path (used by the `VLC (AutoUpscale)` desktop/Open With entry) omits `--no-one-instance`, so with VLC's one-instance preference enabled the file is enqueued into an already-running plain VLC and every `--video-filter=autoupscale`/`--autoupscale-*` flag is silently dropped. | 2026-08-14 audit. scripts/vlc-autoupscale.sh:75 versus the transcode path's deliberate guard at :58-59 (`--no-one-instance --no-one-instance-when-started-from-file`, rationale in DESKTOP_INTEGRATION.md:52). Only affects users who enabled one-instance mode (off by default on Linux). Add the same guard to the direct exec. |
+| REL-20 | open | S | src/scaler.h:46-49 documents `pin_cpus` as opt-in with "0 = let the scheduler place threads (default)", but the shipped default is 1 (pinning on) — the backend contract header contradicts the actual option default. | 2026-08-14 audit. `add_integer_with_range( UP_CFG_PREFIX "pin-threads", 1, 0, 1, ...)` in src/autoupscale_module.c:225, its longtext ("1 = on (default)"), and the README options table all say on-by-default. Fix the stale header comment. |
 
 ## portability/standards conformance
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| PORT-2 | open | M | `make test`/`check`/`fuzz-smoke` cannot run on non-x86 hosts: `CC_LEVEL_GOALS` attaches `check-cc-x86-level-flags` to `BUILD_CONFIG` without an `IS_X86` gate, and `test`/`fuzz-smoke` unconditionally build and run the x86-only `test_usm_pool_variants`/`fuzz_usm_variants_smoke` (`-march=x86-64*` compiles), so the recipe's own "skipped: non-x86 host" branch is unreachable. | 2026-08-14 build/scripts audit. Makefile:54-57, 355-357, 541/592, 719/758 versus the dead non-x86 branch at Makefile:594-599; dispatch tests are correctly `$(if $(IS_X86),...)`-gated, the variants pair is not. Gate the level check and the variant binaries on `IS_X86` the same way. |
 
 No other open finding. GNU/Linux-specific CPU affinity, dynamic loading,
 and VLC plugin interfaces are isolated, while the supported compiler/CPU
@@ -170,16 +188,18 @@ local GCC and Clang single- and multi-version plugin links.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| BUILD-10 | open | S | `bench-usm-halo`, `bench-worker-pool`, and `bench-pipeline` are the only recipe-only targets not declared `.PHONY`; a same-named file in the repo root would silently satisfy them and skip the benchmark run. | 2026-08-14 build/scripts audit. Makefile:1093/1096/1100; every sibling target is covered by the `.PHONY` declarations at Makefile:284/342/372/411/426/857/1233/1280. Add the three names to the line-411 list. |
 
-No open finding.
+No other open finding.
 
 ## observability
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| OBS-3 | open | S | The open-time "zimg backend open failed; using swscale fallback" notice in src/autoupscale.c:250-255 uses `msg_Warn`, which VLC 3.x suppresses at default verbosity, so the *reason* for the silent quality downgrade is invisible — contrary to the file's own convention of using `msg_Info` for actionable degradations. | 2026-08-14 audit. Comments at autoupscale.c:596, 680, 713 and scaler_zimg.c:1193 state "msg_Warn is suppressed by default" and use msg_Info; the engagement banner does show `backend=swscale`, so the outcome (not the cause) is visible — hence S. The zimg calloc-failure open path emits nothing visible at all; only the ABI-mismatch path has its own msg_Err. Switch to one-shot `msg_Info`. |
 
-No additional production finding. Actionable degradation reasons and pinning
-outcomes are visible without verbose logging.
+No additional production finding. All other actionable degradation reasons and
+pinning outcomes are visible at default verbosity.
 
 ## wiring gaps
 

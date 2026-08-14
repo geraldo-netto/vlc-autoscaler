@@ -10,6 +10,8 @@
 #include "../src/threading.h"
 
 static atomic_int g_fail_next_done_wait;
+static atomic_int g_timeout_race_next;
+static up_pool_gate_t *g_timeout_race_gate;
 static atomic_int g_fail_next_done_signal;
 static atomic_int g_done_timedwait_seen;
 static atomic_int g_fail_next_broadcast;
@@ -28,6 +30,12 @@ int __wrap_pthread_cond_timedwait(pthread_cond_t *cond,
     if (atomic_exchange_explicit(&g_fail_next_done_wait, 0,
                                  memory_order_relaxed))
         return EINVAL;
+    if (atomic_exchange_explicit(&g_timeout_race_next, 0,
+                                 memory_order_acq_rel)) {
+        atomic_store_explicit(&g_timeout_race_gate->pending, 0,
+                              memory_order_release);
+        return ETIMEDOUT;
+    }
     return __real_pthread_cond_timedwait(cond, mutex, deadline);
 }
 
@@ -88,6 +96,14 @@ static inline void barrier_fault_inject_next_done_wait(void)
     atomic_store_explicit(&g_fail_next_done_wait, 1, memory_order_relaxed);
 }
 
+/* CONC-3 race: the last worker's pending decrement lands before the
+ * deadline, but the kernel still reports ETIMEDOUT (POSIX allows it). */
+static inline void barrier_fault_inject_timeout_race(up_pool_gate_t *g)
+{
+    g_timeout_race_gate = g;
+    atomic_store_explicit(&g_timeout_race_next, 1, memory_order_release);
+}
+
 static inline void barrier_fault_inject_next_done_signal(void)
 {
     atomic_store_explicit(&g_fail_next_done_signal, 1, memory_order_relaxed);
@@ -109,6 +125,8 @@ static inline int barrier_fault_injection_consumed(void)
         && atomic_load_explicit(&g_fail_next_done_wait,
                                 memory_order_relaxed) == 0
         && atomic_load_explicit(&g_fail_next_done_signal,
+                                memory_order_relaxed) == 0
+        && atomic_load_explicit(&g_timeout_race_next,
                                 memory_order_relaxed) == 0;
 }
 

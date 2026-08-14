@@ -910,6 +910,36 @@ static void test_pool_gate_wait_times_out(void)
     END();
 }
 
+/*
+ * REGRESSION (CONC-3): a completion signal can race the deadline — the last
+ * worker drives pending to 0 and signals in time, yet pthread_cond_timedwait
+ * still reports ETIMEDOUT. The wait must observe the finished dispatch and
+ * succeed, not poison a healthy pool. The genuine-timeout case (pending
+ * still armed) stays a failure — covered by test_pool_gate_wait_times_out.
+ */
+static void test_pool_gate_timeout_race_completes(void)
+{
+    BEGIN("pool gate: ETIMEDOUT racing a finished dispatch still succeeds");
+    up_pool_gate_t gate = {0};
+    if (gate_init_required(&gate) != 0) {
+        END();
+        return;
+    }
+    if (gate_arm_required(&gate, 1) != 0) {
+        END();
+        return;
+    }
+
+    barrier_fault_inject_timeout_race(&gate);
+    atomic_store(&g_done_timedwait_seen, 0);
+    CHECK_EQ(up_pool_gate_wait_all(&gate), 0);
+    CHECK_EQ(barrier_fault_injection_consumed(), 1);
+    CHECK_EQ(barrier_fault_used_timed_completion_wait(), 1);
+
+    up_pool_gate_destroy(&gate);
+    END();
+}
+
 static void test_pool_gate_wait_error_is_reported(void)
 {
     BEGIN("pool gate: a completion wait error breaks the dispatch");
@@ -997,6 +1027,7 @@ int main(void)
     test_pool_gate_signal_failure_reported();
     test_pool_gate_request_exit_guards();
     test_pool_gate_wait_times_out();
+    test_pool_gate_timeout_race_completes();
     test_pool_gate_wait_error_is_reported();
     test_detect_then_decide();
     test_explicit_at_max_boundary();
