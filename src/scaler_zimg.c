@@ -919,6 +919,31 @@ static void log_zimg_open(vlc_object_t *log_obj, const zimg_priv_t *p)
 }
 
 /*
+ * SCAL-3/PAT-1: resolve grid + zero-copy modes in one place. The resolver
+ * is a fixed point only while open-time and first-frame requests are built
+ * identically, so both sites (and the hypothetical-tiling probe) must go
+ * through this one constructor. Alignment is unknown at open time, so the
+ * open site passes true/true; the first-frame site folds in the real
+ * storage alignment.
+ */
+static up_zimg_io_req_t zimg_build_io_req(const scaler_ctx_t *ctx,
+                                          int worker_budget,
+                                          bool src_aligned, bool dst_aligned)
+{
+    return (up_zimg_io_req_t){
+        .worker_budget = worker_budget,
+        .src_w         = ctx->src_w,
+        .src_h         = ctx->src_h,
+        .dst_w         = ctx->dst_w,
+        .dst_h         = ctx->dst_h,
+        .stripe_min    = up_zimg_stripe_min_lines(ctx->zimg.min_stripe_lines),
+        .col_min       = ZIMG_COL_MIN_WIDTH,
+        .src_zerocopy  = (ctx->zimg.src_zerocopy != 0) && src_aligned,
+        .dst_zerocopy  = (ctx->zimg.zerocopy != 0) && dst_aligned,
+    };
+}
+
+/*
  * zimg_open: cheap setup only. Validates that we can handle the input
  * chroma, computes geometry and thread count, allocates the priv struct,
  * and returns. Does NOT spawn workers, allocate scratch, or build
@@ -956,21 +981,8 @@ static int zimg_open(scaler_ctx_t *ctx)
     int n_threads = up_threads_decide(ctx->threads_pref,
                                       cpu_topology.allowed_count);
 
-    /* SCAL-3/PAT-1: resolve grid + zero-copy modes in one place. Storage
-     * alignment is unknown until the first frame, so the raw options go
-     * in; zimg_prepare_first_frame_io re-resolves once with alignment. */
-    int stripe_min_lines = up_zimg_stripe_min_lines(ctx->zimg.min_stripe_lines);
-    const up_zimg_io_req_t req = {
-        .worker_budget = n_threads,
-        .src_w         = ctx->src_w,
-        .src_h         = ctx->src_h,
-        .dst_w         = ctx->dst_w,
-        .dst_h         = ctx->dst_h,
-        .stripe_min    = stripe_min_lines,
-        .col_min       = ZIMG_COL_MIN_WIDTH,
-        .src_zerocopy  = (ctx->zimg.src_zerocopy != 0),
-        .dst_zerocopy  = (ctx->zimg.zerocopy != 0),
-    };
+    const up_zimg_io_req_t req = zimg_build_io_req(ctx, n_threads,
+                                                   true, true);
     up_zimg_io_plan_t plan;
     up_zimg_resolve_io_plan(&req, &plan);
 
@@ -1146,19 +1158,9 @@ static void zimg_prepare_first_frame_io(zimg_priv_t *p,
     /* Re-resolve the plan with real storage alignment folded into the
      * requested flags; the resolver is a fixed point, so an unchanged
      * request yields the identical plan. */
-    const up_zimg_io_req_t req = {
-        .worker_budget = p->worker_budget,
-        .src_w         = p->src_w,
-        .src_h         = p->src_h,
-        .dst_w         = p->dst_w,
-        .dst_h         = p->dst_h,
-        .stripe_min    = up_zimg_stripe_min_lines(ctx->zimg.min_stripe_lines),
-        .col_min       = ZIMG_COL_MIN_WIDTH,
-        .src_zerocopy  = (ctx->zimg.src_zerocopy != 0)
-                         && zimg_view_aligned(src),
-        .dst_zerocopy  = (ctx->zimg.zerocopy != 0)
-                         && zimg_view_aligned(dst),
-    };
+    const up_zimg_io_req_t req = zimg_build_io_req(ctx, p->worker_budget,
+                                                   zimg_view_aligned(src),
+                                                   zimg_view_aligned(dst));
     up_zimg_io_plan_t plan;
     up_zimg_resolve_io_plan(&req, &plan);
     p->plan = plan;

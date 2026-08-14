@@ -105,7 +105,6 @@ No open finding. The current full `src/` + `tests/` Lizard analysis reports
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| DUP-9 | open | S | `scaler_zimg.c` builds the 9-field `up_zimg_io_req_t` twice (`zimg_open` ~963-973 and `zimg_prepare_first_frame_io` ~1149-1161); a new field must be added at both sites or the open-time and first-frame plans silently diverge. Extract one `zimg_build_io_req()` helper taking the two alignment-permitted flags. | 2026-08-14 audit. The resolver's fixed-point property depends on both requests being built identically. |
 
 No additional duplication finding.
 
