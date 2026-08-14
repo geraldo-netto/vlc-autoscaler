@@ -30,8 +30,9 @@ scripts/install-vlc-autoupscale-action.sh --uninstall
 
 ## Launcher and Open With profile
 
-The wrapper defaults to explicit 1080p, Spline36, and 20% USM. Replace its
-entire option set with `VLC_AUTOUPSCALE_ARGS`:
+The wrapper defaults to explicit 1080p, Spline36, and 20% USM, in a separate
+VLC instance so an already-running player cannot absorb the filter options.
+Replace its entire option set with `VLC_AUTOUPSCALE_ARGS`:
 
 ```sh
 VLC_AUTOUPSCALE_ARGS='--video-filter=autoupscale --autoupscale-target=1 --autoupscale-algo=1 --autoupscale-usm=0' vlc-autoupscale clip.mkv

@@ -12,7 +12,11 @@ set -eu
 TARGET_ARG="--autoupscale-target=2"
 ALGO_ARG="--autoupscale-algo=3"
 USM_ARG="--autoupscale-usm=20"
-DEFAULT_ARGS="--video-filter=autoupscale ${TARGET_ARG} ${ALGO_ARG} ${USM_ARG}"
+# REL-19: same guard as the transcode profile — with VLC's one-instance
+# preference enabled, the file would be enqueued into an already-running
+# plain VLC and every autoupscale flag silently dropped.
+INSTANCE_ARGS="--no-one-instance --no-one-instance-when-started-from-file"
+DEFAULT_ARGS="${INSTANCE_ARGS} --video-filter=autoupscale ${TARGET_ARG} ${ALGO_ARG} ${USM_ARG}"
 TRANSCODE_SOUT="#transcode{vcodec=h264,acodec=mp4a,vb=10000,ab=128,venc=x264{preset=ultrafast,tune=zerolatency},vfilter=autoupscale}:display"
 TRANSCODE_MODULES="autoupscale x264 avcodec"
 VLC_BIN=vlc

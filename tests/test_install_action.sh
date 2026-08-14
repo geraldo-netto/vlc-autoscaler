@@ -191,6 +191,32 @@ if actual != expected:
     raise AssertionError((actual, expected))
 PY
 
+direct_args_file="${tmp}/direct-args"
+FAKE_VLC_ARGS_FILE="$direct_args_file" \
+    "$wrapper" "clip one.mkv" "--clip-two.mkv"
+
+python3 - "$direct_args_file" <<'PY'
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    actual = fh.read().splitlines()
+
+expected = [
+    "--no-one-instance",
+    "--no-one-instance-when-started-from-file",
+    "--video-filter=autoupscale",
+    "--autoupscale-target=2",
+    "--autoupscale-algo=3",
+    "--autoupscale-usm=20",
+    "--",
+    "clip one.mkv",
+    "--clip-two.mkv",
+]
+if actual != expected:
+    raise AssertionError((actual, expected))
+PY
+echo "direct profile one-instance guard OK"
+
 warning_log="${tmp}/missing-modules.log"
 FAKE_VLC_MODULES='' PATH="${bin_dir}:$PATH" HOME="$home" \
     sh "${repo_root}/scripts/install-vlc-autoupscale-action.sh" \
