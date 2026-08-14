@@ -408,7 +408,7 @@ check-multiversion-isa:
 	@exit 2
 endif
 
-.PHONY: all plugin abi-layout-check check-hardening check-load-safe-isa check-multiversion-isa test check check-visibility fuzz fuzz-smoke fuzz-seam analyze semantic-analysis scan-build build-bench install uninstall clean info bench bench-flatskip test-zimg stress stress-zimg bench-zimg coverage-zimg
+.PHONY: all plugin abi-layout-check check-hardening check-load-safe-isa check-multiversion-isa test check check-visibility fuzz fuzz-smoke fuzz-seam analyze semantic-analysis scan-build build-bench install uninstall clean info bench bench-flatskip bench-usm-halo bench-worker-pool bench-pipeline test-zimg stress stress-zimg bench-zimg coverage-zimg
 
 all: plugin
 
@@ -618,6 +618,9 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/tes
 	@echo
 	@echo "=== coverage parsers ==="
 	@sh tests/test_coverage_parsers.sh
+	@echo
+	@echo "=== Makefile phony coverage ==="
+	@sh tests/test_makefile_phony.sh
 
 $(BUILD)/test_usm_pool_dispatch: tests/test_usm_pool_dispatch.c src/usm_pool_dispatch.c src/usm_pool_variants.h src/usm_pool.h src/cpu_level.h tests/test_harness.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)

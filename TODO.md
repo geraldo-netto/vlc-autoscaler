@@ -186,9 +186,8 @@ local GCC and Clang single- and multi-version plugin links.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| BUILD-10 | open | S | `bench-usm-halo`, `bench-worker-pool`, and `bench-pipeline` are the only recipe-only targets not declared `.PHONY`; a same-named file in the repo root would silently satisfy them and skip the benchmark run. | 2026-08-14 build/scripts audit. Makefile:1093/1096/1100; every sibling target is covered by the `.PHONY` declarations at Makefile:284/342/372/411/426/857/1233/1280. Add the three names to the line-411 list. |
 
-No other open finding.
+No open finding.
 
 ## observability
 
