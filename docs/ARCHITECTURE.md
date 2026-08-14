@@ -80,7 +80,8 @@ seam criterion rather than byte equality.
 ## Worker lifecycle
 
 `worker_pool.h` provides the shared lazy lifecycle for zimg and USM.
-`threading.h` provides topology discovery and the generation-based gate.
+`thread_policy.h` provides topology discovery and the worker-count policy;
+`pool_gate.h` provides the generation-based dispatch gate.
 
 The main thread publishes frame state while workers are blocked, arms the
 completion count, advances the generation under the gate mutex, and broadcasts.
@@ -120,7 +121,7 @@ content. The separate soft-and-blocky content advisory is diagnostic only.
 | zimg | `src/scaler_zimg.c`, `src/scaler_zimg_chroma.h` |
 | swscale | `src/scaler_swscale.c` |
 | Picture validation | `src/picture_view.h`, `src/chroma_classify.h` |
-| Worker lifecycle | `src/worker_pool.h`, `src/threading.h` |
+| Worker lifecycle | `src/worker_pool.h`, `src/pool_gate.h`, `src/thread_policy.h` |
 | USM | `src/usm.h`, `src/usm_pool.c`, `src/usm_pool.h` |
 | SIMD dispatch | `src/usm_pool_dispatch.c`, `src/cpu_level.h` |
 | Content analysis | `src/content_probe.h` |

@@ -7,7 +7,7 @@
 #include <stdatomic.h>
 #include <time.h>
 
-#include "../src/threading.h"
+#include "../src/pool_gate.h"
 
 static atomic_int g_fail_next_done_wait;
 static atomic_int g_timeout_race_next;

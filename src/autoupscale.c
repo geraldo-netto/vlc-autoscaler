@@ -28,7 +28,7 @@
 #include "usm_pool.h"
 #include "scaler.h"
 #include "scaler_pick_logic.h"
-#include "threading.h"
+#include "thread_policy.h"
 #include "chroma_classify.h"
 #include "content_probe.h"
 #include "picture_view.h"

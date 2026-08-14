@@ -5,7 +5,7 @@
  * ARCH-2. The USM pool (usm_pool.c) and the zimg worker grid (scaler_zimg.c)
  * ran two parallel state machines with identical semantics: sticky lazy init,
  * poison-on-barrier-failure, cache-line-aligned worker array, partial-spawn
- * teardown, one-broadcast dispatch and wait. Only the gate (threading.h) had
+ * teardown, one-broadcast dispatch and wait. Only the gate (pool_gate.h) had
  * been factored out, so every reliability fix had to land twice — and several
  * had landed in one pool only.
  *
@@ -25,7 +25,7 @@
  * single slot on the calling thread. The auto thread policy resolves to 1 on
  * every machine with <= 7 cores, so this is the common desktop path.
  *
- * Threading contract (inherited from the gate, see threading.h): the owner
+ * Threading contract (inherited from the gate, see pool_gate.h): the owner
  * writes per-dispatch worker state before up_worker_pool_dispatch; workers
  * publish their results through the done barrier. No worker touches another
  * worker's slot.
@@ -34,7 +34,8 @@
 #ifndef AUTOUPSCALE_WORKER_POOL_H
 #define AUTOUPSCALE_WORKER_POOL_H
 
-#include "threading.h"
+#include "thread_policy.h"
+#include "pool_gate.h"
 
 #include <pthread.h>
 #include <stdalign.h>
@@ -250,7 +251,7 @@ static inline void up__pool_cancel_started(up_worker_pool_t *p)
 
 /* Tell every started worker to finish any unseen generation, then exit, and
  * reap them. If the gate itself cannot issue that wake, deferred cancellation
- * is the independent termination path; threading.h releases the mutex that
+ * is the independent termination path; pool_gate.h releases the mutex that
  * pthread_cond_wait reacquires before running cancellation cleanup. An active
  * owner callback is deliberately not cancellable and must finish before join.
  * Safe on a pool that never started or already stopped. Returns -1 if any

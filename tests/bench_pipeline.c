@@ -3,7 +3,7 @@
 #include "zimg_test_util.h"
 #include "../src/usm_pool.h"
 #include "../src/usm.h"
-#include "../src/threading.h"
+#include "../src/thread_policy.h"
 #include "cli_parse.h"
 
 #include <stdio.h>

@@ -642,7 +642,7 @@ $(BUILD)/test_geometry_edge_cases: tests/test_geometry_edge_cases.c src/upscale_
 $(BUILD)/test_autoupscale_lifecycle: tests/test_autoupscale_lifecycle.c src/autoupscale.c src/autoupscale_module.c src/autoupscale_module.h src/cpu_level.h src/scaler.h src/usm_pool.h tests/test_harness.h tests/lifecycle_stubs/vlc_common.h tests/lifecycle_stubs/vlc_filter.h tests/lifecycle_stubs/vlc_picture.h tests/lifecycle_stubs/vlc_plugin.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -march=x86-64 -Itests/lifecycle_stubs -Itests/stubs -o $@ $< $(TEST_LDFLAGS)
 
-$(BUILD)/test_usm: tests/test_usm.c tests/usm_test_util.h src/usm.h src/threading.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/test_usm: tests/test_usm.c tests/usm_test_util.h src/usm.h src/thread_policy.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
 $(BUILD)/test_cli_parse: tests/test_cli_parse.c tests/cli_parse.h $(BUILD_CONFIG) | $(BUILD)
@@ -671,13 +671,13 @@ fuzz: $(FUZZ_TARGETS)
 $(BUILD)/fuzz_upscale_logic: tests/fuzz_upscale_logic.c src/upscale_logic.h $(BUILD_CONFIG) | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
-$(BUILD)/fuzz_usm: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h src/threading.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_usm: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h src/thread_policy.h $(BUILD_CONFIG) | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
-$(BUILD)/fuzz_threading: tests/fuzz_threading.c tests/cli_parse.h src/threading.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_threading: tests/fuzz_threading.c tests/cli_parse.h src/thread_policy.h $(BUILD_CONFIG) | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
-$(BUILD)/fuzz_worker_pool: tests/fuzz_worker_pool.c src/worker_pool.h src/threading.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_worker_pool: tests/fuzz_worker_pool.c src/worker_pool.h src/thread_policy.h src/pool_gate.h $(BUILD_CONFIG) | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $< $(WORKER_POOL_FUZZ_WRAP_LDFLAGS) -lpthread
 
 $(BUILD)/fuzz_copy_plane: tests/fuzz_copy_plane.c tests/cli_parse.h src/plane_utils.h $(BUILD_CONFIG) | $(BUILD)
@@ -770,13 +770,13 @@ fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_threading_
 $(BUILD)/fuzz_smoke: tests/fuzz_upscale_logic.c src/upscale_logic.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
-$(BUILD)/fuzz_usm_smoke: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h src/threading.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_usm_smoke: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h src/thread_policy.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
-$(BUILD)/fuzz_threading_smoke: tests/fuzz_threading.c tests/cli_parse.h src/threading.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_threading_smoke: tests/fuzz_threading.c tests/cli_parse.h src/thread_policy.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
-$(BUILD)/fuzz_worker_pool_smoke: tests/fuzz_worker_pool.c src/worker_pool.h src/threading.h tests/fuzz_smoke.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/fuzz_worker_pool_smoke: tests/fuzz_worker_pool.c src/worker_pool.h src/thread_policy.h src/pool_gate.h tests/fuzz_smoke.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS) \
 	    $(WORKER_POOL_FUZZ_WRAP_LDFLAGS) -lpthread
 
@@ -1086,7 +1086,7 @@ $(BUILD)/bench_usm_pool: tests/bench_usm_pool.c tests/prng.h $(BUILD)/usm_pool_b
 	$(CC) $(BENCH_CFLAGS) -o $@ $< $(BUILD)/usm_pool_bench.o -lpthread
 $(BUILD)/bench_usm_pool_flatskip: tests/bench_usm_pool.c tests/prng.h $(BUILD)/usm_pool_bench_flatskip.o $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) -o $@ $< $(BUILD)/usm_pool_bench_flatskip.o -lpthread
-$(BUILD)/bench_worker_pool: tests/bench_worker_pool.c src/worker_pool.h src/threading.h tests/cli_parse.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/bench_worker_pool: tests/bench_worker_pool.c src/worker_pool.h src/thread_policy.h src/pool_gate.h tests/cli_parse.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) -o $@ $< -lpthread
 $(BUILD)/bench_pipeline: tests/bench_pipeline.c tests/zimg_test_util.h $(BUILD)/scaler_zimg_bench.o $(BUILD)/usm_pool_bench.o $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) $(VLC_CFLAGS) -o $@ $< $(BUILD)/scaler_zimg_bench.o $(BUILD)/usm_pool_bench.o $(VLC_LIBS) $(ZIMG_LIBS) -lpthread
@@ -1181,16 +1181,16 @@ $(COV_BUILD)/test_usm: tests/test_usm.c tests/usm_test_util.h src/usm.h $(BUILD_
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_cli_parse: tests/test_cli_parse.c tests/cli_parse.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/test_threading: tests/test_threading.c src/threading.h tests/barrier_fault_inject.h $(BUILD_CONFIG) | $(COV_BUILD)
+$(COV_BUILD)/test_threading: tests/test_threading.c src/thread_policy.h src/pool_gate.h tests/barrier_fault_inject.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) $(THREADING_TEST_CFLAGS) -o $@ $< $(COV_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
 $(COV_BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/test_worker_pool: tests/test_worker_pool.c src/worker_pool.h src/threading.h tests/barrier_fault_inject.h tests/test_harness.h $(BUILD_CONFIG) | $(COV_BUILD)
+$(COV_BUILD)/test_worker_pool: tests/test_worker_pool.c src/worker_pool.h src/thread_policy.h src/pool_gate.h tests/barrier_fault_inject.h tests/test_harness.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) $(WORKER_POOL_TEST_CFLAGS) -o $@ $< $(COV_LDFLAGS) \
 	    $(WORKER_POOL_WRAP_LDFLAGS) -lpthread
-$(COV_BUILD)/fuzz_worker_pool: tests/fuzz_worker_pool.c src/worker_pool.h src/threading.h $(BUILD_CONFIG) | $(COV_BUILD)
+$(COV_BUILD)/fuzz_worker_pool: tests/fuzz_worker_pool.c src/worker_pool.h src/thread_policy.h src/pool_gate.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS) \
 	    $(WORKER_POOL_FUZZ_WRAP_LDFLAGS) -lpthread
 
@@ -1221,7 +1221,7 @@ $(COV_BUILD)/fuzz_upscale_logic: tests/fuzz_upscale_logic.c src/upscale_logic.h 
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/fuzz_usm: tests/fuzz_usm.c tests/usm_test_util.h src/usm.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
-$(COV_BUILD)/fuzz_threading: tests/fuzz_threading.c tests/cli_parse.h src/threading.h $(BUILD_CONFIG) | $(COV_BUILD)
+$(COV_BUILD)/fuzz_threading: tests/fuzz_threading.c tests/cli_parse.h src/thread_policy.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/fuzz_copy_plane: tests/fuzz_copy_plane.c tests/cli_parse.h src/plane_utils.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
@@ -1328,7 +1328,7 @@ analyze: complexity semantic-analysis
 		-i tests/test_autoupscale_lifecycle.c \
 		-i tests/hardening_fortify_probe.c \
 		-I src -I tests/stubs $(ZIMG_CFLAGS) \
-		src/upscale_logic.h src/usm.h src/threading.h src/zimg_helpers.h src/chroma_classify.h src/scaler_zimg_chroma.h src/content_probe.h src/scaler_pick_logic.h src/usm_pool.h src/usm_pool.c $(if $(HAVE_ZIMG),src/scaler_zimg.c) tests/
+		src/upscale_logic.h src/usm.h src/thread_policy.h src/pool_gate.h src/zimg_helpers.h src/chroma_classify.h src/scaler_zimg_chroma.h src/content_probe.h src/scaler_pick_logic.h src/usm_pool.h src/usm_pool.c $(if $(HAVE_ZIMG),src/scaler_zimg.c) tests/
 
 SCAN_BUILD ?= scan-build
 SCAN_CC ?= clang
@@ -1404,12 +1404,12 @@ $(BUILD_MARKER):
 # of truth for incremental correctness.
 -include $(wildcard $(BUILD)/*.d)
 -include $(wildcard $(COV_BUILD)/*.d)
-$(BUILD)/test_threading: tests/test_threading.c src/threading.h tests/barrier_fault_inject.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/test_threading: tests/test_threading.c src/thread_policy.h src/pool_gate.h tests/barrier_fault_inject.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) $(THREADING_TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
 
 # PORT-1: same suite compiled with the affinity machinery forced off,
 # proving the sysconf-only fallback (non-glibc libcs) builds and passes.
-$(BUILD)/test_threading_noaffinity: tests/test_threading.c src/threading.h tests/barrier_fault_inject.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/test_threading_noaffinity: tests/test_threading.c src/thread_policy.h src/pool_gate.h tests/barrier_fault_inject.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) $(THREADING_TEST_CFLAGS) -DUP_NO_CPU_AFFINITY -o $@ $< $(TEST_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
 
 $(BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h $(BUILD_CONFIG) | $(BUILD)
@@ -1421,7 +1421,7 @@ $(BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.
 $(BUILD)/usm_pool_test.o: src/usm_pool.c $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -c -o $@ $<
 
-$(BUILD)/test_worker_pool: tests/test_worker_pool.c src/worker_pool.h src/threading.h tests/barrier_fault_inject.h tests/test_harness.h $(BUILD_CONFIG) | $(BUILD)
+$(BUILD)/test_worker_pool: tests/test_worker_pool.c src/worker_pool.h src/thread_policy.h src/pool_gate.h tests/barrier_fault_inject.h tests/test_harness.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) $(WORKER_POOL_TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS) \
 	    $(WORKER_POOL_WRAP_LDFLAGS) -lpthread
 

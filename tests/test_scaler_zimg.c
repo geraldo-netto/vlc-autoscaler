@@ -32,7 +32,7 @@
 #endif
 
 #include <zimg.h>   /* ERR-2: __wrap_zimg_filter_graph_process signature */
-#include "../src/threading.h"
+#include "../src/thread_policy.h"
 
 #include <errno.h>
 #include <stdarg.h>

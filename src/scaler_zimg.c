@@ -76,7 +76,7 @@
 #include "chroma_classify.h"
 #include "picture_view.h"
 #include "upscale_logic.h"
-#include "threading.h"
+#include "thread_policy.h"
 #include "worker_pool.h"
 #include "zimg_helpers.h"
 #include "scaler_zimg_chroma.h"
@@ -111,7 +111,7 @@ _Static_assert(UP_TILE_THREADS_MAX == UP_THREADS_MAX,
  * absent.
  *
  * PORT-2: guard on the same UP_HAVE_CPU_AFFINITY capability macro that
- * threading.h derives (CPU_ALLOC family present AND !UP_NO_CPU_AFFINITY), not
+ * thread_policy.h derives (CPU_ALLOC family present AND !UP_NO_CPU_AFFINITY), not
  * a bare __linux__ — so a Linux libc lacking the CPU_ALLOC macros, or a build
  * that forces affinity off, reports failure instead of failing to compile. */
 static bool pin_worker_to_cpu(pthread_t thread, int cpu)
@@ -179,7 +179,7 @@ typedef struct
      * Threads, the dispatch gate and the exit protocol belong to the shared
      * pool (ARCH-2, worker_pool.h); this struct is pure payload. `result` is
      * single-writer (worker) / single-reader (main), published by the gate's
-     * done barrier (see threading.h). */
+     * done barrier (see pool_gate.h). */
 
     /* Persistent: one graph + one tmp buffer per worker. */
     alignas(64) zimg_filter_graph *graph;

@@ -40,7 +40,7 @@
 
 #include "usm_pool.h"
 #include "usm.h"
-#include "threading.h"
+#include "thread_policy.h"
 #include "worker_pool.h"
 
 #include <pthread.h>
@@ -139,7 +139,7 @@ typedef struct usm_worker_s {
     uint8_t   *scratch;       /* 5*width: 3 rolling rows + 2 halo snapshots */
 
     /* Per-frame state set by main thread before the dispatch. The gate
-     * protocol (threading.h) makes these reads race-free: written before
+     * protocol (pool_gate.h) makes these reads race-free: written before
      * the generation bump, observed after the worker re-acquires the
      * gate lock; dst writes flow back through the done barrier. */
     const uint8_t  *src;

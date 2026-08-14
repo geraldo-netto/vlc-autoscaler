@@ -15,7 +15,7 @@
 
 #include "usm_test_util.h"
 #include "../src/usm_pool.h"
-#include "../src/threading.h"
+#include "../src/thread_policy.h"
 #include "barrier_fault_inject.h"
 #include "prng.h"   /* DUP-2: shared xorshift32 */
 

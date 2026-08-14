@@ -3,7 +3,8 @@
  * test_threading.c - unit tests for thread-count decision logic
  *****************************************************************************/
 
-#include "../src/threading.h"
+#include "../src/thread_policy.h"
+#include "../src/pool_gate.h"
 
 #include <errno.h>
 #include <stdbool.h>

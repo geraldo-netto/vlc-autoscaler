@@ -7,7 +7,7 @@
 #include "content_probe.h"
 #include "cpu_level.h"
 #include "scaler.h"
-#include "threading.h"
+#include "thread_policy.h"
 #include "upscale_logic.h"
 #include "usm.h"
 
