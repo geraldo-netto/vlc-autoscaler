@@ -147,7 +147,6 @@ this technical domain; another business/domain pattern would not clarify it.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| PORT-2 | open | M | `make test`/`check`/`fuzz-smoke` cannot run on non-x86 hosts: `CC_LEVEL_GOALS` attaches `check-cc-x86-level-flags` to `BUILD_CONFIG` without an `IS_X86` gate, and `test`/`fuzz-smoke` unconditionally build and run the x86-only `test_usm_pool_variants`/`fuzz_usm_variants_smoke` (`-march=x86-64*` compiles), so the recipe's own "skipped: non-x86 host" branch is unreachable. | 2026-08-14 build/scripts audit. Makefile:54-57, 355-357, 541/592, 719/758 versus the dead non-x86 branch at Makefile:594-599; dispatch tests are correctly `$(if $(IS_X86),...)`-gated, the variants pair is not. Gate the level check and the variant binaries on `IS_X86` the same way. |
 
 No other open finding. GNU/Linux-specific CPU affinity, dynamic loading,
 and VLC plugin interfaces are isolated, while the supported compiler/CPU

@@ -52,9 +52,13 @@ CLANG_SUPPORTS_X86_64_LEVELS = $(and \
 
 REQUESTED_GOALS := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)
 CC_LEVEL_GOALS := test check fuzz-smoke
-NEED_CC_X86_64_LEVELS = $(or $(filter 1,$(MULTIVERSION)), \
-    $(filter $(CC_LEVEL_GOALS),$(REQUESTED_GOALS)))
-NEED_CLANG_X86_64_LEVELS := $(filter fuzz,$(REQUESTED_GOALS))
+
+# The x86-64-v3/v4 level probes and every -march=x86-64* variant build are
+# meaningless off x86 (PORT-2): gate them so test/check/fuzz-smoke degrade
+# to their "skipped: non-x86 host" branches instead of failing the probe.
+NEED_CC_X86_64_LEVELS = $(and $(IS_X86),$(or $(filter 1,$(MULTIVERSION)), \
+    $(filter $(CC_LEVEL_GOALS),$(REQUESTED_GOALS))))
+NEED_CLANG_X86_64_LEVELS := $(and $(IS_X86),$(filter fuzz,$(REQUESTED_GOALS)))
 
 # --------- pkg-config (only needed for the plugin itself) ---------
 VLC_CFLAGS := $(shell pkg-config --cflags vlc-plugin 2>/dev/null)
@@ -538,7 +542,7 @@ check-hardening: $(BUILD)/$(PLUGIN).so $(HARDENING_FORTIFY_PROBE)
 # works on machines without lizard installed.
 check: complexity test
 
-test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_threading_noaffinity $(BUILD)/test_worker_pool $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_autoupscale_lifecycle $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(BUILD)/test_usm_pool_variants $(if $(IS_X86),$(BUILD)/test_usm_pool_dispatch $(BUILD)/test_usm_pool_dispatch_fallback)
+test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_threading_noaffinity $(BUILD)/test_worker_pool $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_autoupscale_lifecycle $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(if $(IS_X86),$(BUILD)/test_usm_pool_variants $(BUILD)/test_usm_pool_dispatch $(BUILD)/test_usm_pool_dispatch_fallback)
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/test_upscale_logic
@@ -588,15 +592,15 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/tes
 	@echo "=== lifetime / UAF ==="
 	@$(BUILD)/test_lifetime
 	@echo
-	@echo "=== usm_pool_variants (cross-SIMD byte-equivalence) ==="
-	@$(BUILD)/test_usm_pool_variants
-	@echo
 	@set -e; if [ -n "$(IS_X86)" ]; then \
+	    echo "=== usm_pool_variants (cross-SIMD byte-equivalence) ==="; \
+	    $(BUILD)/test_usm_pool_variants; \
+	    echo; \
 	    echo "=== usm_pool_dispatch (runtime SIMD selection) ==="; \
 	    $(BUILD)/test_usm_pool_dispatch; \
 	    echo "=== usm_pool_dispatch (forced CPUID fallback) ==="; \
 	    $(BUILD)/test_usm_pool_dispatch_fallback; \
-	 else echo "=== usm_pool_dispatch (skipped: non-x86 host) ==="; fi
+	 else echo "=== usm_pool variants/dispatch (skipped: non-x86 host) ==="; fi
 	@echo
 	@echo "=== install action ==="
 	@sh tests/test_install_action.sh
@@ -647,7 +651,8 @@ $(BUILD)/test_cli_parse: tests/test_cli_parse.c tests/cli_parse.h $(BUILD_CONFIG
 # --------- libFuzzer (clang) ---------
 FUZZ_TARGET_NAMES := upscale_logic usm threading worker_pool copy_plane \
                      stripe_bounds decide_tile_grid frame_shape scaler_chroma \
-                     scaler_open content_probe picture_view usm_variants \
+                     scaler_open content_probe picture_view \
+                     $(if $(IS_X86),usm_variants) \
                      $(if $(HAVE_ZIMG),scaler_seam)
 FUZZ_TARGETS := $(addprefix $(BUILD)/fuzz_,$(FUZZ_TARGET_NAMES))
 
@@ -719,7 +724,7 @@ $(BUILD)/fuzz_usm_variants: tests/fuzz_usm_variants.c \
 	    -lpthread
 
 # --------- smoke fuzz (no libFuzzer needed) ---------
-fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_threading_smoke $(BUILD)/fuzz_worker_pool_smoke $(BUILD)/fuzz_copy_plane_smoke $(BUILD)/fuzz_stripe_bounds_smoke $(BUILD)/fuzz_decide_tile_grid_smoke $(BUILD)/fuzz_frame_shape_smoke $(BUILD)/fuzz_scaler_chroma_smoke $(BUILD)/fuzz_scaler_open_smoke $(BUILD)/fuzz_content_probe_smoke $(BUILD)/fuzz_picture_view_smoke $(BUILD)/fuzz_usm_variants_smoke
+fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_threading_smoke $(BUILD)/fuzz_worker_pool_smoke $(BUILD)/fuzz_copy_plane_smoke $(BUILD)/fuzz_stripe_bounds_smoke $(BUILD)/fuzz_decide_tile_grid_smoke $(BUILD)/fuzz_frame_shape_smoke $(BUILD)/fuzz_scaler_chroma_smoke $(BUILD)/fuzz_scaler_open_smoke $(BUILD)/fuzz_content_probe_smoke $(BUILD)/fuzz_picture_view_smoke $(if $(IS_X86),$(BUILD)/fuzz_usm_variants_smoke)
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/fuzz_smoke
@@ -757,8 +762,10 @@ fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_threading_
 	@echo "=== picture_view ==="
 	@$(BUILD)/fuzz_picture_view_smoke
 	@echo
-	@echo "=== usm_variants (cross-SIMD byte-equivalence) ==="
-	@$(BUILD)/fuzz_usm_variants_smoke
+	@set -e; if [ -n "$(IS_X86)" ]; then \
+	    echo "=== usm_variants (cross-SIMD byte-equivalence) ==="; \
+	    $(BUILD)/fuzz_usm_variants_smoke; \
+	 else echo "=== usm_variants (skipped: non-x86 host) ==="; fi
 
 $(BUILD)/fuzz_smoke: tests/fuzz_upscale_logic.c src/upscale_logic.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
