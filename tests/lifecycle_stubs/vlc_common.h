@@ -60,14 +60,22 @@ static inline void lifecycle_var_set_call(const char *name, int64_t value)
 #define VLC_CODEC_RGBA  VLC_FOURCC('R', 'G', 'B', 'A')
 #define VLC_CODEC_BGRA  VLC_FOURCC('B', 'G', 'R', 'A')
 
-static inline void lifecycle_msg_sink(void *obj, ...)
+/* Per-level counters let tests pin the OBS-2 contract: actionable
+ * degradations must log at a level VLC shows by default (Info/Err). */
+static int lifecycle_dbg_count;
+static int lifecycle_warn_count;
+static int lifecycle_err_count;
+static int lifecycle_info_count;
+
+static inline void lifecycle_msg_sink(int *counter, void *obj, ...)
 {
     (void)obj;
+    (*counter)++;
 }
 
-#define msg_Dbg(obj, ...)  lifecycle_msg_sink((obj), __VA_ARGS__)
-#define msg_Warn(obj, ...) lifecycle_msg_sink((obj), __VA_ARGS__)
-#define msg_Err(obj, ...)  lifecycle_msg_sink((obj), __VA_ARGS__)
-#define msg_Info(obj, ...) lifecycle_msg_sink((obj), __VA_ARGS__)
+#define msg_Dbg(obj, ...)  lifecycle_msg_sink(&lifecycle_dbg_count, (obj), __VA_ARGS__)
+#define msg_Warn(obj, ...) lifecycle_msg_sink(&lifecycle_warn_count, (obj), __VA_ARGS__)
+#define msg_Err(obj, ...)  lifecycle_msg_sink(&lifecycle_err_count, (obj), __VA_ARGS__)
+#define msg_Info(obj, ...) lifecycle_msg_sink(&lifecycle_info_count, (obj), __VA_ARGS__)
 
 #endif

@@ -421,9 +421,15 @@ static void test_open_rejections_and_open_fallback(void)
     reset_state();
     init_filter(&filter);
     g_zimg_open_result = -1;
+    const int info_before = lifecycle_info_count;
+    const int warn_before = lifecycle_warn_count;
     CHECK(up_autoupscale_open_checked((vlc_object_t *)&filter) == VLC_SUCCESS);
     CHECK(g_zimg_open_calls == 1 && g_swscale_open_calls == 1);
     CHECK(filter.p_sys->scaler.backend == &fake_swscale);
+    /* OBS-3: the fallback reason must be visible at default verbosity
+     * (msg_Info), never demoted to the suppressed msg_Warn. */
+    CHECK(lifecycle_info_count > info_before);
+    CHECK(lifecycle_warn_count == warn_before);
     Close((vlc_object_t *)&filter);
 
     reset_state();

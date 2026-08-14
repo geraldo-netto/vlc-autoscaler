@@ -191,7 +191,6 @@ No open finding.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| OBS-3 | open | S | The open-time "zimg backend open failed; using swscale fallback" notice in src/autoupscale.c:250-255 uses `msg_Warn`, which VLC 3.x suppresses at default verbosity, so the *reason* for the silent quality downgrade is invisible — contrary to the file's own convention of using `msg_Info` for actionable degradations. | 2026-08-14 audit. Comments at autoupscale.c:596, 680, 713 and scaler_zimg.c:1193 state "msg_Warn is suppressed by default" and use msg_Info; the engagement banner does show `backend=swscale`, so the outcome (not the cause) is visible — hence S. The zimg calloc-failure open path emits nothing visible at all; only the ABI-mismatch path has its own msg_Err. Switch to one-shot `msg_Info`. |
 
 No additional production finding. All other actionable degradation reasons and
 pinning outcomes are visible at default verbosity.

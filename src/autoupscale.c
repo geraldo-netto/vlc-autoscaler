@@ -248,7 +248,9 @@ static int OpenScalerOrFallback( filter_t *p_filter, filter_sys_t *p_sys )
         return 0;
     if( fallback && selected == fallback )
     {
-        msg_Warn( p_filter,
+        /* OBS-2: msg_Warn is suppressed at VLC's default verbosity; the
+         * reason for the quality downgrade must be visible one-shot. */
+        msg_Info( p_filter,
                   "AutoUpscale: %s backend open failed; using %s fallback",
                   preferred->name, fallback->name );
         return 0;
