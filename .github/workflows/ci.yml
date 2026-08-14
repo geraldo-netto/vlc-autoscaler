@@ -127,6 +127,9 @@ jobs:
       - name: Unit tests (ASan + UBSan) + complexity gate
         run: make check EXTRA_CFLAGS=-Werror
 
+      - name: Curated mutation tests
+        run: make mutation-test EXTRA_CFLAGS=-Werror
+
       - name: zimg backend invariants (ASan + UBSan)
         run: |
           make require-zimg

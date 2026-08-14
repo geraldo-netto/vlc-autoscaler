@@ -242,6 +242,23 @@ static void test_bypass_soft_threshold_boundary(void)
     END();
 }
 
+static void test_bypass_confidence_and_blocky_boundaries(void)
+{
+    BEGIN("advisory: minimum confidence is inclusive; blocky cutoff exclusive");
+    up_probe_accum_t a = {0};
+    a.frames = UP_PROBE_MIN_FRAMES;
+    a.lap_samples = UP_PROBE_MIN_SAMPLES_PER_KIND;
+    a.edge_samples = UP_PROBE_MIN_SAMPLES_PER_KIND;
+    a.lap_sum = a.lap_samples * (UP_PROBE_THRESH_SOFT_LAP_MEAN - 1);
+
+    a.edge_sum = a.edge_samples * (UP_PROBE_THRESH_BLOCKY_EDGE_MEAN + 1);
+    CHECK_EQ(up_should_bypass_for_content(&a), 1);
+
+    a.edge_sum = a.edge_samples * UP_PROBE_THRESH_BLOCKY_EDGE_MEAN;
+    CHECK_EQ(up_should_bypass_for_content(&a), 0);
+    END();
+}
+
 static void test_bypass_null_input(void)
 {
     BEGIN("advisory: NULL accumulator -> no recommendation");
@@ -415,6 +432,7 @@ int main(void)
     test_bypass_blocky_only_no_bypass();
     test_bypass_soft_and_blocky_yes_bypass();
     test_bypass_soft_threshold_boundary();
+    test_bypass_confidence_and_blocky_boundaries();
     test_bypass_null_input();
 
     test_skip_usm_threshold_disabled_sentinel();

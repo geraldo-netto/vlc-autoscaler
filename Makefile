@@ -4,6 +4,7 @@
 #   make             — build the VLC plugin
 #   make plugin      — same
 #   make test        — build and run unit tests (no VLC needed)
+#   make mutation-test — verify key decision faults are rejected by unit tests
 #   make fuzz-smoke  — build and run deterministic smoke fuzzers
 #   make fuzz        — build libFuzzer targets (clang only)
 #   make analyze     — run cppcheck across the source tree
@@ -178,6 +179,7 @@ endif
 
 TEST_CFLAGS  := -O2 -g $(MARCH_FLAG) $(WARN) -MMD -MP -fsanitize=address,undefined $(EXTRA_CFLAGS)
 TEST_LDFLAGS := -fsanitize=address,undefined
+MUTATION_CFLAGS := -O2 -g $(WARN) $(EXTRA_CFLAGS)
 # The completion barrier uses a dedicated monotonic condition variable.
 BARRIER_WRAP_LDFLAGS := -Wl,--wrap=pthread_cond_timedwait \
 	-Wl,--wrap=pthread_cond_signal -Wl,--wrap=pthread_mutex_lock \
@@ -412,7 +414,7 @@ check-multiversion-isa:
 	@exit 2
 endif
 
-.PHONY: all plugin abi-layout-check check-hardening check-load-safe-isa check-multiversion-isa test check check-visibility fuzz fuzz-smoke fuzz-seam analyze semantic-analysis scan-build build-bench install uninstall clean info bench bench-flatskip bench-usm-halo bench-worker-pool bench-pipeline test-zimg stress stress-zimg bench-zimg coverage-zimg
+.PHONY: all plugin abi-layout-check check-hardening check-load-safe-isa check-multiversion-isa test mutation-test check check-visibility fuzz fuzz-smoke fuzz-seam analyze semantic-analysis scan-build build-bench install uninstall clean info bench bench-flatskip bench-usm-halo bench-worker-pool bench-pipeline test-zimg stress stress-zimg bench-zimg coverage-zimg
 
 all: plugin
 
@@ -541,6 +543,12 @@ check-hardening: $(BUILD)/$(PLUGIN).so $(HARDENING_FORTIFY_PROBE)
 # CI runs `check` so CCN regressions still fail there, while `make test`
 # works on machines without lizard installed.
 check: complexity test
+
+mutation-test:
+	@command -v python3 >/dev/null 2>&1 || { \
+		echo "python3 not installed"; exit 1; }
+	@CC="$(CC)" MUTATION_CFLAGS="$(MUTATION_CFLAGS)" \
+		python3 scripts/mutation_test.py
 
 test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_threading_noaffinity $(BUILD)/test_worker_pool $(BUILD)/test_zimg_helpers $(BUILD)/test_plane_buffer $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_autoupscale_lifecycle $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(if $(IS_X86),$(BUILD)/test_usm_pool_variants $(BUILD)/test_usm_pool_dispatch $(BUILD)/test_usm_pool_dispatch_fallback)
 	@echo

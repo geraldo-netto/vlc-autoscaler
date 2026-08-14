@@ -67,6 +67,7 @@ the verification targets you intend to run:
 | Targets | Additional software |
 |---|---|
 | `make test`, `make fuzz-smoke` | GCC or Clang with ASan and UBSan runtime support |
+| `make mutation-test` | Python 3 and a C compiler |
 | `make stress` | GCC or Clang with ASan, UBSan, and TSan runtime support |
 | `make fuzz` | Clang with libFuzzer support |
 | `make check`, `make complexity` | Python 3 and Lizard |
@@ -184,6 +185,7 @@ allocation failures are handled by the normal backend failure path.
 make                         # host-tuned plugin
 make MARCH=x86-64 MULTIVERSION=1  # portable x86-64 build with runtime SIMD selection
 make test                    # unit/contract tests with ASan and UBSan
+make mutation-test           # curated control-plane mutants must all be killed
 make fuzz-smoke              # deterministic sanitizer fuzzing
 make check                   # complexity plus tests
 make analyze                 # complexity and static analysis
@@ -212,6 +214,12 @@ baseline for distribution.
 
 The environment-preparation section above maps every target to its required
 software. Missing optional tools do not affect a normal plugin build.
+
+`make mutation-test` changes isolated temporary copies only. Its curated
+mutants cover target selection and safety caps, AUTO skip policy, backend
+priority/fallback, and content-probe thresholds. A mutant must compile and then
+make its owning unit suite fail; compile failures and surviving mutants both
+fail the target.
 
 ## Documentation
 

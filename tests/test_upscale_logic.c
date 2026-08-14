@@ -69,6 +69,8 @@ static void test_decide_auto_weak_hw(void)
 static void test_decide_auto_tiny_source(void)
 {
     BEGIN("decide_target_height: auto falls back when 1080p needs > 4x");
+    /* 270p reaches 1080p at exactly the allowed 4x boundary. */
+    CHECK_EQ_INT(up_decide_target_height(270, UP_TARGET_AUTO, 8, 16384), 1080);
     /* 240p source: 1080p would be 4.5x — outside ratio cap.
      * Auto mode declines 1080p and picks 720p. */
     CHECK_EQ_INT(up_decide_target_height(240, UP_TARGET_AUTO, 8, 16384), 720);
