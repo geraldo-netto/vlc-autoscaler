@@ -33,10 +33,13 @@ source/headers, Makefile, scripts, workflows, docs, and patches (excluding
 tests, build outputs, and caches), with explicit passes for architecture and
 code-to-merge/code-to-split seams. Method: five parallel adversarial
 code-trace reviews across all categories, plus a fresh Lizard run over `src/`
-(229 functions, zero CCN above 10, average 3.8) and a local ShellCheck pass
-(clean). Findings dated 2026-08-14 below are its output: CONC-3, DUP-9,
-DUP-10, ARCH-3, ARCH-4, REL-18, REL-19, REL-20, PORT-2, BUILD-10, OBS-3.
-All other categories re-verified clean.
+and a local ShellCheck pass (clean). It produced eleven findings (CONC-3,
+DUP-9, DUP-10, ARCH-3, ARCH-4, REL-18, REL-19, REL-20, PORT-2, BUILD-10,
+OBS-3), all since implemented, tested, and committed — see `git log` — and
+re-verified every other category clean. Post-fix verification: full unit,
+shell, and 14 fuzz-smoke suites green; zimg integration + seam smoke green;
+gated coverage 185 tracked functions with none below 80% (plane_buffer.h at
+100%); Lizard clean over 993 functions (max CCN 10).
 
 ## security
 
