@@ -59,6 +59,32 @@ plugin_root=$(pkg-config --variable=pluginsdir vlc-plugin)
 sudo vlc-cache-gen "$plugin_root"
 ```
 
+### Rootless install (no sudo)
+
+VLC 3 also searches every directory listed in the `VLC_PLUGIN_PATH`
+environment variable, so the plugin can live under `$HOME` instead of the
+system plugin root:
+
+```sh
+make
+mkdir -p ~/.local/lib/vlc/plugins/video_filter
+cp build/libautoupscale_plugin.so ~/.local/lib/vlc/plugins/video_filter/
+VLC_PLUGIN_PATH="$HOME/.local/lib/vlc/plugins" vlc --video-filter=autoupscale video.mkv
+```
+
+To make it permanent, export the variable from your shell profile
+(`~/.profile` or `~/.bashrc`):
+
+```sh
+export VLC_PLUGIN_PATH="$HOME/.local/lib/vlc/plugins"
+```
+
+No `vlc-cache-gen` step is needed: VLC scans `VLC_PLUGIN_PATH` directories at
+startup, which is negligible for a single plugin. Uninstall by deleting the
+copied `.so`. Keep either the system-wide install or the rootless one, not
+both: with two copies of the same module registered, which one VLC picks is
+not defined, so an outdated copy can shadow a fresh build.
+
 ### Optional verification environment
 
 The normal `make` build does not need these tools. Install only the groups for
