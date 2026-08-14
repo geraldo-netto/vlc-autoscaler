@@ -106,7 +106,6 @@ No open finding. The current full `src/` + `tests/` Lizard analysis reports
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | DUP-9 | open | S | `scaler_zimg.c` builds the 9-field `up_zimg_io_req_t` twice (`zimg_open` ~963-973 and `zimg_prepare_first_frame_io` ~1149-1161); a new field must be added at both sites or the open-time and first-frame plans silently diverge. Extract one `zimg_build_io_req()` helper taking the two alignment-permitted flags. | 2026-08-14 audit. The resolver's fixed-point property depends on both requests being built identically. |
-| DUP-10 | open | S | `up_pool_gate_request_exit` (threading.h ~499-503) re-implements the broadcast+unlock+sync_failed tail of `up_pool_gate_unlock_broadcast` (~397-404) verbatim; a fix to the failure path must land twice in a concurrency-critical file. Replace the tail with `return up_pool_gate_unlock_broadcast(g);` after setting `exit_requested`. | 2026-08-14 audit. Same both-rc/latch-on-failure semantics; behavior-preserving. |
 
 No additional duplication finding.
 

@@ -496,11 +496,7 @@ static inline int up_pool_gate_request_exit(up_pool_gate_t *g)
         return -1;
     }
     g->exit_requested = true;
-    const int broadcast_rc = pthread_cond_broadcast(&g->cv);
-    const int unlock_rc = pthread_mutex_unlock(&g->lock);
-    if (broadcast_rc == 0 && unlock_rc == 0) return 0;
-    atomic_store_explicit(&g->sync_failed, true, memory_order_release);
-    return -1;
+    return up_pool_gate_unlock_broadcast(g);
 }
 
 /* Worker side: the last finisher signals the completion condition. */

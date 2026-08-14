@@ -996,6 +996,25 @@ static void test_pool_gate_request_exit_guards(void)
     END();
 }
 
+/* request_exit shares up_pool_gate_unlock_broadcast (DUP-10): a broadcast
+ * failure must report -1 and latch sync_failed so the stop path escalates. */
+static void test_pool_gate_request_exit_broadcast_failure(void)
+{
+    BEGIN("gate request_exit: broadcast failure latches sync_failed");
+    up_pool_gate_t gate = { 0 };
+    if (gate_init_required(&gate) != 0) {
+        END();
+        return;
+    }
+    barrier_fault_inject_next_dispatch();
+    CHECK_EQ(up_pool_gate_request_exit(&gate), -1);
+    CHECK_EQ(barrier_fault_injection_consumed(), 1);
+    CHECK_EQ(atomic_load(&gate.sync_failed), true);
+    CHECK_EQ(gate.exit_requested, 1);
+    up_pool_gate_destroy(&gate);
+    END();
+}
+
 int main(void)
 {
     printf("Running threading tests...\n");
@@ -1026,6 +1045,7 @@ int main(void)
     test_pool_gate_exit_completes_unseen();
     test_pool_gate_signal_failure_reported();
     test_pool_gate_request_exit_guards();
+    test_pool_gate_request_exit_broadcast_failure();
     test_pool_gate_wait_times_out();
     test_pool_gate_timeout_race_completes();
     test_pool_gate_wait_error_is_reported();
