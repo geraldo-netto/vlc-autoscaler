@@ -148,9 +148,10 @@ vlc --avcodec-hw=none --autoupscale-target=2 --autoupscale-algo=3 --autoupscale-
 ```
 
 The Nemo installer exposes this compatibility profile through
-`vlc-autoupscale --transcode-display`. The wrapper validates its required VLC
-modules and trades additional real-time encode/decode work for reliable
-enlarged display dimensions.
+`vlc-autoupscale --transcode-display`, trading additional real-time
+encode/decode work for reliable enlarged display dimensions. The installer
+verifies the required VLC modules once at install time; re-check any time
+with `vlc-autoupscale --check-transcode-display`.
 
 See [usage and troubleshooting](docs/USAGE.md) for practical variants.
 
