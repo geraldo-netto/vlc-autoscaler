@@ -80,7 +80,7 @@ ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_r
 
 ## Tuning order
 
-When the performance advisory appears, change one setting at a time:
+When playback misses its frame budget, change one setting at a time:
 
 1. `--autoupscale-algo=2` for Lanczos.
 2. `--autoupscale-algo=1` for bicubic.
@@ -121,20 +121,30 @@ Run these checks in order with the same input:
    vlc --video-filter=autoupscale --autoupscale-backend=1 --autoupscale-zerocopy-src=0 --autoupscale-zerocopy-dst=0 path/to/video.mp4
    ```
 
-4. Remove concurrency and USM:
+4. Reduce both zimg and USM to their inline one-worker paths, without changing
+   target geometry or sharpening:
 
    ```sh
-   vlc --video-filter=autoupscale --autoupscale-backend=1 --autoupscale-threads=1 --autoupscale-target=1 --autoupscale-usm=0 --autoupscale-zerocopy-src=0 --autoupscale-zerocopy-dst=0 path/to/video.mp4
+   vlc --video-filter=autoupscale --autoupscale-backend=1 --autoupscale-threads=1 --autoupscale-zerocopy-src=0 --autoupscale-zerocopy-dst=0 path/to/video.mp4
+   ```
+
+5. Disable USM while keeping the one-worker, copy-path setup unchanged:
+
+   ```sh
+   vlc --video-filter=autoupscale --autoupscale-backend=1 --autoupscale-threads=1 --autoupscale-usm=0 --autoupscale-zerocopy-src=0 --autoupscale-zerocopy-dst=0 path/to/video.mp4
    ```
 
 Interpretation:
 
 - Failure without the plugin points to VLC, decoding, output, or the input.
 - Success with copy paths points to source or destination zero-copy handling.
-- Success with one worker points to grid/thread behavior or throughput.
-- Success without USM points to the sharpening path.
+- Success with one worker points to zimg grid handling or either worker pool.
+- Success only after disabling USM points to the sharpening path.
 - Forced zimg declining means the build or chroma does not support zimg; repeat
   the baseline with backend `2` to test swscale.
+
+If every command renders correctly but playback is late, use the tuning order
+above; this procedure isolates output-path failures, not throughput limits.
 
 Capture a private diagnostic log:
 

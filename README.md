@@ -217,9 +217,10 @@ software. Missing optional tools do not affect a normal plugin build.
 
 `make mutation-test` changes isolated temporary copies only. Its curated
 mutants cover target selection and safety caps, AUTO skip policy, backend
-priority/fallback, and content-probe thresholds. A mutant must compile and then
-make its owning unit suite fail; compile failures and surviving mutants both
-fail the target.
+priority/fallback, content-probe confidence and advisory boundaries, and the
+USM sharpness gate. Baseline suites must compile and pass first. Each mutant
+must compile, then make its owning suite exit with status 1; a surviving
+mutant, compile failure, abnormal exit, or timeout fails the target.
 
 ## Documentation
 

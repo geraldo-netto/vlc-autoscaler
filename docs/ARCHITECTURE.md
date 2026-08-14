@@ -117,21 +117,26 @@ content. The separate soft-and-blocky content advisory is diagnostic only.
 | VLC descriptor and CPU gate | `src/autoupscale_module.c`, `src/autoupscale_module.h` |
 | VLC lifecycle implementation | `src/autoupscale.c` |
 | Planning | `src/upscale_logic.h` |
-| Backend selection | `src/scaler.c`, `src/scaler.h`, `src/scaler_status.h` |
-| zimg | `src/scaler_zimg.c`, `src/scaler_zimg_chroma.h` |
+| Backend selection | `src/scaler.c`, `src/scaler.h`, `src/scaler_status.h`, `src/scaler_pick_logic.h` |
+| zimg backend | `src/scaler_zimg.c`, `src/scaler_zimg_chroma.h` |
+| zimg geometry and scratch | `src/zimg_helpers.h`, `src/plane_utils.h`, `src/plane_buffer.h` |
 | swscale | `src/scaler_swscale.c` |
 | Picture validation | `src/picture_view.h`, `src/chroma_classify.h` |
 | Worker lifecycle | `src/worker_pool.h`, `src/pool_gate.h`, `src/thread_policy.h` |
 | USM | `src/usm.h`, `src/usm_pool.c`, `src/usm_pool.h` |
-| SIMD dispatch | `src/usm_pool_dispatch.c`, `src/cpu_level.h` |
+| SIMD dispatch | `src/usm_pool_dispatch.c`, `src/usm_pool_variants.h`, `src/cpu_level.h` |
 | Content analysis | `src/content_probe.h` |
+| Curated mutation runner | `scripts/mutation_test.py` |
 
 ## Verification model
 
 Pure logic is tested without VLC. Contract tests use boundary stubs for VLC,
-FFmpeg, allocation, and pthread failures. Cross-variant tests require identical
-SSE2/AVX2/AVX-512 output. Deterministic fuzz-smoke, libFuzzer, sanitizer stress,
-coverage gates, static analysis, lifecycle tests through the real guarded
-callback, linked-ISA checks, symbol visibility, and hardening checks cover their
-respective contracts. The Makefile target output is authoritative for current
-scope and thresholds.
+FFmpeg, allocation, and pthread failures. Curated mutation tests compile
+isolated faulty copies of target selection, backend dispatch, and content-probe
+logic against their owning suites. Only status 1 from a compiled mutant counts
+as a kill; survivors, compile failures, abnormal exits, and timeouts fail the
+gate. Cross-variant tests require identical SSE2/AVX2/AVX-512 output.
+Deterministic fuzz-smoke, libFuzzer, sanitizer stress, coverage gates, static
+analysis, lifecycle tests through the real guarded callback, linked-ISA checks,
+symbol visibility, and hardening checks cover their respective contracts. The
+Makefile target output is authoritative for current scope and thresholds.
