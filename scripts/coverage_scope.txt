@@ -13,6 +13,7 @@ src/pool_gate.h
 src/worker_pool.h
 src/plane_utils.h
 src/zimg_helpers.h
+src/plane_buffer.h
 src/chroma_classify.h
 src/scaler_zimg_chroma.h
 src/content_probe.h

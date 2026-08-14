@@ -542,7 +542,7 @@ check-hardening: $(BUILD)/$(PLUGIN).so $(HARDENING_FORTIFY_PROBE)
 # works on machines without lizard installed.
 check: complexity test
 
-test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_threading_noaffinity $(BUILD)/test_worker_pool $(BUILD)/test_zimg_helpers $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_autoupscale_lifecycle $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(if $(IS_X86),$(BUILD)/test_usm_pool_variants $(BUILD)/test_usm_pool_dispatch $(BUILD)/test_usm_pool_dispatch_fallback)
+test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/test_usm $(BUILD)/test_cli_parse $(BUILD)/test_threading $(BUILD)/test_threading_noaffinity $(BUILD)/test_worker_pool $(BUILD)/test_zimg_helpers $(BUILD)/test_plane_buffer $(BUILD)/test_chroma_classify $(BUILD)/test_usm_pool $(BUILD)/test_content_probe $(BUILD)/test_scaler_pick $(BUILD)/test_scaler_swscale $(BUILD)/test_autoupscale_lifecycle $(BUILD)/test_picture_view $(BUILD)/test_lifetime $(if $(IS_X86),$(BUILD)/test_usm_pool_variants $(BUILD)/test_usm_pool_dispatch $(BUILD)/test_usm_pool_dispatch_fallback)
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/test_upscale_logic
@@ -564,6 +564,9 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/tes
 	@echo
 	@echo "=== zimg_helpers ==="
 	@$(BUILD)/test_zimg_helpers
+	@echo
+	@echo "=== plane_buffer ==="
+	@$(BUILD)/test_plane_buffer
 	@echo
 	@echo "=== chroma_classify ==="
 	@$(BUILD)/test_chroma_classify
@@ -650,7 +653,7 @@ $(BUILD)/test_cli_parse: tests/test_cli_parse.c tests/cli_parse.h $(BUILD_CONFIG
 
 # --------- libFuzzer (clang) ---------
 FUZZ_TARGET_NAMES := upscale_logic usm threading worker_pool copy_plane \
-                     stripe_bounds decide_tile_grid frame_shape scaler_chroma \
+                     stripe_bounds decide_tile_grid plane_buffer frame_shape scaler_chroma \
                      scaler_open content_probe picture_view \
                      $(if $(IS_X86),usm_variants) \
                      $(if $(HAVE_ZIMG),scaler_seam)
@@ -687,7 +690,10 @@ $(BUILD)/fuzz_stripe_bounds: tests/fuzz_stripe_bounds.c tests/cli_parse.h src/pl
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
 
 $(BUILD)/fuzz_decide_tile_grid: tests/fuzz_decide_tile_grid.c src/zimg_helpers.h $(BUILD_CONFIG) | $(BUILD)
-	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
+	$(CLANG) $(FUZZ_CFLAGS) -o $@ $< $(FUZZ_LDFLAGS)
+
+$(BUILD)/fuzz_plane_buffer: tests/fuzz_plane_buffer.c src/plane_buffer.h src/zimg_helpers.h $(BUILD_CONFIG) | $(BUILD)
+	$(CLANG) $(FUZZ_CFLAGS) -o $@ $< $(FUZZ_LDFLAGS)
 
 $(BUILD)/fuzz_frame_shape: tests/fuzz_frame_shape.c src/chroma_classify.h src/zimg_helpers.h $(BUILD_CONFIG) | $(BUILD)
 	$(CLANG) $(FUZZ_CFLAGS) -o $@ $<
@@ -724,7 +730,7 @@ $(BUILD)/fuzz_usm_variants: tests/fuzz_usm_variants.c \
 	    -lpthread
 
 # --------- smoke fuzz (no libFuzzer needed) ---------
-fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_threading_smoke $(BUILD)/fuzz_worker_pool_smoke $(BUILD)/fuzz_copy_plane_smoke $(BUILD)/fuzz_stripe_bounds_smoke $(BUILD)/fuzz_decide_tile_grid_smoke $(BUILD)/fuzz_frame_shape_smoke $(BUILD)/fuzz_scaler_chroma_smoke $(BUILD)/fuzz_scaler_open_smoke $(BUILD)/fuzz_content_probe_smoke $(BUILD)/fuzz_picture_view_smoke $(if $(IS_X86),$(BUILD)/fuzz_usm_variants_smoke)
+fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_threading_smoke $(BUILD)/fuzz_worker_pool_smoke $(BUILD)/fuzz_copy_plane_smoke $(BUILD)/fuzz_stripe_bounds_smoke $(BUILD)/fuzz_decide_tile_grid_smoke $(BUILD)/fuzz_plane_buffer_smoke $(BUILD)/fuzz_frame_shape_smoke $(BUILD)/fuzz_scaler_chroma_smoke $(BUILD)/fuzz_scaler_open_smoke $(BUILD)/fuzz_content_probe_smoke $(BUILD)/fuzz_picture_view_smoke $(if $(IS_X86),$(BUILD)/fuzz_usm_variants_smoke)
 	@echo
 	@echo "=== upscale_logic ==="
 	@$(BUILD)/fuzz_smoke
@@ -746,6 +752,9 @@ fuzz-smoke: $(BUILD)/fuzz_smoke $(BUILD)/fuzz_usm_smoke $(BUILD)/fuzz_threading_
 	@echo
 	@echo "=== decide_tile_grid ==="
 	@$(BUILD)/fuzz_decide_tile_grid_smoke
+	@echo
+	@echo "=== plane_buffer ==="
+	@$(BUILD)/fuzz_plane_buffer_smoke
 	@echo
 	@echo "=== frame_shape ==="
 	@$(BUILD)/fuzz_frame_shape_smoke
@@ -787,6 +796,9 @@ $(BUILD)/fuzz_stripe_bounds_smoke: tests/fuzz_stripe_bounds.c tests/cli_parse.h 
 	$(CC) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
 $(BUILD)/fuzz_decide_tile_grid_smoke: tests/fuzz_decide_tile_grid.c src/zimg_helpers.h $(BUILD_CONFIG) | $(BUILD)
+	$(CC) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
+
+$(BUILD)/fuzz_plane_buffer_smoke: tests/fuzz_plane_buffer.c tests/fuzz_smoke.h tests/cli_parse.h src/plane_buffer.h src/zimg_helpers.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(SMOKE_CFLAGS) -o $@ $< $(SMOKE_LDFLAGS)
 
 $(BUILD)/fuzz_frame_shape_smoke: tests/fuzz_frame_shape.c src/chroma_classify.h src/zimg_helpers.h $(BUILD_CONFIG) | $(BUILD)
@@ -1145,6 +1157,7 @@ COV_TESTS := \
     $(COV_BUILD)/test_threading \
     $(COV_BUILD)/test_worker_pool \
     $(COV_BUILD)/test_zimg_helpers \
+    $(COV_BUILD)/test_plane_buffer \
     $(COV_BUILD)/test_chroma_classify \
     $(COV_BUILD)/test_usm_pool \
     $(COV_BUILD)/test_content_probe \
@@ -1164,6 +1177,7 @@ COV_FUZZERS := \
     $(COV_BUILD)/fuzz_copy_plane \
     $(COV_BUILD)/fuzz_stripe_bounds \
     $(COV_BUILD)/fuzz_decide_tile_grid \
+    $(COV_BUILD)/fuzz_plane_buffer \
     $(COV_BUILD)/fuzz_frame_shape \
     $(COV_BUILD)/fuzz_scaler_chroma \
     $(COV_BUILD)/fuzz_scaler_open \
@@ -1184,6 +1198,9 @@ $(COV_BUILD)/test_cli_parse: tests/test_cli_parse.c tests/cli_parse.h $(BUILD_CO
 $(COV_BUILD)/test_threading: tests/test_threading.c src/thread_policy.h src/pool_gate.h tests/barrier_fault_inject.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) $(THREADING_TEST_CFLAGS) -o $@ $< $(COV_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
 $(COV_BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h $(BUILD_CONFIG) | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+
+$(COV_BUILD)/test_plane_buffer: tests/test_plane_buffer.c src/plane_buffer.h src/zimg_helpers.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
@@ -1228,6 +1245,9 @@ $(COV_BUILD)/fuzz_copy_plane: tests/fuzz_copy_plane.c tests/cli_parse.h src/plan
 $(COV_BUILD)/fuzz_stripe_bounds: tests/fuzz_stripe_bounds.c tests/cli_parse.h src/plane_utils.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/fuzz_decide_tile_grid: tests/fuzz_decide_tile_grid.c src/zimg_helpers.h $(BUILD_CONFIG) | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
+
+$(COV_BUILD)/fuzz_plane_buffer: tests/fuzz_plane_buffer.c tests/fuzz_smoke.h tests/cli_parse.h src/plane_buffer.h src/zimg_helpers.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/fuzz_frame_shape: tests/fuzz_frame_shape.c src/chroma_classify.h src/zimg_helpers.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -DFUZZ_MAIN -o $@ $< $(COV_LDFLAGS)
@@ -1413,6 +1433,9 @@ $(BUILD)/test_threading_noaffinity: tests/test_threading.c src/thread_policy.h s
 	$(CC) $(TEST_CFLAGS) $(THREADING_TEST_CFLAGS) -DUP_NO_CPU_AFFINITY -o $@ $< $(TEST_LDFLAGS) $(THREADING_WRAP_LDFLAGS) -lpthread
 
 $(BUILD)/test_zimg_helpers: tests/test_zimg_helpers.c src/zimg_helpers.h $(BUILD_CONFIG) | $(BUILD)
+	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
+
+$(BUILD)/test_plane_buffer: tests/test_plane_buffer.c src/plane_buffer.h src/zimg_helpers.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
 $(BUILD)/test_chroma_classify: tests/test_chroma_classify.c src/chroma_classify.h $(BUILD_CONFIG) | $(BUILD)

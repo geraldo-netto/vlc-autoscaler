@@ -112,10 +112,9 @@ No additional duplication finding.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| ARCH-4 | open | M | `scaler_zimg.c` (1279 lines) embeds a self-contained, zimg-API-free plane-buffer subsystem: `plane_view_t`/`plane_layout_t`/`plane_buffer_t` (~136-152) plus `plane_alloc_bytes`, `plane_buffer_view`, `free_plane_buffer`, `init_plane_layout`, `plane_buffer_bytes`, `alloc_plane_buffer` (~612-675). Move them to a new `src/plane_buffer.h` (depends only on `zimg_helpers.h` sizing helpers), matching the project's pure-logic-in-headers testability layout and cutting ~120 lines from the backend TU. The rest of the file is coherent backend logic; no further split recommended. | 2026-08-14 audit. Enables direct unit/fuzz coverage of the overflow-checked alloc seam without libzimg. |
 
-Backend strategy, shared worker lifecycle, chroma descriptor,
-and SIMD dispatch boundaries otherwise remain coherent.
+No open finding. Backend strategy, shared worker lifecycle, chroma descriptor,
+and SIMD dispatch boundaries remain coherent.
 
 ## decoupling
 
