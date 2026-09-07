@@ -5,7 +5,7 @@ repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 halo="$repo_root/scripts/bench_usm_halo.sh"
 isa="$repo_root/scripts/bench_usm_isa.sh"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/vlc-autoscaler-bench-usm.XXXXXX")
-fake="$tmp/fake-benchmark"
+fake="$tmp/bench path/fake-benchmark[*?]"
 
 cleanup() {
     rm -rf -- "$tmp"
@@ -20,6 +20,7 @@ fail() {
     exit 1
 }
 
+mkdir -p "$(dirname -- "$fake")"
 cat >"$fake" <<'EOF'
 #!/bin/sh
 set -eu

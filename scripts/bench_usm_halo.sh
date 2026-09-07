@@ -11,7 +11,7 @@ for size in '1280 720' '1920 1080' '2560 1440'; do
     height=${size#* }
     for threads in 1 4 8 12; do
         for alias in out in; do
-            row=$($bin "$threads" "$width" "$height" \
+            row=$("$bin" "$threads" "$width" "$height" \
                 "$frames" "$amount" rand "$alias")
             timing=${row##*,}
             printf '%s,%s,%s,%s,%s,%s,%s\n' "$alias" "$threads" \
