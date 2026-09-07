@@ -1,5 +1,16 @@
 # TODO — full-project audit findings
 
+Latest rescan: 2026-09-07, HEAD `5d17c0c`, all 269 tracked files across all
+review categories, excluding build outputs and cache files/directories.
+Added 13 findings; all eight contradiction findings are `blocked` with source
+evidence and an unblocking condition. Fresh verification passed GCC/Clang
+builds, ASan/UBSan suites, USM/zimg TSan stress, 148 corpus-seed replays and
+short mutation-guided passes for all 15 fuzz targets, 18/18 mutation checks,
+Cppcheck, Clang static analysis, ShellCheck, actionlint, rumdl, and offline
+Markdown-link/fragment checks. Gated line coverage: 98.8%, all 185 tracked
+functions at least 80%; informational zimg coverage: 94.4%. Lizard checked
+994 C functions with no CCN above 10. Earlier audit provenance follows.
+
 Full-project rescan of HEAD `9069eef` and its clean starting tree on 2026-07-18.
 Scope: all 259 tracked project files: production source/public headers, tests,
 fuzzers, 148 corpus seeds, build/release files, workflows, scripts, documents,
@@ -45,12 +56,7 @@ gated coverage 185 tracked functions with none below 80% (plane_buffer.h at
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-
-No open finding.
-
-No additional production-path security issue was found: geometry is validated
-before pointer formation, user integers are normalized or clamped, format
-strings are literals, and allocation dimensions are bounded.
+| SEC-6 | open | S | Quote the discovered VLC executable as a shell literal when generating the installed wrapper. | `scripts/install-vlc-autoupscale-action.sh:82-86` escapes sed replacement characters but interpolates the path into a shell double-quoted assignment without escaping dollar signs, backticks, or quotes. A literal executable named `vlc-$VLC_AUDIT_UNSET` reproduced installer success followed by wrapper exit 2 (`parameter not set`); command-substitution characters would be evaluated when the wrapper starts. Add generated-wrapper round-trip checks for shell metacharacters. |
 
 ## undefined behavior
 
@@ -73,16 +79,13 @@ and close paths retain explicit ownership and paired releases.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-
-No additional unparked finding: steady-state processing allocates no per-frame
-backend state and does not rebuild graphs.
+| PERF-9 | open | S | Remove unrelated shared-cache-line writes from the empty worker-pool benchmark. | `tests/bench_worker_pool.c:9-12,22-31` makes workers increment adjacent bytes of one 64-byte array and write adjacent `timespec` records, despite allocating isolated pool slots. These writes introduce false sharing into dispatch-time and completion-skew measurements. Use per-worker aligned/padded callback state and compare paired runs before drawing further scheduler-versus-workload conclusions; no production throughput regression is established by this finding. |
 
 ## scalability
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-
-No additional scalability finding.
+| SCAL-8 | blocked | S | Reconcile explicit worker preferences with the USM pool's hidden 12-worker cap. | `src/autoupscale_module.c:74-84` describes explicit 1..64 preferences as CPU/geometry-capped, but `src/usm_pool.c:409-425` also caps them at 12 whenever stripe rows are automatic. A sanitizer-built probe of `up_usm_pool_create(32,1920,1080,0)` reports 12; changing only the stripe value to its documented default, 8, reports 32. `tests/test_usm_pool.c:334-374` intentionally enforces this difference. Unblock by deciding whether explicit worker preference should bypass the cap or documenting the additional cap and stripe-option interaction in both option help and README. |
 
 ## concurrency
 
@@ -102,7 +105,7 @@ also passed locally under ThreadSanitizer with ASLR disabled.
 |---|---|---|---|---|
 
 No open finding. The current full `src/` + `tests/` Lizard analysis reports
-971 functions, zero CCN violations, and a maximum CCN of 10.
+994 functions, zero CCN violations, and a maximum CCN of 10.
 
 ## code duplication
 
@@ -115,9 +118,7 @@ No additional duplication finding.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-
-No open finding. Backend strategy, shared worker lifecycle, chroma descriptor,
-and SIMD dispatch boundaries remain coherent.
+| ARCH-13 | blocked | S | Correct the documented owner of backend fallback. | `docs/ARCHITECTURE.md:47` says `scaler.c` owns selection and fallback; `src/scaler.c` only selects a supported backend, while `OpenScalerOrFallback` and `TryBackendFallback` in `src/autoupscale.c:235,652` own open/runtime recovery. Unblock by aligning the backend-contract description with those production call sites. |
 
 ## decoupling
 
@@ -140,6 +141,8 @@ this technical domain; another business/domain pattern would not clarify it.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | REL-16 | open | M | VLC 3.0.20's `:display` stream-output path creates a private input resource and audio output, so the VLC GUI, hotkeys, and RC volume controls target the separate playlist-owned audio output and do not change the audible transcoded stream. | 2026-07-18 CLI matrix confirmed that RC `volume`/`voldown`, `--volume-step`, `--aout`, and `--sout-display-audio` do not repair routing; `--volume` is obsolete, and `--no-sout-display-audio` removes audio. `--gain=0.25` and `--audio-filter=gain --gain-value=0.25` each attenuated the audible stream by the expected 12 dB, while replay-gain also applied, so `--gain` is documented as a fixed startup-level workaround. Live control still requires the system mixer, upstream VLC integration, or an equivalent local patch. |
+| REL-21 | blocked | M | Respect VLC's output-format-change permission before accepting an upscale. | `src/autoupscale.c:382-460` changes output geometry without reading `filter_t.b_allow_fmt_out_change`. A sanitizer-built lifecycle probe returned success with `allow_change=0`, changing 320x180 to 1280x720; the current lifecycle tests also initialize the flag false. [VLC 3.0.20's deinterlacer](https://github.com/videolan/vlc/blob/3.0.20/modules/video_filter/deinterlace/deinterlace.c#L590) rejects geometry changes in this case. A fixed-format caller can therefore receive unexpected geometry or undersized output buffers that our views reject. Unblock by defining the refusal/allowed-change behavior and testing both flag values against the requested output format. |
+| REL-22 | open | S | Preserve benchmark executable paths containing spaces or glob characters. | `scripts/bench_usm_halo.sh:14` and `scripts/bench_usm_isa.sh:22` execute an unquoted `$bin` in command substitution. Both scripts reproduced exit 127 with a valid, explicitly quoted executable argument under a directory named `bench path`. Quote the command variable and extend `tests/test_bench_usm_scripts.sh` with such paths. |
 
 ## portability/standards conformance
 
@@ -154,11 +157,7 @@ fallbacks have explicit build and contract coverage.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-
-No open finding. Relevant production allocation, backend, picture, clock,
-synchronization, and processing failures are propagated or deliberately
-treated as invariant-only cases. The documented recovery contract preserves
-worker storage until synchronous retirement completes.
+| ERR-8 | open | S | Propagate failures from every benchmark matrix invocation. | The shell loops in `Makefile:1128,1132` return only the last iteration's status. Replaying each exact recipe with a temporary benchmark that exits 23 for the first worker count and succeeds thereafter returned 0 for both `bench-worker-pool` and `bench-pipeline`, silently accepting an incomplete matrix. Stop on each failed invocation and verify a non-final failure reaches make. |
 
 ## resource management
 
@@ -183,16 +182,16 @@ local GCC and Clang single- and multi-version plugin links.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-
-No open finding.
+| BUILD-38 | blocked | S | Run `fuzz_plane_buffer` in the CI libFuzzer job. | `Makefile:666` includes `plane_buffer` in `FUZZ_TARGET_NAMES`, but `.github/workflows/ci.yml:183-247` never executes it, contradicting the workflow's claim that every built fuzzer receives a pass. Deterministic smoke coverage exists, but mutation-guided CI coverage is missing. Unblock by adding it to the pure-logic run list and verifying the built/run target sets match. |
+| BUILD-39 | blocked | S | Align the per-function coverage aggregation description with its actual gate. | `scripts/coverage_per_function.sh:7-10` promises the best coverage from one binary, but lines 127-150 union covered lines across binaries before computing each function's percentage. Complementary partial tests can therefore pass although neither binary meets the documented threshold alone. Unblock by selecting the intended aggregation contract and updating the description or implementation, with a complementary-coverage fixture. |
 
 ## observability
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-
-No additional production finding. All other actionable degradation reasons and
-pinning outcomes are visible at default verbosity.
+| OBS-13 | blocked | S | Qualify source-zero-copy output equivalence in VLC's option help and test descriptions. | `src/autoupscale_module.c:108-121` claims byte identity with copy-in, while `README.md`'s zero-copy option and `src/scaler_zimg.c:30-34` restrict that guarantee to unchanged grids. `tests/test_scaler_zimg.c:511-540` retains an unconditional identity title but explicitly exempts column-tiled cases from copy/direct equality. Unblock by stating the same-grid condition and the grid-change seam caveat consistently. |
+| OBS-14 | blocked | S | Correct stale worker-policy comments that contradict the shipped defaults. | `src/thread_policy.h:15-17` describes AUTO as capped at `UP_THREADS_MAX` (64), but line 205 caps it at `UP_THREADS_AUTO_MAX` (12). `src/scaler_zimg.c:107-108,690` describes pinning as opt-in, while `src/autoupscale_module.c:88,225` enables it by default. Unblock by synchronizing both comments with the existing runtime constants and option defaults. |
+| OBS-15 | blocked | S | Include allocated column-tile destination buffers in the zimg scratch diagnostic. | `src/scaler_zimg.c:802-826` reports zero destination scratch whenever column tiling is active, omitting the buffers allocated at lines 624-630. An ASan/UBSan backend probe for I420 4096x32 to 16384x128, 32 workers, source/destination zero-copy enabled produced an 8x4 grid with 5,242,880 allocated tile bytes but logged `scratch 0 MB (src zero-copy, dst tiled+copy), graph-tmp 2 MB`. Unblock by including per-worker `tile_dst` bytes and testing the reported total against the allocated layouts. |
 
 ## wiring gaps
 
@@ -207,8 +206,7 @@ have real production call sites.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-
-No other unused static function, macro, field, or orphan call subtree was found.
+| UNUSED-6 | open | S | Remove obsolete variable-mutation shims from the lifecycle VLC stub. | `tests/lifecycle_stubs/vlc_common.h:10-12,19-43` declares `lifecycle_var_create/destroy/set_integer` and defines forwarding helpers/macros for `var_Create`, `var_Destroy`, and `var_SetInteger`, but repository-wide searches find no consumers or implementations. Only the inheritance shim is used by the current lifecycle code. |
 
 ## Audit picks deliberately rejected
 
