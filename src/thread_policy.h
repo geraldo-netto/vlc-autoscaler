@@ -13,7 +13,7 @@
  *   up_threads_decide(): pure logic that maps a user preference + a
  *     detected core count to a worker-count decision. Unit-tested.
  *
- * Auto policy (user_pref == UP_THREADS_AUTO):
+ * Scaler auto policy (user_pref == UP_THREADS_AUTO):
  *   total_cores / 2 - 2, clamped to the range [1, 12].
  *
  * The "/ 2" reserves half the machine for everything else (VLC's main
@@ -40,6 +40,7 @@
 #include <limits.h>
 #include <sched.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/types.h>
 #include <unistd.h>     /* sysconf */
 
@@ -215,6 +216,20 @@ static inline int up_threads_decide(int user_pref, int total_cores)
     if (n < 1) n = 1;
 
     return n;
+}
+
+static inline int up_usm_threads_decide(int user_pref, int total_cores,
+                                         int width, int height)
+{
+    if (user_pref > UP_THREADS_AUTO)
+        return up_threads_decide(user_pref, total_cores);
+    if (width <= 0 || height <= 0) return 1;
+
+    const uint64_t pixels = (uint64_t)width * (uint64_t)height;
+    int count = 16;
+    if (pixels <= UINT64_C(1280) * 720) count = 8;
+    else if (pixels <= UINT64_C(1920) * 1080) count = 12;
+    return up_threads_decide(count, total_cores);
 }
 
 #endif /* AUTOUPSCALE_THREAD_POLICY_H */

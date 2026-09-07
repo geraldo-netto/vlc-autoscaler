@@ -284,6 +284,21 @@ static void test_inplace_matches_oracle(void)
     END();
 }
 
+static void test_auto_resolution_preserves_pixels(void)
+{
+    BEGIN("USM AUTO output presets preserve in-place oracle pixels");
+    const int amount = up_usm_amount_pct_to_q8(20);
+    const struct { int width, height; } cases[] = {
+        { 1280, 720 }, { 1920, 1080 }, { 3840, 2160 },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const int n = up_usm_threads_decide(0, 32, cases[i].width, cases[i].height);
+        CHECK(run_compare_inplace(n, cases[i].width, cases[i].height,
+                                   amount, 0x37 + i) == 0);
+    }
+    END();
+}
+
 /* A completion-notification failure must fail that dispatch and poison the
  * pool, never hang or silently succeed. */
 static void test_completion_signal_failure_poisons_pool(void)
@@ -856,6 +871,7 @@ int main(void)
     test_identity_pool_strided_slow_path();
     test_typical_30pct();
     test_inplace_matches_oracle();
+    test_auto_resolution_preserves_pixels();
     test_completion_signal_failure_poisons_pool();
     test_create_clamps_huge_thread_count();
     test_worker_preferences_respect_geometry();

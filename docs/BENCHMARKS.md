@@ -82,6 +82,11 @@ remain fixed. The objective is lower processing time, with no resolution or
 algorithm change. This first implementation tunes USM; zimg's grid stays fixed
 because repartitioning its graphs can change resampling seams.
 
+The initial USM AUTO count follows output pixel area: 8 through 1280x720,
+12 through 1920x1080, and 16 above, limited by allowed CPUs and stripe geometry.
+The benchmark uses the same starting policy. Earlier committed measurements
+retain the policy and source revision used when collected.
+
 The search tries 1, 2, 4, 8, 12, 16, 24, 32, 48 and 64 workers, clipped to CPU
 and stripe limits. It skips two warmup frames after each switch and compares
 16-frame medians. A candidate must beat both neighboring baseline windows by

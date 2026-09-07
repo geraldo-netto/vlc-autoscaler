@@ -89,7 +89,17 @@ When playback misses its frame budget, change one setting at a time:
 5. `--autoupscale-target=1` to force 720p.
 
 Leave `--autoupscale-threads=0` unless same-host measurements show a better
-value. More workers can increase dispatch, cache, and memory-bandwidth costs.
+value. AUTO sizes USM from output pixel count: 8 workers up to 921,600 pixels
+(720p), 12 up to 2,073,600 (1080p), and 16 above that, including 1440p and 4K.
+Portrait frames use the same pixel-area thresholds. Counts are capped by CPUs
+allowed to VLC and may be reduced for stripe geometry. They are chosen when
+the pool is created; only opt-in adaptive USM subsequently explores counts.
+zimg retains its `CPUs/2 - 2` policy capped at 12, keeping its graph grid
+independent of these USM presets. Explicit thread preferences still apply to
+both pools. USM AUTO does not apply zimg's half-CPU reserve, so a small CPU
+budget can be fully used during sharpening.
+
+More workers can increase dispatch, cache, and memory-bandwidth costs.
 Pinning is best-effort and on by default; disable it only when measurements on
 the deployment host show a regression.
 

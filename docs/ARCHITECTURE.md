@@ -83,6 +83,11 @@ seam criterion rather than byte equality.
 `thread_policy.h` provides topology discovery and the worker-count policy;
 `pool_gate.h` provides the generation-based dispatch gate.
 
+USM AUTO selects 8/12/16 workers from output pixel area (through 720p,
+through 1080p, and above), capped by allowed CPUs and stripe geometry. zimg
+retains its separate AUTO budget and graph grid. Explicit preferences apply to
+both pools; adaptive USM starts from the resolution-based count when enabled.
+
 The main thread publishes frame state while workers are blocked, arms the
 completion count, advances the generation under the gate mutex, and broadcasts.
 Workers process disjoint regions and decrement completion. The caller waits on

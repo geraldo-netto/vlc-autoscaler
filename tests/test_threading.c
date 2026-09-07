@@ -160,6 +160,41 @@ static void test_32_core_target_machine(void)
     END();
 }
 
+static void test_usm_auto_resolution(void)
+{
+    BEGIN("USM AUTO follows output pixel area without changing zimg AUTO");
+    const struct { int width, height, expected; } cases[] = {
+        { 1, 1, 8 }, { 1280, 720, 8 }, { 720, 1280, 8 },
+        { 1281, 720, 12 }, { 1920, 1080, 12 }, { 1080, 1920, 12 },
+        { 1921, 1080, 16 }, { 2560, 1440, 16 }, { 3840, 2160, 16 },
+        { 7680, 4320, 16 }, { 4096, 128, 8 }, { INT_MAX, INT_MAX, 16 },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++)
+        CHECK_EQ(up_usm_threads_decide(0, 32, cases[i].width, cases[i].height),
+                 cases[i].expected);
+    CHECK_EQ(up_threads_decide(0, 32), 12);
+    END();
+}
+
+static void test_usm_cpu_limits_and_overrides(void)
+{
+    BEGIN("USM sizing respects CPU limits, explicit requests and invalid input");
+    const struct { int request, cpus, width, height, expected; } cases[] = {
+        { 0, 4, 1280, 720, 4 }, { 0, 8, 1920, 1080, 8 },
+        { 0, 12, 3840, 2160, 12 }, { 0, 0, 3840, 2160, 1 },
+        { 0, INT_MIN, 3840, 2160, 1 }, { -1, 32, 1280, 720, 8 },
+        { 1, 32, 3840, 2160, 1 }, { 24, 32, 1280, 720, 24 },
+        { 64, 8, 3840, 2160, 8 }, { INT_MAX, INT_MAX, 1, 1, 64 },
+        { 0, 32, 0, 720, 1 }, { 0, 32, 1280, 0, 1 },
+        { 0, 32, INT_MIN, INT_MIN, 1 },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++)
+        CHECK_EQ(up_usm_threads_decide(cases[i].request, cases[i].cpus,
+                                      cases[i].width, cases[i].height),
+                 cases[i].expected);
+    END();
+}
+
 static void test_core_count_clamp(void)
 {
     BEGIN("core count clamp: fallback values stay in the supported range");
@@ -1031,6 +1066,8 @@ int main(void)
     test_explicit_clamped_to_max();
     test_negative_user_pref_means_auto();
     test_32_core_target_machine();
+    test_usm_auto_resolution();
+    test_usm_cpu_limits_and_overrides();
     test_core_count_clamp();
     test_topology_sysconf_fallback();
 #if UP_HAVE_CPU_AFFINITY

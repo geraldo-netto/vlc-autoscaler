@@ -44,8 +44,8 @@ static int initialize(bench_t *b, const args_t *a)
 {
     const int width = (int)a->width, height = (int)a->height;
     const int cores = up_detect_cores();
-    const int initial = up_threads_decide(a->workers < 0 ? 0 : (int)a->workers,
-                                          cores);
+    const int initial = up_usm_threads_decide(a->workers < 0 ? 0 : (int)a->workers,
+                                              cores, width, height);
     if (zt_pic_alloc(&b->src, VLC_CODEC_I420, width / 2, height / 2)) return 1;
     if (zt_pic_alloc(&b->dst, VLC_CODEC_I420, width, height)) return 1;
     zt_pic_fill(&b->src, 0x12345678u);

@@ -1,7 +1,7 @@
 # Worker and pipeline profiling
 
 This evaluation measures the existing shared gate, worker execution, and frame
-processing before considering more shared-nothing isolation. It changes no
+processing before considering more shared-nothing isolation. Profiling changes no
 production scheduling, image partitioning, or pixel kernels. The profiling
 executables compile private copies of the production backends; dispatch tracing
 exists only in those executables.
@@ -244,7 +244,52 @@ every dispatch.
 the four profiling translation units, cppcheck, shell/Markdown/link checks and
 the lizard complexity gate pass. All added C/Python functions remain at CCN 10
 or below. The parallel regression recipes still emit the pre-existing GNU Make
-jobserver warnings recorded as BUILD-40. No production source was modified.
+jobserver warnings recorded as BUILD-40. These baseline measurements precede
+the subsequent USM AUTO policy below.
+
+## Adopted USM AUTO presets
+
+USM AUTO now selects workers once at pool creation using output pixel area:
+8 through 921,600 pixels, 12 through 2,073,600 pixels, and 16 above that.
+Allowed CPUs and stripe geometry cap the count. The same thresholds cover
+portrait, intermediate and wide/short output dimensions. Explicit preferences
+still apply to both pools; zimg's AUTO policy and grid remain unchanged. Opt-in
+adaptive USM starts from the new count. The USM policy does not apply zimg's
+half-CPU reserve and can use every allowed CPU when fewer than the preset count
+are available.
+
+The presets were authorized provisionally from the continuous-loop results.
+A subsequent 60 fps check produced these median run statistics in microseconds:
+
+| Output | USM workers | Mean frame | p95 | p99 | CPU/frame |
+|---|---:|---:|---:|---:|---:|
+| 720p | 8 | 348.70 | 950.50 | 2020.79 | 1626.47 |
+| 720p | 12 | 291.35 | 663.17 | 1135.76 | 1661.94 |
+| 4K | 12 | 1190.25 | 1727.73 | 2516.27 | 10002.44 |
+| 4K | 16 | 1255.30 | 2012.76 | 3257.95 | 10467.01 |
+
+The [20 individual runs](benchmarks/usm-auto-paced-2026-09-07.csv) comprise five
+shuffled repetitions per configuration, 128 warmup frames and 240 measured
+frames, using the same baseline profile binary and unchanged pixel kernels.
+All matching-grid final-frame hashes agree. Direct command per case:
+
+```text
+profile_pipeline 12 USM_WORKERS WIDTH HEIGHT 240 1 0 1 16667
+```
+
+These mean summaries are 19.7% slower for 720p eight versus twelve workers and
+5.5% slower for 4K sixteen versus twelve. Eight loses four of five paired 720p
+comparisons; 4K is mixed, with sixteen winning three of five pairs despite its
+higher median run mean. Small samples and material host variation limit the
+conclusion. The presets are not an established paced-playback improvement;
+PERF-15 tracks this conflict with the continuous-loop evidence. Representative
+decoded content and additional hosts remain needed before generalizing.
+
+GCC and Clang policy/lifecycle tests cover the thresholds, portrait and unusual
+geometry, invalid/large inputs, CPU caps, explicit preferences and the real
+VLC open path. ASan/UBSan in-place comparisons at all three output resolutions
+match the single-threaded USM oracle byte for byte. Clang uses the existing CI
+suppression for the VLC SDK's `-Wunreachable-code-generic-assoc` warning.
 
 ## Reproduce
 

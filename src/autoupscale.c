@@ -350,7 +350,8 @@ static void InitUsmPool( filter_sys_t *p_sys, filter_t *p_filter,
     if( usm_pct <= 0 || !ChromaHasYPlane( chroma ) )
         return;
 
-    int n_threads = up_threads_decide( p_sys->scaler.threads_pref, cores );
+    int n_threads = up_usm_threads_decide( p_sys->scaler.threads_pref, cores,
+                                          target.width, target.height );
     int stripe_min = InheritIntSat( p_filter,
         UP_CFG_PREFIX "usm-stripe-min-rows" );
     p_sys->usm_pool = up_usm_pool_create( n_threads,

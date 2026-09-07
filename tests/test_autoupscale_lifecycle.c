@@ -68,6 +68,8 @@ static int g_usm_apply_status;
 static int g_usm_apply_calls;
 static int g_usm_destroy_calls;
 static int g_usm_effective_threads;
+static int g_usm_requested_threads;
+static int g_usm_width, g_usm_height;
 
 int64_t lifecycle_var_inherit(const char *name)
 {
@@ -168,9 +170,9 @@ const scaler_backend_t *scaler_pick(int pref, vlc_fourcc_t chroma, int algo)
 usm_pool_t *up_usm_pool_create(int n_threads, int width, int height,
                                int stripe_min_rows)
 {
-    (void)n_threads;
-    (void)width;
-    (void)height;
+    g_usm_requested_threads = n_threads;
+    g_usm_width = width;
+    g_usm_height = height;
     (void)stripe_min_rows;
     return g_usm_pool_create_result;
 }
@@ -223,6 +225,8 @@ static void reset_state(void)
     g_usm_apply_calls = 0;
     g_usm_destroy_calls = 0;
     g_usm_effective_threads = 1;
+    g_usm_requested_threads = 0;
+    g_usm_width = g_usm_height = 0;
     lifecycle_cpu_supported = 1;
 }
 
@@ -459,6 +463,41 @@ static void test_open_usm_contract(void)
     END();
 }
 
+static void check_open_usm_workers(int preset, int preference, int expected)
+{
+    filter_t filter;
+    reset_state();
+    init_filter(&filter);
+    filter.fmt_in.video.i_width = filter.fmt_in.video.i_visible_width = 960;
+    filter.fmt_in.video.i_height = filter.fmt_in.video.i_visible_height = 540;
+    set_config("autoupscale-usm", 20);
+    set_config("autoupscale-target", preset);
+    set_config("autoupscale-threads", preference);
+    g_usm_pool_create_result = (usm_pool_t *)&filter;
+    const int rc = up_autoupscale_open_checked((vlc_object_t *)&filter);
+    CHECK(rc == VLC_SUCCESS);
+    if (rc != VLC_SUCCESS) return;
+    CHECK(g_usm_requested_threads == up_threads_decide(expected, up_detect_cores()));
+    CHECK(g_usm_height == UP_PRESET_HEIGHTS[preset]);
+    CHECK(g_usm_width == g_usm_height * 16 / 9);
+    CHECK(filter.p_sys->scaler.threads_pref == preference);
+    CHECK(filter.p_sys->scaler.dst_w == g_usm_width);
+    CHECK(filter.p_sys->scaler.dst_h == g_usm_height);
+    CHECK(!filter.p_sys->usm_adaptive.enabled);
+    Close((vlc_object_t *)&filter);
+    CHECK(g_usm_destroy_calls == 1);
+}
+
+static void test_open_usm_worker_policy(void)
+{
+    BEGIN("Open sizes USM from output geometry and preserves scaler preference");
+    check_open_usm_workers(UP_TARGET_720P, 0, 8);
+    check_open_usm_workers(UP_TARGET_1080P, 0, 12);
+    check_open_usm_workers(UP_TARGET_4K, 0, 16);
+    check_open_usm_workers(UP_TARGET_4K, 4, 4);
+    END();
+}
+
 static void init_scaler(scaler_ctx_t *scaler, int width, int height)
 {
     *scaler = (scaler_ctx_t) {
@@ -524,6 +563,7 @@ static void test_adaptive_configuration(void)
     CHECK(filter.p_sys->usm_adaptive.tuner.limit >= 1);
     CHECK(filter.p_sys->usm_adaptive.enabled
           == (filter.p_sys->usm_adaptive.tuner.limit > 1));
+    CHECK(filter.p_sys->usm_adaptive.tuner.current == g_usm_requested_threads);
     Close((vlc_object_t *)&filter);
     END();
 }
@@ -642,6 +682,7 @@ int main(void)
     test_fatal_failure_falls_back_once();
     test_open_rejections_and_open_fallback();
     test_open_usm_contract();
+    test_open_usm_worker_policy();
     test_usm_success_failure_and_uncertain_output();
     test_adaptive_configuration();
     test_adaptive_trial_drop();
