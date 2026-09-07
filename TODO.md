@@ -56,7 +56,6 @@ gated coverage 185 tracked functions with none below 80% (plane_buffer.h at
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| SEC-6 | open | S | Quote the discovered VLC executable as a shell literal when generating the installed wrapper. | `scripts/install-vlc-autoupscale-action.sh:82-86` escapes sed replacement characters but interpolates the path into a shell double-quoted assignment without escaping dollar signs, backticks, or quotes. A literal executable named `vlc-$VLC_AUDIT_UNSET` reproduced installer success followed by wrapper exit 2 (`parameter not set`); command-substitution characters would be evaluated when the wrapper starts. Add generated-wrapper round-trip checks for shell metacharacters. |
 
 ## undefined behavior
 

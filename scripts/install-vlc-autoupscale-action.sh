@@ -74,7 +74,9 @@ uninstall() {
 
 install_wrapper() {
     mkdir -p "$BIN_DIR"
-    escaped_vlc_bin=$(printf '%s' "$VLC_BIN" | sed 's/[\\&|]/\\&/g')
+    # Protect the generated shell assignment before the sed replacement layer.
+    escaped_vlc_bin=$(printf '%s' "$VLC_BIN" | sed \
+        -e 's/[\\"`$]/\\&/g' -e 's/[\\&|]/\\&/g')
     sed "s|^VLC_BIN=vlc$|VLC_BIN=\"${escaped_vlc_bin}\"|" \
         "${SRC_DIR}/vlc-autoupscale.sh" > "$WRAPPER"
     chmod 0755 "$WRAPPER"

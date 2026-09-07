@@ -46,7 +46,7 @@ chmod 0755 "${bin_dir}/vlc"
 
 cat > "${bin_dir}/whereis" <<'EOF'
 #!/bin/sh
-printf 'vlc: %s/vlc\n' "$(dirname -- "$0")"
+printf 'vlc: %s\n' "${FAKE_VLC_BINARY:-$(dirname -- "$0")/vlc}"
 EOF
 chmod 0755 "${bin_dir}/whereis"
 
@@ -226,3 +226,22 @@ grep -q "Missing VLC module 'x264'" "$warning_log"
 grep -q "Missing VLC module 'avcodec'" "$warning_log"
 grep -q "action requirements are incomplete" "$warning_log"
 echo "transcode profile and module checks OK"
+
+unset SEC6_UNSET_VARIABLE
+printf '%s\n' -- 'clip one.mkv' >"$tmp/expected-literal-args"
+# shellcheck disable=SC2016
+for vlc_name in 'vlc-$SEC6_UNSET_VARIABLE' 'vlc-$(touch${IFS}SEC6_EXECUTED)' \
+    'vlc-`touch${IFS}SEC6_EXECUTED`' 'vlc-"quote' "vlc-'quote" 'vlc-back\slash&pipe|'; do
+    literal_vlc="$bin_dir/$vlc_name"
+    cp "$bin_dir/vlc" "$literal_vlc"
+    (
+        cd "$tmp"
+        FAKE_VLC_BINARY="$literal_vlc" PATH="$bin_dir:$PATH" HOME="$home" \
+            sh "$repo_root/scripts/install-vlc-autoupscale-action.sh" >/dev/null
+        VLC_AUTOUPSCALE_ARGS='' FAKE_VLC_ARGS_FILE="$tmp/literal-args" \
+            "$wrapper" 'clip one.mkv'
+    )
+    cmp "$tmp/expected-literal-args" "$tmp/literal-args"
+    test ! -e "$tmp/SEC6_EXECUTED"
+done
+echo "installed VLC paths remain shell literals OK"
