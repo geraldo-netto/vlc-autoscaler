@@ -1,57 +1,5 @@
 # TODO — full-project audit findings
 
-Latest rescan: 2026-09-07, HEAD `5d17c0c`, all 269 tracked files across all
-review categories, excluding build outputs and cache files/directories.
-Added 13 findings; all eight contradiction findings are `blocked` with source
-evidence and an unblocking condition. Fresh verification passed GCC/Clang
-builds, ASan/UBSan suites, USM/zimg TSan stress, 148 corpus-seed replays and
-short mutation-guided passes for all 15 fuzz targets, 18/18 mutation checks,
-Cppcheck, Clang static analysis, ShellCheck, actionlint, rumdl, and offline
-Markdown-link/fragment checks. Gated line coverage: 98.8%, all 185 tracked
-functions at least 80%; informational zimg coverage: 94.4%. Lizard checked
-994 C functions with no CCN above 10. Earlier audit provenance follows.
-
-Full-project rescan of HEAD `9069eef` and its clean starting tree on 2026-07-18.
-Scope: all 259 tracked project files: production source/public headers, tests,
-fuzzers, 148 corpus seeds, build/release files, workflows, scripts, documents,
-and patches. Excluded `.git`, ignored/generated build outputs, and cache
-directories/files.
-
-Validation: manual review across every category, every production source/header,
-test/fuzzer, build/workflow/script/doc/patch, and every change since `6062482`;
-GCC C11 unit/contract and deterministic fuzz-smoke suites with `-Werror`, ASan,
-and UBSan; zimg integration and seam fuzz-smoke with ASan/UBSan; USM and zimg
-ThreadSanitizer stress under disabled ASLR; all 148 curated seeds replayed under
-Clang libFuzzer; GCC and Clang single-/multi-version plugin, ABI, visibility,
-hardening, and linked-ISA checks; 98.8% gated production line coverage with all
-177 tracked functions above 80%, plus 95.0% informational zimg coverage;
-clean Cppcheck and ShellCheck runs; Lizard 1.23.0 over 966 functions (zero CCN
-above 10, maximum 10); declared-interpreter shell syntax and workflow YAML
-parsing; relative Markdown-link/fragment, corpus size/hash, unsafe-API,
-ownership, return-value, symbol, and configuration-consumer searches.
-`scan-build`, actionlint, rumdl, lychee, and clang-tidy were unavailable;
-their gaps are retained where material. Row format:
-`id | status | effort | description | notes`.
-
-Post-audit implementation through `11da8c6` added three tracked files. Its
-integrated verification reported 98.9% gated production line coverage
-(1417/1433) with all 179 tracked functions above 80%, and Lizard covered 970
-functions with zero CCN above 10 and a maximum of 10. The original rescan scope
-and validation above remain the provenance for the open findings.
-
-A second full rescan on 2026-08-14 at HEAD `f7f806b` covered all production
-source/headers, Makefile, scripts, workflows, docs, and patches (excluding
-tests, build outputs, and caches), with explicit passes for architecture and
-code-to-merge/code-to-split seams. Method: five parallel adversarial
-code-trace reviews across all categories, plus a fresh Lizard run over `src/`
-and a local ShellCheck pass (clean). It produced eleven findings (CONC-3,
-DUP-9, DUP-10, ARCH-3, ARCH-4, REL-18, REL-19, REL-20, PORT-2, BUILD-10,
-OBS-3), all since implemented, tested, and committed — see `git log` — and
-re-verified every other category clean. Post-fix verification: full unit,
-shell, and 14 fuzz-smoke suites green; zimg integration + seam smoke green;
-gated coverage 185 tracked functions with none below 80% (plane_buffer.h at
-100%); Lizard clean over 993 functions (max CCN 10).
-
 ## security
 
 | id | status | effort | description | notes |
@@ -62,22 +10,17 @@ gated coverage 185 tracked functions with none below 80% (plane_buffer.h at
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No open UB finding after tracing shifts, allocation arithmetic, crop and
-plane bounds, fixed-point rounding, worker lifetimes, atomics, and in-place USM
-halo ownership.
-
 ## memory management
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No open finding. Normal, partial-construction, lazy-failure, poison, fallback,
-and close paths retain explicit ownership and paired releases.
-
 ## performance
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
+| PERF-10 | blocked | M | Align adaptive worker selection with the requested minimum average time per frame. | The user objective and `docs/BENCHMARKS.md` compare total processing time, but `src/worker_tuner.h:54-66,93-118` selects and monitors only medians. A deterministic ASan/UBSan probe starting at 2 workers selects 4 and remains settled: baseline frames cost 100 us; each candidate window has eleven 50-us frames followed by five 1000-us frames, giving a 50-us median but a 346.88-us mean. The four-sample early abort and median drift checks both miss the recurring stalls. Unblock by reconciling the selection statistic with total time/frame and an explicit tail-latency policy; verify both sustained gains and this recurring-stall counterexample. |
+| PERF-11 | open | S | Make the adaptive benchmark's always-on sharpening prerequisite explicit and validate sustained playback gains. | `tests/bench_adaptive.c` applies USM to deterministic noise for every frame without the production content probe. The exact 960x540 fixture has `lap_mean=108893`, above the default 3500 cutoff; `RunProbe` in `src/autoupscale.c` disables USM, destroys its pools and stops tuning at frame 60 for this input. The 4096-frame experiment therefore models sustained sharpening only with a threshold override, not the same input under the normal sharpness gate. Document `--autoupscale-usm-sharp-threshold=0` for a matching synthetic playback reproduction and add representative video measurements where sharpening remains active. |
 
 ## scalability
 
@@ -91,65 +34,44 @@ and close paths retain explicit ownership and paired releases.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No open finding. Gate publication, the completion release sequence,
-cancellation cleanup while blocked, partial spawn, and normal teardown showed
-no data race or valid-state deadlock. The completion deadline is explicitly
-not an end-to-end callback bound; recovery joins active callbacks before
-releasing their storage. USM's 27 configurations and the zimg invariant harness
-also passed locally under ThreadSanitizer with ASLR disabled.
-
 ## code complexity
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-
-No open finding. The current full `src/` + `tests/` Lizard analysis reports
-995 functions, zero CCN violations, and a maximum CCN of 10.
 
 ## code duplication
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No additional duplication finding.
-
 ## architecture/modularity/SOLID
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | ARCH-13 | blocked | S | Correct the documented owner of backend fallback. | `docs/ARCHITECTURE.md:47` says `scaler.c` owns selection and fallback; `src/scaler.c` only selects a supported backend, while `OpenScalerOrFallback` and `TryBackendFallback` in `src/autoupscale.c:235,652` own open/runtime recovery. Unblock by aligning the backend-contract description with those production call sites. |
+| ARCH-14 | open | M | Profile high-count coordination before extending shared-nothing worker isolation. | `src/worker_pool.h` already isolates mutable payloads on 64-byte boundaries; zimg owns graphs/tmp per cell and USM owns rolling rows/halo snapshots per stripe. Remaining shared coordination is `src/pool_gate.h` broadcast plus atomic completion. Five rotated runs on the 32-logical-CPU Ryzen 9 7945HX gave median empty dispatch 19.76/50.52/111.14 us at 12/32/64 workers (3000 dispatches/run); this includes scheduler wakeup and benchmark instrumentation, not just contention. The existing 640x360-to-1280x720 Lanczos/I420/20%-USM pipeline with pinning enabled took 138.54 us/frame at 12 workers (1000 frames/run). These separate microbenchmarks do not establish a removable overhead fraction or a shared-nothing speedup. Attribute wake delay/cache contention first; only then compare per-worker mailboxes/completion with the same graph grid, pixels and worker counts, including mean/p95/p99, CPU cost and shutdown/failure tests. [Seastar's per-core model](https://docs.seastar.io/master/split/1.html) transfers ownership through messages on shared-memory hardware; it does not require copying whole frames. A process/distributed rewrite adds IPC, buffering and assembly costs and has no demonstrated single-frame latency benefit here. |
 
 ## decoupling
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No open finding. VLC-facing orchestration, pure helpers, scaler backends, and
-worker-pool lifecycle remain appropriately separated at their current seams.
-
 ## business/design patterns/DDD
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-
-No open finding. The scaler strategy table and load-time SIMD dispatch table fit
-this technical domain; another business/domain pattern would not clarify it.
 
 ## reliability/correctness
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | REL-16 | blocked | M | Restore live VLC volume controls for the transcode-display profile; displayed control changes conflict with the unchanged audible stream. | Confirmed product limitation for the Nemo profile, not an upscaler DSP defect: [VLC 3.0.20 display.c:102,150](https://github.com/videolan/vlc/blob/3.0.20/modules/stream_out/display.c#L102) gives its decoder a private resource; [playlist/aout.c:43-46,65-74](https://github.com/videolan/vlc/blob/3.0.20/src/playlist/aout.c#L43) controls the playlist resource instead. The earlier CLI matrix reproduced unchanged audio under RC volume changes; core/audio-filter gain at 0.25 attenuated it by 12 dB. Unblock by choosing requirements: system mixer plus documented fixed `--gain` is a workaround; a normal receiving VLC process restores the correct ownership but live piping adds process/lifecycle work and loses ordinary file seeking (pre-transcoding preserves seeking at storage/startup cost); a VLC control-routing patch can preserve native controls, one process, and seeking but needs maintained integration and lifetime/feedback tests. Direct playback avoids private audio ownership, but preserving enlarged video then needs separate VLC vout integration. Changing `--aout`, volume step, or disabling sout audio does not repair ownership. |
-| REL-21 | blocked | M | Respect VLC's fixed output-format contract; choose behavior when it conflicts with the configured upscale target. | `src/autoupscale.c:373,416-468` overwrites output geometry without reading `b_allow_fmt_out_change`; the sanitizer lifecycle probe accepts 320x180 to 1280x720 with the flag false. The [chain API](https://github.com/videolan/vlc/blob/3.0.20/include/vlc_filter.h#L320) makes that permission explicit. Scope clarification: [normal video-filter chains](https://github.com/videolan/vlc/blob/3.0.20/src/video_output/video_output.c#L1509) and [transcode user filters](https://github.com/videolan/vlc/blob/3.0.20/modules/stream_out/transcode/video.c#L346) pass true, so this guard does not itself disable those profiles or fix direct playback's later compensating resize. Unblock by choosing: (A, recommended) reject Open only when the flag is false and the planned output differs from requested `fmt_out`, accepting an already matching target; (B) adapt to the caller's fixed output, overriding configured geometry; or (C) change the caller/integration to authorize the required target. Compare against requested output, not merely input; keep the flag owner-controlled. Required checks: true/change allowed, false/matching accepted, false/mismatch rejected before allocation without mutating format/state, crop/chroma mismatches, and real direct/transcode profile regressions. |
+| REL-21 | blocked | M | Honor the configured upscale target while respecting VLC's output-format permission. | User decision: the plugin configuration is authoritative; a successful upscale must deliver that target, without silently substituting the caller's dimensions. `src/autoupscale.c:373,416-468` overwrites output geometry without reading `b_allow_fmt_out_change`; the sanitizer lifecycle probe accepts 320x180 to 1280x720 with the flag false, contradicting the [chain API](https://github.com/videolan/vlc/blob/3.0.20/include/vlc_filter.h#L320). Resolve by accepting an already matching requested output or an authorized change, and explicitly rejecting incompatible fixed-output requests before allocation or state mutation. Keep the permission flag owner-controlled. [Normal video-filter chains](https://github.com/videolan/vlc/blob/3.0.20/src/video_output/video_output.c#L1509) and [transcode user filters](https://github.com/videolan/vlc/blob/3.0.20/modules/stream_out/transcode/video.c#L346) pass true; delivering the configured dimensions through the final display also requires a compatible path, since direct playback can resize afterward. The policy decision is settled; unblock by implementing and verifying the contract, including both flag values, matching/mismatching requested outputs, crop/chroma mismatches, and actual direct/transcode output dimensions. |
 
 ## portability/standards conformance
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-
-No other open finding. GNU/Linux-specific CPU affinity, dynamic loading,
-and VLC plugin interfaces are isolated, while the supported compiler/CPU
-fallbacks have explicit build and contract coverage.
 
 ## error handling
 
@@ -161,19 +83,10 @@ fallbacks have explicit build and contract coverage.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 
-No open finding. Permanent USM/backend failures retire their pools and
-resources. Normal safe retirement waits for active callbacks before releasing
-their storage; a failed thread join quarantines the complete allocation island
-instead of releasing worker-accessible state.
-
 ## API/ABI stability
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-
-No open finding. Shared variant declarations, the zimg ABI-major guard, and the
-visibility/final-link ISA gates remain coherent by inspection and by successful
-local GCC and Clang single- and multi-version plugin links.
 
 ## build/toolchain hygiene
 
@@ -188,17 +101,15 @@ local GCC and Clang single- and multi-version plugin links.
 | id | status | effort | description | notes |
 |---|---|---|---|---|
 | OBS-13 | blocked | S | Qualify source-zero-copy output equivalence in VLC's option help and test descriptions. | `src/autoupscale_module.c:108-121` claims byte identity with copy-in, while `README.md`'s zero-copy option and `src/scaler_zimg.c:30-34` restrict that guarantee to unchanged grids. `tests/test_scaler_zimg.c:511-540` retains an unconditional identity title but explicitly exempts column-tiled cases from copy/direct equality. Unblock by stating the same-grid condition and the grid-change seam caveat consistently. |
-| OBS-14 | blocked | S | Correct stale worker-policy comments that contradict the shipped defaults. | `src/thread_policy.h:15-17` describes AUTO as capped at `UP_THREADS_MAX` (64), but line 205 caps it at `UP_THREADS_AUTO_MAX` (12). `src/scaler_zimg.c:107-108,690` describes pinning as opt-in, while `src/autoupscale_module.c:88,225` enables it by default. Unblock by synchronizing both comments with the existing runtime constants and option defaults. |
+| OBS-14 | blocked | S | Correct stale pinning comments that contradict the shipped default. | `src/scaler_zimg.c:107-108,690` describes pinning as opt-in, while the `pin-threads` registration in `src/autoupscale_module.c` enables it by default. Unblock by synchronizing the comments with the runtime option default. |
 | OBS-15 | blocked | S | Include allocated column-tile destination buffers in the zimg scratch diagnostic. | `src/scaler_zimg.c:802-826` reports zero destination scratch whenever column tiling is active, omitting the buffers allocated at lines 624-630. An ASan/UBSan backend probe for I420 4096x32 to 16384x128, 32 workers, source/destination zero-copy enabled produced an 8x4 grid with 5,242,880 allocated tile bytes but logged `scratch 0 MB (src zero-copy, dst tiled+copy), graph-tmp 2 MB`. Unblock by including per-worker `tile_dst` bytes and testing the reported total against the allocated layouts. |
+| OBS-16 | open | S | Report when the adaptive benchmark falls back to a fixed pool. | `tests/bench_adaptive.c:72-110` checks frame success but never reports `adaptive.stopped` or `adaptive.enabled`. Link-wrap fault injection rejecting the second `up_usm_pool_create` call produces exit 0 and an ordinary `-1` adaptive CSV row despite adaptation stopping before its first trial. `first_settled_frame=0` is ambiguous with unfinished exploration and cannot reveal a failure after settling. Add explicit run outcome/stop reason to the CSV and distinguish fallback runs in comparisons; test failures both before and after settling. |
+| OBS-17 | blocked | S | Reconcile the adaptive benchmark's actual profile with its published measurements and playback defaults. | `docs/BENCHMARKS.md:120-123` labels the committed experiment Spline36, but `tests/bench_adaptive.c:52-53` calls `zt_ctx_init`, which sets `UP_ALGO_LANCZOS` and leaves `pin_cpus=0`; neither value is overridden. The plugin defaults are Spline36 and pinning enabled (`src/autoupscale_module.c:219,235`). The CSV omits both settings, so the reported 10.4% gain does not establish the result for that claimed/default profile. Unblock by exposing and recording algorithm/pinning, correcting the existing experiment label, and repeating comparisons for the intended playback profile. |
 
 ## wiring gaps
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-
-No additional production wiring finding. All module options have consumers;
-both scaler backends, runtime fallback, USM pool, and multiversion dispatcher
-have real production call sites.
 
 ## unused functions/methods
 
