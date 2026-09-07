@@ -300,3 +300,14 @@ non-findings:
   checked internal size arithmetic, graph dimensions are capped at 32768, and
   returned x86 temporary sizes are already 64-byte aligned; the value cannot
   approach `SIZE_MAX - 63` on a reachable production graph.
+- **ARCH-R1, full Rust rewrite:** rejected for the current implementation. The
+  VLC 3 descriptor, picture-plane access, zimg/libswscale calls, CPU-feature
+  dispatch, affinity, and persistent worker publication would retain a material
+  `unsafe` FFI/concurrency surface, while replacing a mature 6.5k-line
+  production implementation inside a 22k-line source-and-test system. The
+  2026-08-20 evaluation found no open UB, memory-management, or concurrency
+  defect and re-ran `make check plugin check-hardening check-visibility
+  BUILD=build-rust-eval EXTRA_CFLAGS=-Werror` successfully. Revisit only for a
+  measured hot-path win, recurring C safety defects, a Rust-first maintainer
+  base, or a broader portability goal; use a small differential-tested kernel
+  prototype before considering migration.
