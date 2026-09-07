@@ -70,6 +70,104 @@ Filter `row_type=median` for comparisons, but retain the raw rows. Use
 `effective_threads`, not the request, because geometry and startup can reduce
 the pool size.
 
+## Adaptive USM
+
+Enable the experimental playback option with
+`--autoupscale-threads=0 --autoupscale-adaptive-usm=1`. Sharpening must be active. Explicit worker counts
+remain fixed. The objective is lower processing time, with no resolution or
+algorithm change. This first implementation tunes USM; zimg's grid stays fixed
+because repartitioning its graphs can change resampling seams.
+
+The search tries 1, 2, 4, 8, 12, 16, 24, 32, 48 and 64 workers, clipped to CPU
+and stripe limits. It skips two warmup frames after each switch and compares
+16-frame medians. A candidate must beat both neighboring baseline windows by
+5%. A trial whose first four measured frames have a median over 1.5 times the
+baseline returns early. Settled operation lasts at least 256 measured frames;
+three windows outside 65–135% of the settled timing trigger a new search.
+Periodic exploration resumes after 16,384 measured frames. Samples cover both
+scaling and sharpening on frames that execute USM, so a local USM improvement
+must also improve the combined processing time. Playback pacing and idle time
+do not contribute samples.
+
+Pool creation/retirement is excluded from the controller's steady samples but
+included in this benchmark's frame totals. Resource or clock failure stops
+adaptation and retains the working pool. The mode is off by default because
+short clips, noisy measurements and exploration costs can outweigh gains.
+
+```sh
+make build/bench_adaptive
+build/bench_adaptive 12 4096 1920 1080 12
+build/bench_adaptive -1 4096 1920 1080 12
+```
+
+Arguments: USM count (`-1` adaptive), frames (minimum 1024), output width,
+output height, fixed zimg count. Input is half the output dimensions, I420,
+with deterministic noise and 20% sharpening. Width/height must be multiples
+of four. CSV columns:
+
+```text
+usm_request,frames,width,height,zimg_workers,effective_usm,first_settled_frame,changes,total_us,tail_us,zimg_us,usm_us
+```
+
+`total_us` includes lazy startup and all transitions. `tail_us` covers the final
+512 frames, which may still include adaptation. The stage means include their
+startup costs. These are processing measurements, excluding decoding, display,
+audio and VLC output-picture allocation. Compare rotated repeated runs on the
+deployment host; a final selected count alone does not prove an improvement.
+
+### Experimental snapshot
+
+On 2026-09-07, an AMD Ryzen 9 7945HX with GCC 13.3 (`-O3 -march=native`)
+ran five rotated repetitions per count, each with 4096 frames at 960×540 to
+1920×1080, I420, Spline36 and 20% USM. The zimg count stayed at the static
+AUTO value for each affinity mask. These are medians of run means, including
+startup and exploration, in microseconds per frame:
+
+| Allowed CPUs | Fixed AUTO USM | Adaptive USM | Adaptive selected | Best tested fixed USM |
+|---|---|---|---|---|
+| 32 | 344.71 (12 workers) | 351.67 | 12 in all runs | 344.71 (12 workers) |
+| 8 (CPU IDs 0–7) | 887.70 (2 workers) | 795.68 | 4 in all runs | 788.49 (4 workers) |
+
+Adaptation reduced total processing time by 10.4% with eight allowed CPUs,
+and added 2.0% when the 32-CPU static default was already the best tested count.
+It remained about 0.9% slower than the best tested fixed count in the eight-CPU
+case. This supports an opt-in experiment, not a universal speedup claim.
+[Raw repeated measurements](benchmarks/adaptive-2026-09-07.csv) preserve the
+stage means and final-window timings. No network BBR implementation or untuned
+PID was benchmarked; these results do not establish superiority over either.
+
+### BBR research and transfer limits
+
+The [original Google BBR paper](https://web.stanford.edu/class/cs244/papers/bbr.pdf)
+separates bandwidth and propagation-delay estimation, excludes misleading
+application-limited samples and alternates probing with steady operation.
+For this serial frame pipeline, completed work per processing second is useful;
+display FPS is capped by the source and is a poor capacity signal. There is no
+independent network propagation delay or in-flight byte window from which to
+derive a worker count. Minimum frame time is also not a reliable estimate of
+typical processing cost under cache, scheduler and content variation. Medians
+and confirmation are deliberate choices here, rather than BBR's extrema filters.
+
+[Google's IETF 101 update](https://www.ietf.org/proceedings/101/slides/slides-101-iccrg-an-update-on-bbr-work-at-google-00.pdf)
+motivates bounded probing, time to recover after probes and avoiding synchronized
+probes among competing flows. The prototype borrows bounded trials and cooldown;
+it does not implement TCP BBR or claim its published network gains. Randomized
+probe timing would need validation with multiple simultaneous playback instances.
+
+The [TUM 2025 survey](https://www.net.in.tum.de/fileadmin/TUM/NET/NET-2025-05-1/NET-2025-05-1_17.pdf)
+maps the evolution through v3. Implementation details should come from primary
+sources such as the [BBRv3 draft](https://datatracker.ietf.org/doc/draft-ietf-ccwg-bbr/06/),
+which separates probing/cruising phases and short/long-term bounds. Those ideas
+justify testing recovery and changing load; their gains and time constants are
+network-specific and are not copied into the worker tuner.
+
+The [NJIT ML paper](https://arxiv.org/pdf/2312.11790) concerns inter-protocol
+fairness and latency classification. Its reported classifier accuracy does not
+establish better closed-loop worker control. A trained model would add dataset,
+generalization and inference-cost requirements without demonstrated benefit to
+this plugin. Contradictory loss and evaluation descriptions in the references
+are recorded in `TODO.md` as SCAL-10; zimg adaptation is tracked as SCAL-11.
+
 ## Compare
 
 For each result, record:

@@ -81,7 +81,15 @@
     "reduce per-frame latency at the cost of more memory and lower " \
     "per-thread cache locality; the auto default uses at most 12 workers " \
     "and reserves the rest of VLC and other libraries. Override if you " \
-    "measured otherwise.")
+    "measured otherwise. With adaptive-usm=1, USM may explore beyond this " \
+    "static AUTO count; zimg keeps its fixed grid.")
+
+#define ADAPTIVE_USM_TEXT N_("Adapt USM workers to minimize time per frame")
+#define ADAPTIVE_USM_LONGTEXT N_( \
+    "Experimental measured worker search (0=off, 1=on). Requires threads=0 " \
+    "and active sharpening. Tries 1..64 workers within CPU and stripe limits; " \
+    "keeps confirmed faster counts. Trials add temporary latency and resource " \
+    "cost. Resolution, algorithm and zimg grid stay fixed.")
 
 #define PIN_TEXT        N_("Pin scaler worker threads to CPU cores")
 #define PIN_LONGTEXT    N_( \
@@ -222,6 +230,8 @@ vlc_module_begin()
     add_integer_with_range( UP_CFG_PREFIX "threads", UP_THREADS_AUTO,
                             0, UP_THREADS_MAX,
                             THREADS_TEXT, THREADS_LONGTEXT, false )
+    add_integer_with_range( UP_CFG_PREFIX "adaptive-usm", 0, 0, 1,
+                            ADAPTIVE_USM_TEXT, ADAPTIVE_USM_LONGTEXT, false )
     add_integer_with_range( UP_CFG_PREFIX "pin-threads", 1, 0, 1,
                             PIN_TEXT, PIN_LONGTEXT, false )
     add_integer_with_range( UP_CFG_PREFIX "zerocopy-dst", 1, 0, 1,

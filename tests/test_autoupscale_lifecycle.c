@@ -43,11 +43,12 @@ static lifecycle_config_t lifecycle_config[] = {
     { "autoupscale-usm-stripe-min-rows", 0 },
     { "autoupscale-zimg-stripe-lines", 0 },
     { "autoupscale-usm-sharp-threshold", 0 },
+    { "autoupscale-adaptive-usm", 0 },
 };
 
 static const int lifecycle_config_defaults[] = {
     720, 1, UP_ALGO_SPLINE36, SCALER_BACKEND_AUTO, 0, 1, 0,
-    1, 1, 0, 0, 0, 0,
+    1, 1, 0, 0, 0, 0, 0,
 };
 
 static picture_t *g_next_output;
@@ -506,6 +507,56 @@ static void test_usm_success_failure_and_uncertain_output(void)
     END();
 }
 
+static void test_adaptive_configuration(void)
+{
+    BEGIN("adaptive USM is opt-in and respects explicit workers");
+    filter_t filter;
+    reset_state();
+    init_filter(&filter);
+    set_config("autoupscale-usm", 20);
+    set_config("autoupscale-adaptive-usm", 1);
+    g_usm_pool_create_result = (usm_pool_t *)&filter;
+    CHECK(up_autoupscale_open_checked((vlc_object_t *)&filter) == VLC_SUCCESS);
+    CHECK(!filter.p_sys->usm_adaptive.enabled);
+    Close((vlc_object_t *)&filter);
+    set_config("autoupscale-threads", 0);
+    CHECK(up_autoupscale_open_checked((vlc_object_t *)&filter) == VLC_SUCCESS);
+    CHECK(filter.p_sys->usm_adaptive.tuner.limit >= 1);
+    CHECK(filter.p_sys->usm_adaptive.enabled
+          == (filter.p_sys->usm_adaptive.tuner.limit > 1));
+    Close((vlc_object_t *)&filter);
+    END();
+}
+
+static void test_adaptive_trial_drop(void)
+{
+    BEGIN("uncertain adaptive trial drops one frame and preserves baseline");
+    uint8_t pixels[384] = { 0 };
+    filter_t filter;
+    filter_sys_t sys = { 0 };
+    picture_t input, output;
+    reset_state();
+    init_filter(&filter);
+    init_scaler(&sys.scaler, 16, 16);
+    init_i420_picture(&input, pixels, 16, 16, 7);
+    init_i420_picture(&output, pixels, 16, 16, 0);
+    sys.usm_pool = (usm_pool_t *)&filter;
+    sys.usm_amount_q8 = 20;
+    up_usm_adaptive_init(&sys.usm_adaptive, 1, 2, 16, 16, 8);
+    sys.usm_adaptive.tuner.current = 2;
+    g_usm_pool_create_result = (usm_pool_t *)&output;
+    g_usm_apply_status = UP_USM_APPLY_OUTPUT_UNCERTAIN;
+    CHECK(FinishScaledFrame(&filter, &sys, &input, &output) == NULL);
+    CHECK(input.releases == 1 && output.releases == 1);
+    CHECK(sys.usm_pool == (usm_pool_t *)&filter && sys.usm_amount_q8 == 20);
+    CHECK(g_usm_destroy_calls == 1);
+    g_usm_apply_status = UP_USM_APPLY_OK;
+    CHECK(ApplyUsmIfEnabled(&filter, &sys, &output) == UP_USM_APPLY_OK);
+    DisableUsm(&sys);
+    CHECK(g_usm_destroy_calls == 2);
+    END();
+}
+
 static void test_probe_lifecycle(void)
 {
     BEGIN("probe validates views, closes its window, and retires grainy USM");
@@ -592,6 +643,8 @@ int main(void)
     test_open_rejections_and_open_fallback();
     test_open_usm_contract();
     test_usm_success_failure_and_uncertain_output();
+    test_adaptive_configuration();
+    test_adaptive_trial_drop();
     test_probe_lifecycle();
     test_runtime_fallback();
     return test_harness_report();

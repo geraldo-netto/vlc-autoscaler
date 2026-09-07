@@ -24,4 +24,6 @@ src/scaler_swscale.c
 src/picture_view.h
 src/cpu_level.h
 src/usm_pool.c
+src/worker_tuner.h
+src/usm_adaptive.h
 src/usm_pool_dispatch.c

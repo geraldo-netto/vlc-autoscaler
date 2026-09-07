@@ -26,6 +26,7 @@
 #include "upscale_logic.h"
 #include "usm.h"
 #include "usm_pool.h"
+#include "usm_adaptive.h"
 #include "scaler.h"
 #include "scaler_pick_logic.h"
 #include "thread_policy.h"
@@ -85,6 +86,7 @@ struct filter_sys_t
      * USM. A nonzero pool lazily owns its workers and private row scratch. */
     int           usm_amount_q8;
     usm_pool_t   *usm_pool;
+    up_usm_adaptive_t usm_adaptive;
 
     /* Content-aware advisory. The probe runs over the first
      * UP_PROBE_WINDOW_FRAMES valid views, accumulating squared Laplacian energy
@@ -321,6 +323,23 @@ static void ConfigureScaler( scaler_ctx_t *sc,
                   "rows-only tiling)" );
 }
 
+static void InitAdaptiveUsm( filter_sys_t *p_sys, filter_t *p_filter,
+                              int initial, int cores, up_dims_t target,
+                              int stripe_min )
+{
+    if( !InheritIntSat( p_filter, UP_CFG_PREFIX "adaptive-usm" ) ) return;
+    if( p_sys->scaler.threads_pref != UP_THREADS_AUTO )
+    {
+        msg_Info( p_filter, "Adaptive USM requires threads=0; keeping explicit count" );
+        return;
+    }
+    up_usm_adaptive_init( &p_sys->usm_adaptive, initial,
+        up_threads_decide( UP_THREADS_MAX, cores ),
+        target.width, target.height, stripe_min );
+    msg_Info( p_filter, "Adaptive USM: minimizing processing time, 1..%d workers",
+              p_sys->usm_adaptive.tuner.limit );
+}
+
 /* Create the small USM descriptor when sharpening is requested and the chroma
  * has a Y plane. Workers and scratch initialize lazily on first apply. On
  * allocation failure, continue with USM disabled. */
@@ -338,7 +357,10 @@ static void InitUsmPool( filter_sys_t *p_sys, filter_t *p_filter,
                                           target.width, target.height,
                                           stripe_min );
     if( p_sys->usm_pool )
+    {
         p_sys->usm_amount_q8 = up_usm_amount_pct_to_q8( usm_pct );
+        InitAdaptiveUsm( p_sys, p_filter, n_threads, cores, target, stripe_min );
+    }
     else
         msg_Info( p_filter,
                   "USM pool create failed (%dx%d, %d threads); "
@@ -487,6 +509,7 @@ static void LogProbeVerdict( filter_t *p_filter, filter_sys_t *p_sys );
 static void DisableUsm( filter_sys_t *p_sys )
 {
     p_sys->usm_amount_q8 = 0;
+    up_usm_adaptive_stop( &p_sys->usm_adaptive );
     up_usm_pool_destroy( p_sys->usm_pool );
     p_sys->usm_pool = NULL;
 }
@@ -567,12 +590,25 @@ static void LogProbeVerdict( filter_t *p_filter, filter_sys_t *p_sys )
     }
 }
 
-/* Apply the post-pass USM in-place on the cropped luma plane, when enabled.
- * No-op when amount==0, no pool allocated, no luma plane, or invalid output
- * geometry. A pool failure (sticky lazy-init, OBS parity with the zimg
- * pool's OBS-2)
- * warns once and disables USM for the rest of playback so every later
- * frame skips the dead call. */
+static int RunUsm( filter_t *p_filter, filter_sys_t *p_sys,
+                    uint8_t *pixels, int pitch )
+{
+    up_usm_adaptive_t *a = &p_sys->usm_adaptive;
+    const bool enabled = a->enabled;
+    const unsigned changes = a->tuner.changes;
+    const up_tuner_phase_t phase = a->tuner.phase;
+    const int status = up_usm_adaptive_apply( a, &p_sys->usm_pool,
+        pixels, pitch, p_sys->usm_amount_q8 );
+    if( enabled && a->stopped )
+        msg_Info( p_filter, "Adaptive USM stopped; retaining working pool" );
+    if( changes != a->tuner.changes )
+        msg_Info( p_filter, "Adaptive USM: selected %d workers", a->tuner.best );
+    if( phase != UP_TUNER_SETTLED && a->tuner.phase == UP_TUNER_SETTLED )
+        msg_Info( p_filter, "Adaptive USM: settled on %d workers, %.1f us/frame",
+                  a->tuner.best, a->tuner.steady_us );
+    return status;
+}
+
 static int ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
                               const picture_t *p_out )
 {
@@ -588,13 +624,10 @@ static int ApplyUsmIfEnabled( filter_t *p_filter, filter_sys_t *p_sys,
 
     uint8_t *pixels = view.plane[0].pixels;
     const int pitch = view.plane[0].pitch;
-    const int status = up_usm_pool_apply(
-            p_sys->usm_pool,
-            pixels, pitch,
-            pixels, pitch,        /* in-place */
-            p_sys->usm_amount_q8 );
+    const int status = RunUsm( p_filter, p_sys, pixels, pitch );
     if( status != UP_USM_APPLY_OK )
     {
+        if( p_sys->usm_adaptive.retained ) return status;
         msg_Info( p_filter,   /* OBS-2: msg_Warn is suppressed by default */
                   "AutoUpscale: USM pool initialization or dispatch failed; "
                   "sharpening disabled for this playback" );
@@ -724,6 +757,7 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_in )
         return NULL;
     }
 
+    up_usm_adaptive_begin( &p_sys->usm_adaptive );
     scaler_process_status_t status = p_sys->scaler.backend->process(
         &p_sys->scaler, p_in, p_out );
     if( status != SCALER_PROCESS_OK )
@@ -758,7 +792,7 @@ void up_autoupscale_close( vlc_object_t *p_this )
     {
         if( p_sys->scaler.backend )
             p_sys->scaler.backend->close( &p_sys->scaler );
-        up_usm_pool_destroy( p_sys->usm_pool );
+        DisableUsm( p_sys );
 
         free( p_sys );
     }

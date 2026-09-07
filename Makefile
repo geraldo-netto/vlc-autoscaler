@@ -584,6 +584,9 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/tes
 	@echo
 	@echo "=== usm_pool ==="
 	@$(BUILD)/test_usm_pool
+	@$(BUILD)/test_worker_tuner
+	@$(BUILD)/test_usm_adaptive
+	@$(BUILD)/stress_usm_adaptive
 	@echo
 	@echo "=== content_probe ==="
 	@$(BUILD)/test_content_probe
@@ -646,6 +649,14 @@ $(BUILD)/test_usm_pool_dispatch: tests/test_usm_pool_dispatch.c src/usm_pool_dis
 $(BUILD)/test_usm_pool_dispatch_fallback: tests/test_usm_pool_dispatch.c src/usm_pool_dispatch.c src/usm_pool_variants.h src/usm_pool.h src/cpu_level.h tests/test_harness.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -march=x86-64 -DUP_CPU_LEVEL_FORCE_FALLBACK=1 \
 	    -o $@ $< $(TEST_LDFLAGS)
+
+test: $(BUILD)/test_worker_tuner $(BUILD)/test_usm_adaptive $(BUILD)/stress_usm_adaptive
+
+$(BUILD)/test_worker_tuner: tests/test_worker_tuner.c src/worker_tuner.h src/thread_policy.h $(BUILD_CONFIG) | $(BUILD)
+	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
+
+$(BUILD)/test_usm_adaptive: tests/test_usm_adaptive.c src/usm_adaptive.h src/worker_tuner.h src/usm_pool.h $(BUILD_CONFIG) | $(BUILD)
+	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
 
 $(BUILD)/test_upscale_logic: tests/test_upscale_logic.c src/upscale_logic.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(TEST_LDFLAGS)
@@ -873,13 +884,21 @@ $(BUILD)/stress_usm_pool: tests/stress_usm_pool.c $(BUILD)/usm_pool_stress_asan.
 $(BUILD)/stress_usm_pool_tsan: tests/stress_usm_pool.c $(BUILD)/usm_pool_stress_tsan.o $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(STRESS_CFLAGS_TSAN) -o $@ $< $(BUILD)/usm_pool_stress_tsan.o $(STRESS_LDFLAGS_TSAN)
 
-stress: $(BUILD)/stress_usm_pool $(BUILD)/stress_usm_pool_tsan
+$(BUILD)/stress_usm_adaptive: tests/stress_usm_adaptive.c src/usm_adaptive.h src/worker_tuner.h $(BUILD)/usm_pool_stress_asan.o $(BUILD_CONFIG) | $(BUILD)
+	$(CC) $(STRESS_CFLAGS_ASAN) -o $@ $< $(BUILD)/usm_pool_stress_asan.o $(STRESS_LDFLAGS_ASAN)
+
+$(BUILD)/stress_usm_adaptive_tsan: tests/stress_usm_adaptive.c src/usm_adaptive.h src/worker_tuner.h $(BUILD)/usm_pool_stress_tsan.o $(BUILD_CONFIG) | $(BUILD)
+	$(CC) $(STRESS_CFLAGS_TSAN) -o $@ $< $(BUILD)/usm_pool_stress_tsan.o $(STRESS_LDFLAGS_TSAN)
+
+stress: $(BUILD)/stress_usm_pool $(BUILD)/stress_usm_pool_tsan $(BUILD)/stress_usm_adaptive $(BUILD)/stress_usm_adaptive_tsan
 	@echo
 	@echo "=== usm_pool stress (ASan + UBSan) ==="
 	@$(BUILD)/stress_usm_pool
+	@$(BUILD)/stress_usm_adaptive
 	@echo
 	@echo "=== usm_pool stress (ThreadSanitizer) ==="
 	@$(BUILD)/stress_usm_pool_tsan
+	@$(BUILD)/stress_usm_adaptive_tsan
 
 # --------- zimg backend harness (requires libzimg + VLC headers) ---------
 # scaler_zimg.c is VLC-typed but never touches VLC's picture pool/logging at
@@ -1099,7 +1118,7 @@ endif
 # comparison so the skip's payoff is visible.
 BENCH_CFLAGS := -O3 $(MARCH_FLAG) $(WARN) -MMD -MP $(EXTRA_CFLAGS)
 
-build-bench: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip $(BUILD)/bench_worker_pool $(if $(HAVE_ZIMG),$(BUILD)/bench_scaler_zimg $(BUILD)/bench_pipeline)
+build-bench: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip $(BUILD)/bench_worker_pool $(if $(HAVE_ZIMG),$(BUILD)/bench_scaler_zimg $(BUILD)/bench_pipeline $(BUILD)/bench_adaptive)
 
 $(BUILD)/usm_pool_bench.o: src/usm_pool.c $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) -c -o $@ $<
@@ -1112,6 +1131,9 @@ $(BUILD)/bench_usm_pool_flatskip: tests/bench_usm_pool.c tests/prng.h $(BUILD)/u
 $(BUILD)/bench_worker_pool: tests/bench_worker_pool.c src/worker_pool.h src/thread_policy.h src/pool_gate.h tests/cli_parse.h $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) -o $@ $< -lpthread
 $(BUILD)/bench_pipeline: tests/bench_pipeline.c tests/zimg_test_util.h $(BUILD)/scaler_zimg_bench.o $(BUILD)/usm_pool_bench.o $(BUILD_CONFIG) | $(BUILD)
+	$(CC) $(BENCH_CFLAGS) $(VLC_CFLAGS) -o $@ $< $(BUILD)/scaler_zimg_bench.o $(BUILD)/usm_pool_bench.o $(VLC_LIBS) $(ZIMG_LIBS) -lpthread
+
+$(BUILD)/bench_adaptive: tests/bench_adaptive.c tests/zimg_test_util.h src/usm_adaptive.h src/worker_tuner.h $(BUILD)/scaler_zimg_bench.o $(BUILD)/usm_pool_bench.o $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) $(VLC_CFLAGS) -o $@ $< $(BUILD)/scaler_zimg_bench.o $(BUILD)/usm_pool_bench.o $(VLC_LIBS) $(ZIMG_LIBS) -lpthread
 
 bench: $(BUILD)/bench_usm_pool
@@ -1162,6 +1184,8 @@ COV_CFLAGS  := -O0 -g $(MARCH_FLAG) $(WARN) -MMD -MP \
 COV_LDFLAGS := --coverage
 
 COV_TESTS := \
+    $(COV_BUILD)/test_worker_tuner \
+    $(COV_BUILD)/test_usm_adaptive \
     $(COV_BUILD)/test_upscale_logic \
     $(COV_BUILD)/test_usm \
     $(COV_BUILD)/test_cli_parse \
@@ -1200,6 +1224,10 @@ COV_BINS := $(COV_TESTS) $(COV_FUZZERS)
 $(COV_BUILD): | $(BUILD_MARKER)
 	mkdir -p "$(COV_BUILD)"
 
+$(COV_BUILD)/test_worker_tuner: tests/test_worker_tuner.c src/worker_tuner.h src/thread_policy.h $(BUILD_CONFIG) | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
+$(COV_BUILD)/test_usm_adaptive: tests/test_usm_adaptive.c src/usm_adaptive.h src/worker_tuner.h src/usm_pool.h $(BUILD_CONFIG) | $(COV_BUILD)
+	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_upscale_logic: tests/test_upscale_logic.c src/upscale_logic.h $(BUILD_CONFIG) | $(COV_BUILD)
 	$(COV_CC) $(COV_CFLAGS) -o $@ $< $(COV_LDFLAGS)
 $(COV_BUILD)/test_usm: tests/test_usm.c tests/usm_test_util.h src/usm.h $(BUILD_CONFIG) | $(COV_BUILD)

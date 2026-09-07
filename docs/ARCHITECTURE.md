@@ -93,6 +93,16 @@ A one-worker pool runs inline without a thread or barrier. Partial startup is
 allowed for USM and repartitions its stripes; zimg uses all-or-nothing startup
 because its graph grid is precomputed.
 
+With `adaptive-usm=1` and `threads=0`, `worker_tuner.h` scores combined scaling
+and sharpening time while testing USM worker counts. `usm_adaptive.h` owns at most one
+trial pool beside the working pool; only one dispatches a frame. Pool switches
+and retirement occur after dispatch completion. Rejected trials are released;
+accepted trials replace the working pool. Allocation or trial initialization
+failure stops exploration. An uncertain trial drops its frame while preserving
+the baseline for later frames. Close and content-based USM retirement release
+both pools. Trials can temporarily keep up to 128 worker threads alive, though
+at most 64 execute USM work. The scaler grid and output pixels stay unchanged.
+
 ## USM
 
 USM applies a 3×3 separable Gaussian high-pass to luma:

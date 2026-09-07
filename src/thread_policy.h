@@ -14,7 +14,7 @@
  *     detected core count to a worker-count decision. Unit-tested.
  *
  * Auto policy (user_pref == UP_THREADS_AUTO):
- *   total_cores / 2 - 2, clamped to the range [1, UP_THREADS_MAX].
+ *   total_cores / 2 - 2, clamped to the range [1, 12].
  *
  * The "/ 2" reserves half the machine for everything else (VLC's main
  * thread, decoder, encoder, audio, vout, the OS, plus other libraries

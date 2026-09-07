@@ -191,7 +191,8 @@ See [usage and troubleshooting](docs/USAGE.md) for practical variants.
 | `--autoupscale-skip-above` | 0–8192 | 720 | In AUTO, skip sources at or above this height. `0` disables the gate. |
 | `--autoupscale-usm` | 0–200 | 20 | Luma sharpening percentage. `0` disables USM. |
 | `--autoupscale-backend` | 0–2 | 0 | `0` prefer zimg with swscale fallback; `1` zimg only; `2` swscale only. |
-| `--autoupscale-threads` | 0–64 | 0 | Shared zimg/USM worker preference. `0` uses the automatic policy capped at 12 workers. Explicit `1`–`64` requests are limited by allowed CPUs and each pool's frame geometry; default USM stripe rows add no worker cap. |
+| `--autoupscale-threads` | 0–64 | 0 | Shared zimg/USM worker preference. `0` starts with the automatic policy capped at 12 workers. Explicit `1`–`64` requests are limited by allowed CPUs and each pool's frame geometry; default USM stripe rows add no worker cap. |
+| `--autoupscale-adaptive-usm` | 0–1 | 0 | Experimental USM worker search to reduce processing time per frame. Requires `threads=0` and active sharpening. Tries counts up to 64 within CPU/stripe limits, retaining confirmed improvements. Trials add temporary latency and resource cost. Resolution, algorithm and zimg grid stay fixed. See [adaptive measurements](docs/BENCHMARKS.md#adaptive-usm). |
 | `--autoupscale-pin-threads` | 0–1 | 1 | Best-effort zimg worker pinning. Disable if it regresses the deployment host. |
 | `--autoupscale-zerocopy-dst` | 0–1 | 1 | Direct zimg writes on compatible row grids. `0` forces copy-out. |
 | `--autoupscale-zerocopy-src` | 0–1 | 1 | Direct zimg reads. `0` forces copy-in and disables column tiling. A resulting grid change can create bounded resampling seams, so copy and direct modes are byte-identical only when their grid is unchanged. |
