@@ -1,0 +1,44 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 14
+#
+# Samples: 36K of event 'cycles:u'
+# Event count (approx.): 195570447984
+#
+# Children      Self  Command          Shared Object         Symbol
+# ........  ........  ...............  ....................  ...........................................
+#
+    25.80%    25.80%  profile_pipelin  profile_pipeline      [.] usm_pool_run_worker
+     6.28%     6.28%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000004df7a
+     5.40%     5.40%  profile_pipelin  libzimg.so.2.0.0      [.] 0x0000000000063771
+     5.37%     5.37%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000005bfc1
+     3.40%     3.40%  profile_pipelin  libzimg.so.2.0.0      [.] 0x00000000000636a1
+     2.23%     2.23%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000006369b
+     1.71%     1.71%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000004df74
+     1.38%     1.38%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000005bfb7
+     1.30%     1.30%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000004d194
+     1.09%     1.09%  profile_pipelin  libzimg.so.2.0.0      [.] 0x0000000000063691
+     1.03%     1.03%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000005bfbb
+     1.03%     1.03%  profile_pipelin  libzimg.so.2.0.0      [.] 0x0000000000063670
+     1.02%     1.02%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000004df6e
+     0.95%     0.95%  profile_pipelin  libzimg.so.2.0.0      [.] 0x0000000000063695
+     0.88%     0.88%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000005bfb3
+     0.81%     0.81%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000006368d
+     0.80%     0.80%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000006361e
+     0.79%     0.79%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000005bf47
+     0.77%     0.77%  profile_pipelin  libzimg.so.2.0.0      [.] 0x0000000000063648
+     0.64%     0.64%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000004df36
+     0.60%     0.60%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000005bf8d
+     0.57%     0.57%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000005bf92
+     0.57%     0.57%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000004df65
+     0.55%     0.55%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000005bf6d
+     0.54%     0.54%  profile_pipelin  libzimg.so.2.0.0      [.] 0x0000000000063689
+     0.54%     0.54%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000004df5f
+     0.53%     0.53%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000005bf96
+     0.51%     0.51%  profile_pipelin  libzimg.so.2.0.0      [.] 0x000000000004df6a
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

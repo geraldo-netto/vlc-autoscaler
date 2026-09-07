@@ -5,6 +5,10 @@ host: compiler, flags, CPU affinity, governor, temperature, and background load
 can outweigh small code differences. This repository therefore does not publish
 fixed throughput claims.
 
+For the worker coordination, hardware-counter and shared-nothing evaluation,
+see [Worker and pipeline profiling](PROFILING.md), including reproducible tools
+and the host-specific results.
+
 ## Run
 
 ```sh

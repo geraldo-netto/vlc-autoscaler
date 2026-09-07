@@ -1,0 +1,33 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 14
+#
+# Samples: 36K of event 'cycles:u'
+# Event count (approx.): 195570447984
+#
+# Overhead  Shared Object
+# ........  ....................
+#
+    71.57%  libzimg.so.2.0.0
+    26.20%  profile_pipeline
+     1.76%  libc.so.6
+            |
+             --0.30%--__memmove_avx512_unaligned_erms
+                       memcpy (inlined)
+                       usm_worker_snapshot_halo (inlined)
+                       usm_pool_set_per_frame (inlined)
+                       up_usm_pool_apply
+                       frame
+                       run (inlined)
+                       main
+                       __libc_start_call_main
+                       __libc_start_main_impl (inlined)
+                       _start
+
+     0.43%  [unknown]
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

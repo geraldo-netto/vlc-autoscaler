@@ -1,0 +1,2 @@
+[ perf record: Woken up 465 times to write data ]
+[ perf record: Captured and wrote 120,000 MB /tmp/vlc-autoupscaler-profile.fdzFs5/perf-results/w12.cpu.data (14930 samples) ]

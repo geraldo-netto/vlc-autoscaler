@@ -85,7 +85,7 @@ endif
 # Fail fast, at parse time, when a plugin build is requested without the
 # required SDKs — otherwise the first object compile dies on a cryptic
 # "vlc_common.h: No such file" long before any friendly message.
-PLUGIN_GOALS := all plugin install scan-build abi-layout-check \
+PLUGIN_GOALS := all plugin install scan-build abi-layout-check build-profile \
                 check-visibility check-load-safe-isa check-multiversion-isa \
                 check-hardening \
                 $(BUILD)/$(PLUGIN).so
@@ -1136,6 +1136,21 @@ $(BUILD)/bench_pipeline: tests/bench_pipeline.c tests/zimg_test_util.h $(BUILD)/
 $(BUILD)/bench_adaptive: tests/bench_adaptive.c tests/zimg_test_util.h src/usm_adaptive.h src/worker_tuner.h $(BUILD)/scaler_zimg_bench.o $(BUILD)/usm_pool_bench.o $(BUILD_CONFIG) | $(BUILD)
 	$(CC) $(BENCH_CFLAGS) $(VLC_CFLAGS) -o $@ $< $(BUILD)/scaler_zimg_bench.o $(BUILD)/usm_pool_bench.o $(VLC_LIBS) $(ZIMG_LIBS) -lpthread
 
+.PHONY: build-profile
+build-profile: require-zimg $(BUILD)/profile_pipeline $(BUILD)/profile_worker_pool
+
+$(BUILD)/profile_worker_pool: tests/profile_worker_pool.c tests/profile_internal.h tests/profile_stage.h $(BUILD_CONFIG) | $(BUILD)
+	$(CC) $(BENCH_CFLAGS) $(VLC_CFLAGS) -g -o $@ $< -lpthread
+
+$(BUILD)/profile_zimg.o: tests/profile_zimg.c tests/profile_internal.h tests/profile_stage.h $(BUILD_CONFIG) | $(BUILD) require-zimg
+	$(CC) -O2 $(ZIMG_H_CFLAGS) -MMD -MP -c -o $@ $<
+
+$(BUILD)/profile_usm.o: tests/profile_usm.c tests/profile_internal.h tests/profile_stage.h $(BUILD_CONFIG) | $(BUILD)
+	$(CC) $(BENCH_CFLAGS) $(VLC_CFLAGS) -g -c -o $@ $<
+
+$(BUILD)/profile_pipeline: tests/profile_pipeline.c tests/profile_stage.h $(BUILD)/profile_zimg.o $(BUILD)/profile_usm.o $(BUILD_CONFIG) | $(BUILD)
+	$(CC) $(BENCH_CFLAGS) $(VLC_CFLAGS) -g -o $@ $< $(BUILD)/profile_zimg.o $(BUILD)/profile_usm.o $(VLC_LIBS) $(ZIMG_LIBS) -lpthread
+
 bench: $(BUILD)/bench_usm_pool
 	@echo "requested_threads,effective_threads,width,height,frames,amount,fill,us_per_frame"
 	@$(BUILD)/bench_usm_pool 1 1920 1080 300 20 rand
@@ -1355,7 +1370,7 @@ complexity:
 	lizard -C 10 src/ tests/
 
 MARKDOWN_FILES := README.md docs/ARCHITECTURE.md docs/BENCHMARKS.md \
-                  docs/DESKTOP_INTEGRATION.md docs/USAGE.md
+                  docs/DESKTOP_INTEGRATION.md docs/USAGE.md docs/PROFILING.md
 
 semantic-analysis:
 	@command -v shellcheck >/dev/null 2>&1 || { \

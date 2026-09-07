@@ -1,0 +1,7 @@
+[ perf record: Woken up 1112 times to write data ]
+Warning:
+Processed 38704 events and lost 1 chunks!
+
+Check IO/CPU overload!
+
+[ perf record: Captured and wrote 292,819 MB /tmp/vlc-autoupscaler-profile.fdzFs5/perf-results/w32.cpu.data (36440 samples) ]
