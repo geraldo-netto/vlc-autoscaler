@@ -22,6 +22,11 @@ the behavior defined here when interacting with this workspace.
 ## Rules
 
 - Don't assume. Don't hide confusion. Surface tradeoffs and ask the user when unclear.
+- ALWAYS record every contradiction, of any kind, in the matching category table in
+  `TODO.md` with status `blocked`, including contradictions between instructions,
+  requirements, documentation, code, tests, or observed behavior. Identify the
+  conflicting statements and their sources, and the decision or correction needed
+  to resolve them. Never report a contradiction only in chat.
 - Write the minimum code that solves the problem. Avoid speculative or unneeded changes.
 - Touch only what you must. Clean up only your own mess and leave the workspace cleaner than you found it.
 - Define success criteria before making changes. Verify against those criteria and iterate until satisfied.
