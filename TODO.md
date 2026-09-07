@@ -154,7 +154,6 @@ fallbacks have explicit build and contract coverage.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| ERR-8 | open | S | Propagate failures from every benchmark matrix invocation. | The shell loops in `Makefile:1128,1132` return only the last iteration's status. Replaying each exact recipe with a temporary benchmark that exits 23 for the first worker count and succeeds thereafter returned 0 for both `bench-worker-pool` and `bench-pipeline`, silently accepting an incomplete matrix. Stop on each failed invocation and verify a non-final failure reaches make. |
 
 ## resource management
 

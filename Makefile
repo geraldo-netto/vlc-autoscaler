@@ -631,6 +631,9 @@ test: $(BUILD)/test_upscale_logic $(BUILD)/test_geometry_edge_cases $(BUILD)/tes
 	@echo "=== USM benchmark scripts ==="
 	@sh tests/test_bench_usm_scripts.sh
 	@echo
+	@echo "=== benchmark recipe failures ==="
+	@sh tests/test_bench_recipes.sh
+	@echo
 	@echo "=== coverage parsers ==="
 	@sh tests/test_coverage_parsers.sh
 	@echo
@@ -1125,11 +1128,11 @@ bench-usm-halo: $(BUILD)/bench_usm_pool
 
 bench-worker-pool: $(BUILD)/bench_worker_pool
 	@echo "workers,iterations,us_per_dispatch,last_completion_skew_us"
-	@for n in 1 2 4 8 12 16 24 32; do $(BUILD)/bench_worker_pool $$n 10000; done
+	@for n in 1 2 4 8 12 16 24 32; do $(BUILD)/bench_worker_pool $$n 10000 || exit $$?; done
 
 bench-pipeline: $(BUILD)/bench_pipeline
 	@echo "threads,frames,pin,zimg_lines,usm_lines,lazy_us,max_rss_kb,us_per_frame"
-	@for n in 1 4 8 12 16; do $(BUILD)/bench_pipeline $$n 200; done
+	@for n in 1 4 8 12 16; do $(BUILD)/bench_pipeline $$n 200 || exit $$?; done
 
 bench-flatskip: $(BUILD)/bench_usm_pool $(BUILD)/bench_usm_pool_flatskip
 	@echo "kernel,requested_threads,effective_threads,width,height,frames,amount,fill,us_per_frame"
