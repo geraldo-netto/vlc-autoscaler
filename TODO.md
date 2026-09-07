@@ -83,7 +83,7 @@ and close paths retain explicit ownership and paired releases.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| SCAL-8 | blocked | S | Reconcile explicit worker preferences with the USM pool's hidden 12-worker cap. | `src/autoupscale_module.c:74-84` describes explicit 1..64 preferences as CPU/geometry-capped, but `src/usm_pool.c:409-425` also caps them at 12 whenever stripe rows are automatic. A sanitizer-built probe of `up_usm_pool_create(32,1920,1080,0)` reports 12; changing only the stripe value to its documented default, 8, reports 32. `tests/test_usm_pool.c:334-374` intentionally enforces this difference. Unblock by deciding whether explicit worker preference should bypass the cap or documenting the additional cap and stripe-option interaction in both option help and README. |
+| SCAL-9 | blocked | L | Evaluate an opt-in adaptive worker controller within the 1..64 CPU/geometry limits. | Feasible, but the objective must be selected: meet the video frame budget with the fewest workers, or minimize processing time. Explicit worker preferences must remain fixed; adaptation must preserve configured output geometry and algorithm. `src/worker_pool.h` has no live-resize operation; safe changes require a frame-boundary transition with allocation-failure rollback. USM repartitioning is byte-identical, whereas `src/scaler_zimg.c` owns a graph per grid cell and grid changes can alter seams (`README.md` zero-copy/stripe options). Unblock with the objective and a prototype that measures both stage times, excludes startup/transition costs from steady-state samples, preserves quality, and handles load changes without oscillation. Prefer small measured trials with smoothing, hysteresis, cooldown, and rollback over an untuned PID: more threads can increase time past the bandwidth/scheduling optimum. A five-trial rotated standalone USM benchmark (1080p, in-place, 20%, 300 frames, 32 allowed CPUs) measured medians of 75.99 us at 16 workers, 101.68 us at 32, and 176.17 us at 64; the standalone API permits 64 while the plugin would CPU-cap that request to 32 on this host. [The .NET thread pool](https://github.com/dotnet/runtime/blob/main/src/libraries/System.Private.CoreLib/src/System/Threading/PortableThreadPool.HillClimbing.cs) provides a primary-source example of adaptive concurrency via hill climbing; a PID alternative would need calibrated gains, bounded output, anti-windup, and filtered measurements. |
 
 ## concurrency
 
@@ -103,7 +103,7 @@ also passed locally under ThreadSanitizer with ASLR disabled.
 |---|---|---|---|---|
 
 No open finding. The current full `src/` + `tests/` Lizard analysis reports
-994 functions, zero CCN violations, and a maximum CCN of 10.
+995 functions, zero CCN violations, and a maximum CCN of 10.
 
 ## code duplication
 

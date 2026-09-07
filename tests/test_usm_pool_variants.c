@@ -216,7 +216,7 @@ static void test_worker_counts(void)
      * may down-clamp worker count internally if the height can't be split
      * cleanly; what matters is that all variants make the same decision. */
     BEGIN("varying worker counts at 1080p");
-    int workers[] = { 1, 2, 4, 8 };
+    int workers[] = { 1, 2, 4, 8, 16, 32, 64 };
     for (size_t i = 0; i < sizeof(workers)/sizeof(*workers); i++) {
         check_one(workers[i], 1920, 1080, 76, 0x77777777u + (uint32_t)i);
     }

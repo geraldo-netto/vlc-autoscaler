@@ -51,10 +51,10 @@ typedef struct usm_pool_s usm_pool_t;
 
 /*
  * Create a USM pool sized for width * height frames with up to
- * n_threads workers. n_threads is clamped to [1, height/stripe_min_rows]
- * to keep each stripe at least stripe_min_rows rows tall (the kernel
- * boundary handling makes thinner stripes wasteful). Pass
- * stripe_min_rows <= 0 to use the compile-time default (8).
+ * n_threads workers, capped at 64 and max(1, height/stripe_min_rows) to
+ * keep each stripe at least stripe_min_rows rows tall when possible.
+ * Pass stripe_min_rows <= 0 to use the compile-time default (8).
+ * CPU limits and automatic worker policy are the caller's responsibility.
  *
  * Returns NULL on invalid args (n_threads <= 0, width <= 0, height <= 0)
  * or allocation failure.
