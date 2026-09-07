@@ -78,7 +78,6 @@ and close paths retain explicit ownership and paired releases.
 
 | id | status | effort | description | notes |
 |---|---|---|---|---|
-| PERF-9 | open | S | Remove unrelated shared-cache-line writes from the empty worker-pool benchmark. | `tests/bench_worker_pool.c:9-12,22-31` makes workers increment adjacent bytes of one 64-byte array and write adjacent `timespec` records, despite allocating isolated pool slots. These writes introduce false sharing into dispatch-time and completion-skew measurements. Use per-worker aligned/padded callback state and compare paired runs before drawing further scheduler-versus-workload conclusions; no production throughput regression is established by this finding. |
 
 ## scalability
 

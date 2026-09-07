@@ -7,9 +7,15 @@
 #include <time.h>
 
 typedef struct {
+    alignas(UP_POOL_CACHELINE) unsigned char count;
+    struct timespec finished;
+} bench_slot_t;
+
+_Static_assert(sizeof(bench_slot_t) % UP_POOL_CACHELINE == 0,
+               "benchmark worker slots must occupy whole cache lines");
+
+typedef struct {
     up_worker_pool_t pool;
-    unsigned char slots[UP_POOL_CACHELINE];
-    struct timespec finished[UP_THREADS_MAX];
 } bench_pool_t;
 
 static int construct_slot(void *owner, int index)
@@ -22,13 +28,15 @@ static int construct_slot(void *owner, int index)
 static void run_slot(void *owner, int index)
 {
     bench_pool_t *bench = (bench_pool_t *)owner;
-    bench->slots[(size_t)index % sizeof bench->slots]++;
+    bench_slot_t *slot = up_worker_pool_slot(&bench->pool, index);
+    slot->count++;
 }
 
 static void record_finish(void *owner, int index)
 {
     bench_pool_t *bench = (bench_pool_t *)owner;
-    (void)clock_gettime(CLOCK_MONOTONIC, &bench->finished[index]);
+    bench_slot_t *slot = up_worker_pool_slot(&bench->pool, index);
+    (void)clock_gettime(CLOCK_MONOTONIC, &slot->finished);
 }
 
 static const up_worker_pool_ops_t ops = {
@@ -69,10 +77,11 @@ static int dispatch_many(up_worker_pool_t *pool, long iterations)
 
 static double completion_skew_us(const bench_pool_t *bench, int workers)
 {
-    const struct timespec *low = &bench->finished[0];
+    const bench_slot_t *slots = up_worker_pool_slot(&bench->pool, 0);
+    const struct timespec *low = &slots[0].finished;
     const struct timespec *high = low;
     for (int i = 1; i < workers; i++) {
-        const struct timespec *value = &bench->finished[i];
+        const struct timespec *value = &slots[i].finished;
         if (value->tv_sec < low->tv_sec ||
             (value->tv_sec == low->tv_sec && value->tv_nsec < low->tv_nsec))
             low = value;
@@ -93,7 +102,7 @@ int main(int argc, char **argv)
 
     bench_pool_t bench = {0};
     up_worker_pool_config(&bench.pool, &ops, &bench, (int)workers,
-                          UP_POOL_CACHELINE);
+                          sizeof(bench_slot_t));
     if (up_worker_pool_ensure_started(&bench.pool) != 0) return 1;
     if (dispatch_many(&bench.pool, 100) != 0) return 1;
 
